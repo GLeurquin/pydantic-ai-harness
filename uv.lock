@@ -2428,7 +2428,7 @@ wheels = [
 [[package]]
 name = "logfire"
 version = "5.0.0"
-source = { git = "https://github.com/pydantic/logfire.git?branch=agent-control-core#d1281dc8c63ea0ed19f71f07128caaa69099ee17" }
+source = { git = "https://github.com/pydantic/logfire.git?branch=agent-control-core#5dfb2049ea418fb886199f773e8da824b49e36fa" }
 dependencies = [
     { name = "executing" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
