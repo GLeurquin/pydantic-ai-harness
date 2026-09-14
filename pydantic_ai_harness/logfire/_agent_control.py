@@ -4,12 +4,13 @@ The contract itself -- what an `AgentConfig` holds, how leniently it validates, 
 value does to a request -- lives in [`logfire.agent_control`][], shared by every framework adapter and
 by the Logfire UI. This module is the Pydantic AI half of it: the capability wiring, the toolset that
 carries managed definitions to the model, the bridge between the contract's string block ids and
-[`InstructionPart.id`][pydantic_ai.messages.InstructionPart.id], and the hint span an
-unconfigured agent reports itself with.
+[`InstructionPart.id`][pydantic_ai.messages.InstructionPart.id], and the hint span an agent
+describes itself to Logfire on.
 
-Nothing here writes to a Logfire variable. An agent with no published config says so on a span
-carrying its code baseline, and promoting that into a real variable is a Logfire-side flow -- so a
-deployment needs no write scope, and the code baseline can never race an edit saved in the UI.
+Nothing here writes to a Logfire variable. Every agent says what its code says on a span carrying its
+code baseline, and creating a config from that -- or refreshing a stored baseline that no longer
+matches -- is a Logfire-side flow. So a deployment needs no write scope, and the code baseline can
+never race an edit saved in the UI.
 """
 
 from __future__ import annotations
@@ -25,18 +26,21 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 import logfire
 from logfire.agent_control import (
     AGENT_VARIABLE_PREFIX,
-    MAX_TIMEOUT_SECONDS,
     SCHEMA_SHA256,
     AgentConfig,
+    AgentConfigSettings,
+    AgentSupport,
+    ApplyIssue,
     Block,
     OnUnmatched,
+    Section,
     ToolDef,
-    UnappliedEntry,
+    UnmatchedConfigError,
     apply_instructions,
     apply_settings,
     apply_tool_definitions,
     build_baseline,
-    is_representable_timeout,
+    report_issues,
 )
 from logfire.variables import Variable
 from pydantic_ai import AbstractToolset, RunContext, TemplateStr, ToolDefinition, WrapperToolset
@@ -90,7 +94,7 @@ Static and separate from the message, so the message can be reworded without mov
 indexes on. The attributes it carries are documented on `_emit_config_hint`.
 """
 
-_CONFIG_HINT_MESSAGE = 'Agent Control found no config for this agent'
+_CONFIG_HINT_MESSAGE = 'Agent Control reported the code baseline for this agent'
 """The hint span's message. The agent it is about is the trace it sits in, and the variable it names
 is an attribute, so the message stays the same string for every agent."""
 
@@ -100,6 +104,36 @@ _FRAMEWORK = 'pydantic-ai'
 The contract is shared with the TypeScript cores and the Logfire UI, and the ids a baseline addresses
 its instruction blocks by are each implementation's own, so a consumer has to know whose baseline it
 is reading.
+"""
+
+_SUPPORT = AgentSupport(
+    sections=frozenset(('instructions', 'model', 'settings', 'tool_definitions')),
+    settings=frozenset(AgentConfigSettings.model_fields),
+    precedence='exact',
+    resolution_unit='run',
+)
+"""What this adapter can do with a published config, for the apply helpers and the Logfire editor.
+
+Every section and every canonical setting. Pydantic AI has somewhere to put all four, and the
+contract's canonical keys are `ModelSettings` keys by definition -- the same invariant that lets a
+published patch be handed to Pydantic AI as one -- so they are read off `AgentConfigSettings` rather
+than restated here: a key the contract gains is one this adapter can already lower, and listing them
+by hand would report it as a key Pydantic AI has no equivalent for until someone updated the list.
+
+`precedence='exact'` because managed settings are contributed per request and merged under the keys
+the caller passed to `run(model_settings=...)`, so the contract's order -- code, then published, then
+the run -- holds key by key rather than being inferred from a diff against defaults.
+`resolution_unit='run'` because the variable is resolved once per run, so a version published
+mid-run reaches the next run, which is what lets every span of a run agree on the version that
+produced it. Both happen to be the defaults, and are declared anyway: this value is what the editor
+reads instead of guessing, and a field nobody wrote is indistinguishable from one nobody considered.
+
+`destinations` is left empty, which says one unnamed sink. Pydantic AI assembles its prompt from many
+blocks, but they are one prompt: an added block names no destination because there is only the one.
+
+Nothing here describes a model. A published `temperature` a reasoning model refuses still reaches the
+provider, because which settings a model takes is the provider's answer to give and not a table for
+this adapter to carry.
 """
 
 _MAX_BASELINE_BYTES = 1 << 20
@@ -114,16 +148,6 @@ is reduced by whole sections rather than cut mid-string; see `_serialize_baselin
 
 BaselineReduction = Literal['none', 'tool_definitions', 'omitted']
 """What a baseline gave up to fit `_MAX_BASELINE_BYTES`, as `agent_control.baseline_reduction` reports it."""
-
-_RESOLVED_REASONS = frozenset({'resolved', 'context_override'})
-"""Resolution reasons that mean a config actually reached the run, so there is nothing to hint about.
-
-Every other reason -- an unknown variable, a variable with no targeted value, no provider at all,
-a value that failed to validate -- leaves the run on the code-defined agent, which is the state a
-hint reports. logfire collapses the first three into one `'code_default'` reason, so this is stated
-as the values to *exclude*: a reason this SDK has never heard of is one it should not read as "a
-config is in force".
-"""
 
 
 def _warn_dropped(message: str) -> None:
@@ -145,35 +169,27 @@ def _warn_dropped(message: str) -> None:
     warnings.warn(message)
 
 
-def _report_unmatched(policy: OnUnmatched, message: str) -> None:
-    """Apply `AgentControl.on_unmatched` to one published entry that reached nothing.
+def _report(policy: OnUnmatched, issues: Sequence[ApplyIssue]) -> None:
+    """Report what a request could not apply, as the error Pydantic AI refuses a run with.
 
-    Called where the entry would have been applied -- the settings hook, the instruction hook, the
-    toolset listing -- and not from validation, for two reasons. Validation runs inside Logfire's
-    resolution, which turns any exception into a fallback to the code-defined agent, so an `'error'`
-    raised there would be swallowed and un-manage the whole config instead of stopping the run. And
-    the same validation builds the code baseline, where a key this SDK has no field for is the
-    agent's own `extra_headers` rather than anything anyone published.
+    Called with every section's issues at once, once the request is planned, and not from validation.
+    Validation runs inside Logfire's resolution, which turns any exception into a fallback to the
+    code-defined agent, so an `'error'` raised there would be swallowed and un-manage the whole config
+    instead of stopping the run. And the same validation builds the code baseline, where a key this
+    SDK has no field for is the agent's own `extra_headers` rather than anything anyone published.
 
-    The message is the same under every policy so a warning someone chose to tolerate reads like
-    the error they would have gotten by not tolerating it.
+    The policy itself is the contract's, applied by `report_issues`, so every message reads the same
+    under `'warn'` as under `'error'` and a kind of issue the contract adds later reaches the user
+    without this adapter learning about it. Only the exception is this adapter's:
+    [`UserError`][pydantic_ai.exceptions.UserError] is what Pydantic AI raises for a
+    misconfiguration, which is what a published config this deployment cannot apply is. It is
+    translated from the contract's error rather than rebuilt, so it names every issue the request
+    got wrong.
     """
-    if policy == 'error':
-        raise UserError(message)
-    if policy == 'warn':
-        _warn_dropped(message)
-
-
-def _report_unapplied(policy: OnUnmatched, entries: Sequence[UnappliedEntry]) -> None:
-    """Report what the contract's apply helpers did not apply, as the error Pydantic AI refuses runs with.
-
-    The helpers take a policy of their own and raise `ValueError` for `'error'`. They are called with
-    `'ignore'` and hand back the entries precisely so an adapter can surface them its own way, which
-    here means [`UserError`][pydantic_ai.exceptions.UserError]: a published config this deployment
-    cannot apply is a misconfiguration, and that is the exception Pydantic AI raises for one.
-    """
-    for entry in entries:
-        _report_unmatched(policy, entry.message)
+    try:
+        report_issues(policy, issues)
+    except UnmatchedConfigError as exc:
+        raise UserError(str(exc)) from exc
 
 
 def _reset_config_hint_guard() -> None:  # pyright: ignore[reportUnusedFunction]
@@ -246,6 +262,8 @@ def _blocks(parts: Sequence[InstructionPart]) -> list[Block]:
 
 ConfigProvider = Callable[[], 'AgentConfig | None']
 ToolsObserver = Callable[[list['ToolsetTool[Any]']], None]
+IssuePlanner = Callable[[Section, Sequence[ApplyIssue]], None]
+"""Hand one section's issues to the capability, which reports every section's together."""
 
 
 def _advertised_tool(
@@ -277,7 +295,7 @@ class _ToolDefinitionOverridesToolset(WrapperToolset[AgentDepsT]):
 
     get_config: ConfigProvider = field(repr=False, compare=False)
     observe_code_tools: ToolsObserver = field(repr=False, compare=False)
-    on_unmatched: OnUnmatched = field(default='warn', kw_only=True)
+    plan_issues: IssuePlanner = field(repr=False, compare=False)
 
     def _effective_tools(
         self, config: AgentConfig, tools: dict[str, ToolsetTool[AgentDepsT]]
@@ -289,9 +307,10 @@ class _ToolDefinitionOverridesToolset(WrapperToolset[AgentDepsT]):
         comes back. Pydantic AI advertises every tool into one flat namespace, which is the
         `collision_scope='global'` the contract defaults to.
 
-        Reported on every listing, because tool availability is dynamic -- a toolset can advertise
+        Planned on every listing, because tool availability is dynamic -- a toolset can advertise
         different tools from one step to the next -- and a report from any one listing is a report
-        about that listing.
+        about that listing. Reported by the capability, with the other sections' issues, once the
+        request this listing belongs to is planned.
         """
         applied = apply_tool_definitions(
             [
@@ -304,13 +323,12 @@ class _ToolDefinitionOverridesToolset(WrapperToolset[AgentDepsT]):
                 for name, tool in tools.items()
             ],
             config,
-            on_unmatched='ignore',
         )
         advertised = {
             applied_def.name: _advertised_tool(tool, applied_def, code_name=code_name, toolset=self)
             for (code_name, tool), applied_def in zip(tools.items(), applied.tools)
         }
-        _report_unapplied(self.on_unmatched, applied.unapplied)
+        self.plan_issues('tool_definitions', applied.issues)
         return advertised
 
     async def get_tools(self, ctx: RunContext[AgentDepsT]) -> dict[str, ToolsetTool[AgentDepsT]]:
@@ -392,10 +410,11 @@ class AgentControl(ManagedVariableCapability[AgentDepsT, AgentConfig]):
     A published entry that reaches nothing -- an instruction `id` no assembled block carries (or only
     a dynamic one carries), a tool override no advertised tool matches, a rename another tool already
     answers to, a parameter patch the tool has no parameter for, a settings key the contract has no
-    field for -- is governed by `on_unmatched`. The default warns once per process rather than
-    raising, because one config is applied across deployments that need not all install the same
-    toolsets, and a toolset can advertise different tools from one step to the next; an entry that
-    reaches nothing here may be exactly right somewhere else. `'error'` is for the deployment that
+    field for, a whole section it does not know -- is governed by `on_unmatched`, applied once per
+    request to every section at once. The default warns once per process rather than raising, because
+    one config is applied across deployments that need not all install the same toolsets, and a
+    toolset can advertise different tools from one step to the next; an entry that reaches nothing
+    here may be exactly right somewhere else. `'error'` is for the deployment that
     would rather stop than run with part of its published config silently unapplied.
 
     Missing, invalid, or unreachable remote values degrade to the code-defined agent through Logfire's
@@ -403,14 +422,16 @@ class AgentControl(ManagedVariableCapability[AgentDepsT, AgentConfig]):
     unit that contains it -- one setting, one tool override, one section -- rather than the whole
     config.
 
-    Nothing here ever writes to a variable. A run that resolves no config emits one
-    `agent_control_config_hint` span per process carrying an `AgentConfig`-shaped snapshot of the
-    code-side agent, and turning that into a real config is a Logfire-side flow the project's owner
-    clicks through -- so the credential this needs is read-only, and a code baseline can never
-    overwrite something saved in the UI. The snapshot is taken from whichever model request comes
-    first in the process, so for instructions or a toolset that vary with `deps`, run input, or the
-    step within a run it is one point-in-time sample rather than a description of the agent, and an
-    agent that never reaches a model request reports nothing. Its `instructions` are the code-defined
+    Nothing here ever writes to a variable. Every agent emits one `agent_control_config_hint` span
+    per process carrying an `AgentConfig`-shaped snapshot of the code-side agent, whether or not a
+    config resolved, and turning that into a real config -- or refreshing a stored baseline the code
+    has moved on from -- is a Logfire-side flow the project's owner clicks through. So the credential
+    this needs is read-only, and a code baseline can never overwrite something saved in the UI.
+
+    The snapshot is taken from whichever model request comes first in the process, so for
+    instructions or a toolset that vary with `deps`, run input, or the step within a run it is one
+    point-in-time sample rather than a description of the agent, and an agent that never reaches a
+    model request reports nothing. Its `instructions` are the code-defined
     blocks, listed separately with the `id` that addresses each block and a `dynamic` flag. This lets
     the UI offer an override per block instead of one copy-the-whole-prompt button that would produce
     exactly the duplication described above.
@@ -459,14 +480,18 @@ class AgentControl(ManagedVariableCapability[AgentDepsT, AgentConfig]):
     That is an instruction `id` no assembled block carries, or that only a dynamic block carries; a
     tool override whose `name` (and `toolset`, when set) matches no tool a toolset advertises; a
     rename another advertised tool already answers to; a parameter patch naming a parameter the tool
-    does not have; and a `settings` key this version of the contract has no field for. Each is a place
-    where Logfire shows one thing and the agent does another.
+    does not have; a `settings` key this version of the contract has no field for; and a top-level
+    key it has no section for at all. Each is a place where Logfire shows one thing and the agent
+    does another.
 
-    - `'warn'` (the default) emits a `UserWarning` once per process per message, at the point the entry
-      would have been applied.
-    - `'error'` raises [`UserError`][pydantic_ai.exceptions.UserError] with the same message at that
-      point, failing the run.
+    - `'warn'` (the default) emits a `UserWarning` once per process per message.
+    - `'error'` raises [`UserError`][pydantic_ai.exceptions.UserError] naming every entry this
+      request could not apply, failing the run.
     - `'ignore'` applies nothing and says nothing.
+
+    Every section is planned before any of it is reported, so the strictest policy is also the most
+    complete one: `'error'` names the settings key *and* the tool override *and* the instruction
+    entry, rather than whichever section the agent graph happened to reach first.
 
     Warning rather than raising is the default because tool availability is dynamic: one config is
     applied across deployments that need not all install the same toolsets, and a toolset can
@@ -493,12 +518,21 @@ class AgentControl(ManagedVariableCapability[AgentDepsT, AgentConfig]):
     baseline.
     """
     _code_tools: ContextVar[list[ToolsetTool[Any]] | None] = field(init=False, repr=False)
+    _planned_issues: ContextVar[Mapping[Section, tuple[ApplyIssue, ...]]] = field(init=False, repr=False)
+    """What the sections planned for the request being assembled, until it is reported.
+
+    The four sections are applied by three different hooks, and the policy is applied to all of them
+    at once, so the two that run first leave their issues here for the last one to report. Keyed by
+    section and replaced rather than appended, because every section is planned afresh on every
+    request and a toolset listed twice must not be reported twice.
+    """
 
     def __post_init__(self) -> None:
         self._selection_resolved = ContextVar('agent_control_selection_resolved', default=None)
         self._code_model = ContextVar('agent_control_code_model', default=None)
         self._code_settings = ContextVar('agent_control_code_settings', default=None)
         self._code_tools = ContextVar('agent_control_code_tools', default=None)
+        self._planned_issues = ContextVar('agent_control_planned_issues', default={})
         # The empty config is the only code-side default there is. The agent itself is what a
         # published value is layered onto, so a second place to say the same thing would only be
         # somewhere for the two to disagree.
@@ -590,7 +624,7 @@ class AgentControl(ManagedVariableCapability[AgentDepsT, AgentConfig]):
             wrapped=toolset,
             get_config=self._current_config,
             observe_code_tools=self._observe_code_tools,
-            on_unmatched=self.on_unmatched,
+            plan_issues=self._plan_issues,
         )
 
     def _observe_code_tools(self, tools: list[ToolsetTool[Any]]) -> None:
@@ -600,6 +634,23 @@ class AgentControl(ManagedVariableCapability[AgentDepsT, AgentConfig]):
         """The active run's managed config, or `None` outside a resolved run."""
         resolved = self.resolved
         return None if resolved is None else resolved.value
+
+    def _plan_issues(self, section: Section, issues: Sequence[ApplyIssue]) -> None:
+        """Hold one section's issues until the request that produced them is fully planned."""
+        self._planned_issues.set({**self._planned_issues.get(), section: tuple(issues)})
+
+    def _report_planned(self) -> None:
+        """Apply `on_unmatched` to everything this request planned and could not apply, once.
+
+        Called once the last section has been planned, which is what the contract's apply helpers
+        return their issues for: `'error'` fails on every entry the request would have got wrong
+        rather than on whichever section happened to be planned first -- which used to mean the
+        strictest policy reported the least. The order is the order the sections were planned, and
+        they are cleared as they are read, so a report belongs to the request that produced it.
+        """
+        planned = self._planned_issues.get()
+        self._planned_issues.set({})
+        _report(self.on_unmatched, [issue for issues in planned.values() for issue in issues])
 
     async def wrap_run(self, ctx: RunContext[AgentDepsT], *, handler: WrapRunHandler) -> AgentRunResult[Any]:
         """Add applied-section baggage inside the base's once-per-run resolution context."""
@@ -619,11 +670,14 @@ class AgentControl(ManagedVariableCapability[AgentDepsT, AgentConfig]):
             finally:
                 self._resolved.reset(token)
                 self._selection_resolved.set(None)
+                # Issues belong to the request that planned them. A run that failed between planning
+                # a section and reporting it leaves some here, and the next run plans its own.
+                self._planned_issues.set({})
 
     async def before_model_request(
         self, ctx: RunContext[AgentDepsT], request_context: ModelRequestContext
     ) -> ModelRequestContext:
-        """Report an agent with no config, with the code-side baseline from the first assembled request.
+        """Report the agent's code baseline, read off the first request it assembles in this process.
 
         Runs on this outermost half deliberately: the snapshot has to describe the agent *before*
         managed values reach it, and the overriding half applies the managed instructions from the
@@ -637,33 +691,19 @@ class AgentControl(ManagedVariableCapability[AgentDepsT, AgentConfig]):
 
         Every field name in the section is already a `ModelSettings` key -- that is what makes them
         canonical -- so the contract's patch is the patch, and Pydantic AI merges it with the
-        precedence `_AgentControlOverrides` exists to give it.
+        precedence `_AgentControlOverrides` exists to give it, and `_SUPPORT` is where that claim is
+        declared rather than left to be inferred.
 
-        The two kinds of published key the contract cannot lower are reported here rather than by
-        `apply_settings`, which reports them under a policy of its own that raises `ValueError`.
-        Re-stating them is what keeps `'error'` raising the `UserError` Pydantic AI refuses a run
-        with.
+        This is also the one helper handed the whole config, so it is where the contract names a
+        top-level key this release has no section for, alongside the settings keys it has no field
+        for. Both come back rather than being reported here, and are reported with the rest of the
+        request's.
         """
-        settings = config.settings
-        if settings is None:
-            return ModelSettings()
-        for name in settings.unrecognized:
-            _report_unmatched(
-                self.on_unmatched,
-                f'Managed agent config sets {name!r}, which this version of the SDK has no model setting '
-                'for; that key is not applied.',
-            )
-        timeout = settings.timeout
-        if timeout is not None and not is_representable_timeout(timeout):
-            _report_unmatched(
-                self.on_unmatched,
-                f'Managed agent config sets a request timeout of {timeout!r} seconds, which is not a budget a '
-                f'request can be given -- it has to be finite, not negative, and no larger than '
-                f'{MAX_TIMEOUT_SECONDS} seconds; that key is not applied.',
-            )
+        applied = apply_settings(config, support=_SUPPORT)
+        self._plan_issues('settings', applied.issues)
         # A `dict[str, Any]` of canonical keys is a `ModelSettings` by construction, which is a
         # `TypedDict` and therefore not something `isinstance` can narrow to.
-        return cast(ModelSettings, apply_settings(config, on_unmatched='ignore'))
+        return cast(ModelSettings, applied.settings)
 
     def _apply_instructions(
         self, ctx: RunContext[AgentDepsT], request_context: ModelRequestContext
@@ -699,7 +739,7 @@ class AgentControl(ManagedVariableCapability[AgentDepsT, AgentConfig]):
         parameters = request_context.model_request_parameters
         parts = list(parameters.instruction_parts or [])
         blocks = _blocks(parts)
-        applied = apply_instructions(blocks, config, on_unmatched='ignore')
+        applied = apply_instructions(blocks, config)
         # A block that passed through untouched is the object it went in as, so identity is what says
         # which part it came from. A replaced one is a copy carrying the same `id`, and only a
         # non-dynamic part can be replaced, so consuming those in order matches them up even when an
@@ -718,7 +758,7 @@ class AgentControl(ManagedVariableCapability[AgentDepsT, AgentConfig]):
                 applied_parts.append(replace(replaceable[block.id].pop(0), content=block.text))
             else:
                 applied_parts.append(self._added_part(block.text, ctx))
-        _report_unapplied(self.on_unmatched, applied.unapplied)
+        self._plan_issues('instructions', applied.issues)
         if applied_parts != parts:
             request_context.model_request_parameters = replace(parameters, instruction_parts=applied_parts)
         return request_context
@@ -730,13 +770,17 @@ class AgentControl(ManagedVariableCapability[AgentDepsT, AgentConfig]):
         return InstructionPart(content=TemplateStr[AgentDepsT](text).render(ctx.deps), dynamic=True)
 
     def _emit_config_hint(self, ctx: RunContext[AgentDepsT], request_context: ModelRequestContext) -> None:
-        """Report an agent Logfire holds no config for, once per process, on one span.
+        """Report what this agent says in code, once per process, on one span.
 
-        This is how an agent gets onto the Agent Control page. The SDK does not create the variable
-        itself: a run that resolved nothing says so, carrying everything a config would be created
-        from, and Logfire turns a hint into a real variable when someone asks it to. That keeps the
-        deployment's credential read-only, and it keeps a snapshot of the code from ever overwriting
-        a value a teammate saved in the UI.
+        This is how an agent gets onto the Agent Control page, and how it stays accurate once it is
+        there. The SDK writes no variable: every agent reports its code baseline, and Logfire turns
+        that into a config for an agent it has none for, or offers to refresh a stored baseline the
+        code has moved on from. Reporting whether or not a config resolved is what makes the second
+        half possible -- an agent that reported only while unconfigured would go quiet the moment
+        someone configured it, and its stored baseline would describe the code as it was that day. It
+        also matches what the platform has to do anyway: this SDK cannot tell an unknown variable from
+        one with nothing published at this label, so deduplicating against the variables that exist is
+        the platform's job either way.
 
         The span is named `agent_control_config_hint` and carries:
 
@@ -759,6 +803,12 @@ class AgentControl(ManagedVariableCapability[AgentDepsT, AgentConfig]):
           the baseline had to give up to fit `_MAX_BASELINE_BYTES`. Always present, so a partial
           baseline is partial on the record rather than by inference.
         - `agent_control.baseline_bytes` -- the full baseline's UTF-8 size before any reduction.
+        - `agent_control.resolution_reason` -- why the run's variable resolved the way it did
+          (`'resolved'`, `'code_default'`, ...). Since every agent reports, the span's existence no
+          longer says whether one had a config, and this is the fact a consumer needs to tell a
+          baseline that wants a config created from it from one that may only be refreshing a stale
+          `example`. It is the same string the capability's `resolved` exposes, read where the hint
+          is already built, so the platform learns it without a second query.
 
         Attributes rather than one nested blob because the hint is a contract with a consumer that
         queries it: a name it filters on and a size it can threshold have to be columns, and the
@@ -781,7 +831,7 @@ class AgentControl(ManagedVariableCapability[AgentDepsT, AgentConfig]):
         exactly that text to be editable in this Logfire project.
         """
         resolved = self.resolved
-        if resolved is None or resolution_reason(resolved) in _RESOLVED_REASONS:
+        if resolved is None:
             return
         # The agent's own variable, not a shared attribute: a nameless capability backs one variable
         # per agent, so the hint has to name the one this run resolved.
@@ -802,6 +852,7 @@ class AgentControl(ManagedVariableCapability[AgentDepsT, AgentConfig]):
             'agent_control.schema_sha256': SCHEMA_SHA256,
             'agent_control.baseline_reduction': reduction,
             'agent_control.baseline_bytes': size,
+            'agent_control.resolution_reason': resolution_reason(resolved),
         }
         agent = ctx.agent
         if agent is not None and agent.name:
@@ -874,8 +925,8 @@ class _AgentControlOverrides(AbstractCapability[AgentDepsT]):
     def get_model_settings(self) -> AgentModelSettings[AgentDepsT] | None:
         """Contribute the lowered managed settings patch for each model request.
 
-        A published key the contract has no field for is reported here, where the patch is applied,
-        rather than from validation; see `_report_unmatched` for why.
+        A published key the contract has no field for is planned here, where the patch is applied,
+        rather than from validation; see `_report` for why.
         """
 
         def model_settings(ctx: RunContext[AgentDepsT]) -> ModelSettings:
@@ -902,12 +953,18 @@ class _AgentControlOverrides(AbstractCapability[AgentDepsT]):
     async def before_model_request(
         self, ctx: RunContext[AgentDepsT], request_context: ModelRequestContext
     ) -> ModelRequestContext:
-        """Apply the managed instruction blocks to the request the model is about to be sent.
+        """Apply the managed instruction blocks, then report what this request could not apply.
 
         Runs from the innermost position for the same reason the model and settings are contributed
         from here: an override another capability's hook could overwrite afterwards is not an
         override. Being last also means every contribution has been assembled, which is what lets it
         reach text no capability owns -- the agent's own literal, a toolset's, an MCP server's -- and
         what lets an added block land at the end of the assembled static prompt.
+
+        It is the request's last planning step for the same reason, which is why reporting happens
+        here: every section has had its say by now, so `on_unmatched='error'` fails on all of it.
         """
-        return self.control._apply_instructions(ctx, request_context)  # pyright: ignore[reportPrivateUsage]
+        control = self.control
+        request_context = control._apply_instructions(ctx, request_context)  # pyright: ignore[reportPrivateUsage]
+        control._report_planned()  # pyright: ignore[reportPrivateUsage]
+        return request_context

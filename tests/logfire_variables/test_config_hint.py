@@ -1,10 +1,10 @@
-"""The span an agent with no Agent Control config reports itself on.
+"""The span an agent reports its code baseline on.
 
-The SDK never creates or updates a managed variable. When a run resolves no config, `AgentControl`
-emits one `agent_control_config_hint` span per process carrying everything a config would be created
-from, and promoting that into a real variable is a Logfire-side flow. These tests are therefore the
-contract the platform side consumes: the span's name, its attributes, when it is and is not emitted,
-and how a baseline too large for a span attribute degrades.
+The SDK never creates or updates a managed variable. Every agent emits one
+`agent_control_config_hint` span per process carrying everything a config would be created from, and
+creating one -- or refreshing a stored baseline the code has moved on from -- is a Logfire-side flow.
+These tests are therefore the contract the platform side consumes: the span's name, its attributes,
+when it is and is not emitted, and how a baseline too large for a span attribute degrades.
 
 That nothing writes is asserted for every test in this package by the `_refuse_variable_writes`
 fixture in `conftest.py`; `test_a_run_writes_nothing_to_the_variable_api` says it once explicitly.
@@ -101,9 +101,13 @@ async def test_an_unconfigured_agent_reports_its_whole_baseline(capfire: Capture
     assert attributes['agent_control.schema_sha256'] == SCHEMA_SHA256
     assert attributes['agent_control.baseline_reduction'] == 'none'
     assert attributes['agent_control.baseline_bytes'] == len(attributes['agent_control.baseline'].encode())
+    # Every agent reports, so the span's existence no longer says whether this one had a config. The
+    # reason is what says it: `'code_default'` is a baseline waiting for a config to be created from
+    # it, where `'resolved'` is one that may only be refreshing a stale `example`.
+    assert attributes['agent_control.resolution_reason'] == 'code_default'
     # The message names no agent, so it stays one string across a project's agents. The span name is
     # separate from it, so the message can be reworded without moving what a query selects on.
-    assert attributes['logfire.msg'] == 'Agent Control found no config for this agent'
+    assert attributes['logfire.msg'] == 'Agent Control reported the code baseline for this agent'
 
     assert baseline(attributes) == {
         'instructions': [{'id': 'agent', 'instructions': 'Code instructions.', 'dynamic': False}],
@@ -244,15 +248,23 @@ async def test_the_baseline_is_the_code_and_not_what_a_managed_config_would_do(c
     }
 
 
-async def test_a_resolved_config_reports_no_hint(capfire: CaptureLogfire, publish: Publish) -> None:
-    # The gate. A config reached the run, so there is nothing to ask for. Without it, every run of
-    # every already-configured agent in a project would keep asking to be configured.
+async def test_a_configured_agent_still_reports_its_code_baseline(capfire: CaptureLogfire, publish: Publish) -> None:
+    """A config reaching the run does not stop the agent describing itself.
+
+    The baseline the Logfire editor diffs against is a copy of the code, and code moves: an agent that
+    reported only while unconfigured would go quiet the moment somebody configured it, and its stored
+    baseline would describe the deployment it was created from forever. So the hint says what the code
+    says now, whatever is published, and the reason says which of the two jobs it is for. What it
+    carries is still the code and never the managed value -- that is what makes a diff a diff.
+    """
     publish('configured', {'instructions': 'MANAGED: be brief.'})
     await Agent(
         TestModel(), name='configured', instructions='code', capabilities=[AgentControl(label='production')]
     ).run('hello')
 
-    assert hints(capfire) == []
+    attributes = hints(capfire)[0]
+    assert attributes['agent_control.resolution_reason'] == 'resolved'
+    assert baseline(attributes)['instructions'] == [{'id': 'agent', 'instructions': 'code', 'dynamic': False}]
 
 
 async def test_an_agent_reports_once_per_process(capfire: CaptureLogfire) -> None:
@@ -262,6 +274,20 @@ async def test_an_agent_reports_once_per_process(capfire: CaptureLogfire) -> Non
         agent = Agent(TestModel(), name='reported_once', capabilities=[AgentControl()])
         await agent.run('hello')
         await agent.run('hello again')
+
+    assert len(hints(capfire)) == 1
+
+
+async def test_a_configured_agent_reports_once_per_process_too(capfire: CaptureLogfire, publish: Publish) -> None:
+    # The guard is what bounds the cost of reporting unconditionally: the baseline walks every
+    # assembled block and every advertised tool, and an agent whose config is published pays that on
+    # its first request in the process and on no other.
+    publish('configured_once', {'instructions': 'MANAGED: be brief.'})
+    agent = Agent(
+        TestModel(), name='configured_once', instructions='code', capabilities=[AgentControl(label='production')]
+    )
+    await agent.run('hello')
+    await agent.run('hello again')
 
     assert len(hints(capfire)) == 1
 

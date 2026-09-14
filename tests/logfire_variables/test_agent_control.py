@@ -23,6 +23,7 @@ from pydantic_ai.exceptions import UserError
 from pydantic_ai.messages import InstructionPart, ModelMessage, ModelRequest, ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.profiles import ModelProfile
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets import FunctionToolset, ToolsetTool, WrapperToolset
@@ -396,7 +397,7 @@ async def test_settings_lower_by_canonical_key_and_ignore_the_rest(publish: Publ
         },
     )
     capability = AgentControl('settings', label='production')
-    with pytest.warns(UserWarning, match='which this version of the SDK has no model setting for') as caught:
+    with pytest.warns(UserWarning, match='which this version of the Agent Control contract has no') as caught:
         await Agent(
             FunctionModel(capture_settings),
             model_settings={'temperature': 0.1, 'top_k': 3},
@@ -407,6 +408,51 @@ async def test_settings_lower_by_canonical_key_and_ignore_the_rest(publish: Publ
         "Managed agent config sets 'provider_options'",
     ]
     assert seen == [{'temperature': 0.9, 'top_k': 3, 'top_p': 0.4}]
+
+
+async def test_every_canonical_setting_reaches_the_request(publish: Publish) -> None:
+    """`AgentControl` declares it can lower every canonical setting; this is that claim, key by key.
+
+    The declaration is what the contract reports an unapplied key against and what the Logfire editor
+    greys a field out on, so "all of them" has to be true rather than convenient. The keys are written
+    out here rather than read off the contract, so a key the contract gains fails this test -- with the
+    `ModelSettings` field it needs, or with a narrower declaration -- instead of being assumed.
+    """
+    published = {
+        'max_tokens': 128,
+        'temperature': 0.2,
+        'top_p': 0.4,
+        'top_k': 3,
+        'seed': 7,
+        'presence_penalty': 0.1,
+        'frequency_penalty': 0.2,
+        'parallel_tool_calls': False,
+        'timeout': 30.0,
+        'stop_sequences': ['STOP'],
+        'thinking': 'low',
+    }
+    assert set(published) == set(AgentConfigSettings.model_fields)
+    seen: list[dict[str, object]] = []
+    thinking: list[object] = []
+
+    def capture_settings(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        seen.append(dict(info.model_settings or {}))
+        # Pydantic AI resolves the unified `thinking` setting against the model's profile and carries
+        # it on the request parameters instead, so this is where a managed one arrives. A model whose
+        # profile does not support thinking drops it, exactly as it drops one written in code: what a
+        # model does with a forwarded setting is the model's business and not this capability's.
+        thinking.append(info.model_request_parameters.thinking)
+        return ModelResponse(parts=[TextPart('done')])
+
+    publish('all_settings', {'settings': published})
+    with warnings.catch_warnings(record=True) as caught:
+        await Agent(
+            FunctionModel(capture_settings, profile=ModelProfile(supports_thinking=True)),
+            capabilities=[AgentControl('all_settings', label='production')],
+        ).run('hello')
+    assert caught == []
+    assert thinking == ['low']
+    assert seen == [{key: value for key, value in published.items() if key != 'thinking'}]
 
 
 def test_prebuilt_variable() -> None:
@@ -735,13 +781,28 @@ UNMATCHED_CASES = [
     ),
     pytest.param(
         {'settings': {'temperature': 0.2, 'service_tier': 'flex'}},
-        r"sets 'service_tier', which this version of the SDK has no model setting for",
+        r"sets 'service_tier', which this version of the Agent Control contract has no model setting for",
         id='a-settings-key-this-sdk-has-no-field-for',
     ),
     pytest.param(
         {'settings': {'timeout': -5}},
         r'sets a request timeout of -5.0 seconds, which is not a budget',
         id='a-timeout-that-is-not-a-request-budget',
+    ),
+    pytest.param(
+        {'future_section': {'anything': 1}},
+        r"publishes a 'future_section' section, which this version of the Agent Control contract",
+        id='a-top-level-key-this-release-has-no-section-for',
+    ),
+    pytest.param(
+        {
+            'tool_definitions': [
+                {'name': 'get_forecast', 'description': 'First.'},
+                {'name': 'get_forecast', 'description': 'Second.'},
+            ]
+        },
+        r"names tool 'get_forecast' more than once",
+        id='the-same-tool-named-twice',
     ),
 ]
 
@@ -792,6 +853,40 @@ async def test_on_unmatched_warn_is_the_default(capfire: CaptureLogfire, value: 
     assert AgentControl('unmatched_default').on_unmatched == 'warn'
 
 
+async def test_every_section_is_reported_together_for_the_whole_request(capfire: CaptureLogfire) -> None:
+    """One report per request naming every section, rather than one report per section.
+
+    `'error'` is the case that makes this load-bearing. The sections are applied by three different
+    hooks -- the toolset listing, the settings contribution, the instruction hook -- so raising inside
+    the first of them to run would fail the run naming the tool override and never plan the settings
+    or the instructions, which would make the strictest policy the one that reports the least. Both
+    policies are asserted on the same published value, because "the error says what the warning said"
+    is the promise.
+    """
+    value = {
+        'future_section': {'anything': 1},
+        'instructions': [{'id': 'toolset:nope', 'instructions': 'never sent'}],
+        'settings': {'service_tier': 'flex'},
+        'tool_definitions': [{'name': 'missing', 'description': 'never shown'}],
+    }
+    fragments = [
+        "publishes a 'future_section' section",
+        "patches tool 'missing'",
+        "sets 'service_tier'",
+        "addresses instruction block 'toolset:nope'",
+    ]
+
+    with pytest.warns(UserWarning) as caught:
+        await run_with_unmatched(capfire, 'every_section_warn', value, 'warn')
+    warned = '\n'.join(str(warning.message) for warning in caught)
+    assert len(caught) == len(fragments)
+    assert [fragment for fragment in fragments if fragment not in warned] == []
+
+    with pytest.raises(UserError) as error:
+        await run_with_unmatched(capfire, 'every_section_error', value, 'error')
+    assert [fragment for fragment in fragments if fragment not in str(error.value)] == []
+
+
 async def test_schema_without_properties_is_tolerated(publish: Publish) -> None:
     seen: list[ToolDefinition] = []
 
@@ -830,9 +925,16 @@ async def test_managed_model_runs_model_less_agent_and_run_model_wins(publish: P
 
 
 async def test_unknown_managed_model_keeps_code_model(publish: Publish) -> None:
+    # A model this deployment cannot infer is the drift case the `model` section has: the config names
+    # a provider or model this release, or this install's extras, has no client for. The run keeps the
+    # code model rather than failing, and says so once per process -- the config is resolved on every
+    # run, so a warning per run would bury the signal under its own repetition.
     publish('unknown_model', AgentConfig(model='not-a-provider:not-a-model'))
-    with pytest.warns(UserWarning, match='selects unknown model'):
-        result = await Agent(TestModel(), capabilities=[AgentControl('unknown_model', label='production')]).run('hello')
+    with pytest.warns(UserWarning, match='selects unknown model') as caught:
+        agent = Agent(TestModel(), capabilities=[AgentControl('unknown_model', label='production')])
+        result = await agent.run('hello')
+        await agent.run('again')
+    assert len(caught) == 1
     assert result.output.startswith('success')
 
 
@@ -873,16 +975,27 @@ async def test_callable_targeting_resolution_is_reused_for_run(publish: Publish)
     assert calls == 1
 
 
-async def test_a_resolved_config_builds_no_snapshot(capfire: CaptureLogfire, monkeypatch: pytest.MonkeyPatch) -> None:
-    # The baseline walks every assembled instruction block and every advertised tool. An agent whose
-    # config is already published pays none of that, on any request: the hint it would feed is the
-    # only thing that wants it.
-    def fail_baseline(*_args: Any, **_kwargs: Any) -> AgentConfig:  # pragma: no cover - failure sentinel
-        raise AssertionError('no snapshot should be built for an agent whose config resolved')
+async def test_a_resolved_config_builds_one_snapshot_per_process(
+    capfire: CaptureLogfire, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The baseline walks every assembled instruction block and every advertised tool, and an agent
+    # whose config is published reports it too -- so what keeps that off the request path is the
+    # once-per-process guard, not the config having resolved. Two runs of an agent that calls a tool
+    # is four model requests, and one snapshot.
+    builds: list[AgentConfig] = []
+    build_baseline = _agent_control.build_baseline
 
-    monkeypatch.setattr(_agent_control, 'build_baseline', fail_baseline)
+    def counting(**kwargs: Any) -> AgentConfig:
+        baseline = build_baseline(**kwargs)
+        builds.append(baseline)
+        return baseline
+
+    monkeypatch.setattr(_agent_control, 'build_baseline', counting)
     with variables_provider(capfire, published_value('agent__known', {'model': 'test'})):
-        await Agent(TestModel(), capabilities=[AgentControl('known', label='production')]).run('hello')
+        agent = Agent(TestModel(), tools=[get_weather], capabilities=[AgentControl('known', label='production')])
+        await agent.run('hello')
+        await agent.run('again')
+    assert len(builds) == 1
 
 
 async def test_the_hooks_outside_a_run_are_inert() -> None:

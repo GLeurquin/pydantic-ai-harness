@@ -10,8 +10,6 @@ the gap is when the drop is only visible at the point the config is applied.
 
 from __future__ import annotations
 
-import warnings
-
 import pytest
 from logfire.testing import CaptureLogfire
 from pydantic_ai import Agent
@@ -51,7 +49,7 @@ async def test_agent_reports_a_settings_key_it_has_no_field_for_when_applying(pu
         return ModelResponse(parts=[TextPart('done')])
 
     publish('skew_key', {'settings': {'temperature': 0.4, 'service_tier': 'flex'}})
-    with pytest.warns(UserWarning, match=r"sets 'service_tier', which this version of the SDK has no") as caught:
+    with pytest.warns(UserWarning, match=r"sets 'service_tier', which this version of the Agent Control") as caught:
         agent = Agent(FunctionModel(capture), capabilities=[AgentControl('skew_key', label='production')])
         await agent.run('hello')
         await agent.run('again')
@@ -92,7 +90,11 @@ async def test_an_empty_model_costs_only_the_model_section(capfire: CaptureLogfi
 
 async def test_a_config_written_by_a_newer_ui_still_reaches_the_run(publish: Publish) -> None:
     # Keys this release has never heard of, at every level a newer UI could add one, and none of them
-    # costs the sections beside it.
+    # costs the sections beside it. A whole section it has none for is the one that is also *named*:
+    # ignoring it is what keeps a future section readable by an older SDK, and saying so is what stops
+    # the first person who publishes one from getting a silently degraded agent. A key inside an entry
+    # is not named, because that is the parser being lenient about a value rather than a request
+    # failing to apply one.
     seen: list[dict[str, object]] = []
 
     def capture(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -107,11 +109,11 @@ async def test_a_config_written_by_a_newer_ui_still_reaches_the_run(publish: Pub
             'instructions': [{'instructions': 'MANAGED: be brief.', 'future_field': 1}],
         },
     )
-    with warnings.catch_warnings(record=True) as caught:
+    with pytest.warns(UserWarning, match=r"publishes a 'future_section' section") as caught:
         result = await Agent(
             FunctionModel(capture), instructions='code', capabilities=[AgentControl('newer_ui', label='production')]
         ).run('hello')
-    assert caught == []
+    assert len(caught) == 1
     assert seen == [{'temperature': 0.4}]
     assert [m.instructions for m in result.all_messages() if isinstance(m, ModelRequest)] == [
         'code\n\nMANAGED: be brief.'

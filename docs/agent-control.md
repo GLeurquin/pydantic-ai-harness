@@ -200,18 +200,21 @@ skipped, rather than once per run.
 A published change can also be perfectly valid and still reach nothing *here*: an instruction block
 this deployment never assembles (or only computes per request), a tool no toolset advertises, a
 parameter a patched tool does not have, a rename another tool already answers to, a setting the
-contract has no field for, a `timeout` no request could be given. `on_unmatched` decides what that
-costs:
+contract has no field for, a whole section it has none for, a `timeout` no request could be given.
+`on_unmatched` decides what that costs:
 
 ```python {test="skip"}
 AgentControl(label='production', on_unmatched='error')
 ```
 
-- `'warn'` (the default) emits a `UserWarning` once per process, at the point the change would have
-  applied, so a change Logfire shows and the agent isn't making is visible without stopping anything.
-- `'error'` raises `UserError` with the same message there, for a deployment that would rather stop
-  than run with part of its published config unapplied.
+- `'warn'` (the default) emits a `UserWarning` once per process, so a change Logfire shows and the
+  agent isn't making is visible without stopping anything.
+- `'error'` raises `UserError` naming everything the request could not apply, for a deployment that
+  would rather stop than run with part of its published config unapplied.
 - `'ignore'` applies nothing and says nothing.
+
+Every section is judged before any of it is reported, so `'error'` fails on the settings key *and* the
+tool override *and* the instruction block, rather than on whichever the agent reached first.
 
 Warning is the default because tool availability is dynamic: one config is applied across services
 that need not all install the same toolsets, and a toolset can advertise different tools from one
@@ -222,13 +225,18 @@ lets every span of a run agree on the version that produced it.
 
 ## Registration and the baseline
 
-**Nothing in your process ever writes to a variable.** An agent with no config tells Logfire it
-exists, and creating the config from what it reported happens in Logfire.
+**Nothing in your process ever writes to a variable.** Your agent tells Logfire what its code says,
+and creating or updating a config from that happens in Logfire.
 
-**Registering the agent.** On a run that resolves no config, `AgentControl` emits one
-`agent_control_config_hint` span carrying the name of the variable the config belongs in and the code
-baseline below -- everything a config would be created from. Until one is created, the agent keeps
-running exactly as the code says.
+**Registering the agent.** `AgentControl` emits one `agent_control_config_hint` span carrying the name
+of the variable the config belongs in and the code baseline below -- everything a config would be
+created from. Until one is created, the agent keeps running exactly as the code says.
+
+It reports **whether or not a config resolved**, and `agent_control.resolution_reason` on the span
+says which: a `'code_default'` baseline is one Logfire can offer to create a config from, and a
+`'resolved'` one is how the editor knows whether the baseline it stored still matches the code it is
+showing changes against. An agent that reported only while unconfigured would go quiet the moment you
+configured it, and the baseline you diff against would describe the deployment it was created from.
 
 The hint is emitted **once per process per agent**, on the first model request that has a baseline to
 describe. So an agent that never reaches a model reports nothing, and a restart after a code change

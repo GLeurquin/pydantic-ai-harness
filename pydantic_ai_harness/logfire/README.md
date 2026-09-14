@@ -56,15 +56,24 @@ from `pydantic_ai_harness.logfire`) to read *why* it resolved the way it did (e.
 credential a deployment holds needs `project:read_variables` and nothing more. Creating the variable
 is done in the Logfire UI.
 
-`AgentControl` is the one that does not need you to create it there first. On a run where nothing
-resolves, it emits one `agent_control_config_hint` span carrying the name of the variable the config
-belongs in and an `AgentConfig`-shaped snapshot of the code-side agent (instructions, model,
-effective settings, and each tool's description and parameter descriptions) -- the baseline the
-Logfire UI's override editor and optimizer diff managed values against. Logfire collects those hints,
-shows you the agents in your project that have no config, and creates one from the baseline on
-request. The hint is emitted at most once per process per variable and Logfire instance, on the first
-model request that has a baseline to describe, so an agent that never reaches a model reports nothing
-and a restart after a code change reports the new baseline.
+`AgentControl` is the one that does not need you to create it there first. It emits one
+`agent_control_config_hint` span carrying the name of the variable the config belongs in and an
+`AgentConfig`-shaped snapshot of the code-side agent (instructions, model, effective settings, and
+each tool's description and parameter descriptions) -- the baseline the Logfire UI's override editor
+and optimizer diff managed values against. Logfire collects those hints, shows you the agents in your
+project that have no config, and creates one from the baseline on request.
+
+Every agent reports, configured or not, and `agent_control.resolution_reason` says which it was: a
+`'code_default'` baseline is one waiting for a config to be created from it, a `'resolved'` one is how
+the editor tells a stored baseline that still matches the code from one the code has moved past. An
+agent that reported only while unconfigured would stop the moment somebody configured it, and its
+stored baseline would describe that day's deployment forever. The platform deduplicates against the
+variables that already exist either way: this SDK cannot tell an unknown variable from one with
+nothing published at the label it asked for.
+
+The hint is emitted at most once per process per variable and Logfire instance, on the first model
+request that has a baseline to describe, so an agent that never reaches a model reports nothing and a
+restart after a code change reports the new baseline.
 
 Because a hint travels the span pipeline rather than the variables API, three things follow: a process
 holding only a span-write token can still register an agent, the code baseline can never overwrite a
@@ -512,10 +521,13 @@ reach it.
   tool no toolset advertises (the drift case: the tool was removed or renamed in code), an instruction
   entry whose `id` no block carries -- or only a per-request block carries -- a `parameters` key the
   tool has no parameter for, a rename another advertised tool already answers to, a `settings` key
-  this version of the contract has no field for, and a `timeout` that is not a budget a request can
-  be given. `'warn'` (the default) emits a `UserWarning` once per process, at the
-  point the entry would have been applied; `'error'` raises `UserError` with the same message there,
-  failing the run; `'ignore'` applies nothing and says nothing. Warning rather than raising is the
+  this version of the contract has no field for, a top-level key it has no section for at all, and a
+  `timeout` that is not a budget a request can be given. `'warn'` (the default) emits a
+  `UserWarning` once per process, at the point the request is assembled; `'error'` raises `UserError`
+  naming every entry that request could not apply, failing the run; `'ignore'` applies nothing and
+  says nothing. Every section is judged
+  before any of it is reported, so the strictest policy is also the most complete one rather than a
+  report on whichever section the agent graph reached first. Warning rather than raising is the
   default because tool availability is dynamic: one config is applied across deployments that need
   not all install the same toolsets, and a toolset can advertise different tools from one request to
   the next, so an entry that reaches nothing now is not necessarily wrong.
@@ -530,14 +542,16 @@ reach it.
 - **Adoption reporting:** for the run's duration, `logfire.managed.applied_sections` baggage names
   the sections the capability applied (e.g. `instructions,settings`), which the Logfire UI reads to
   distinguish a wired-up managed agent from one whose config resolves but isn't applied. `model` is
-  reported when present even if a call-site `run(model=...)` outranked it that run. An agent with no
-  config reports itself instead, on an `agent_control_config_hint` span: see the top of this README.
-- **Telemetry:** one span, `agent_control_config_hint`, emitted at most once per process per variable
-  and only when a run resolved no config. It carries `agent_control.variable_name`,
+  reported when present even if a call-site `run(model=...)` outranked it that run. What the agent
+  says in code is reported alongside it, on an `agent_control_config_hint` span: see the top of this
+  README.
+- **Telemetry:** one span, `agent_control_config_hint`, emitted at most once per process per variable,
+  whether or not a config resolved. It carries `agent_control.variable_name`,
   `agent_control.agent_name`, `agent_control.framework`, `agent_control.baseline_source`,
-  `agent_control.schema_sha256`, `agent_control.baseline`, `agent_control.baseline_reduction`, and
-  `agent_control.baseline_bytes`. It is emitted on the Logfire instance the variable belongs to
-  rather than on the run's tracer, because it is addressed to the project that would hold the config
+  `agent_control.schema_sha256`, `agent_control.baseline`, `agent_control.baseline_reduction`,
+  `agent_control.baseline_bytes`, and `agent_control.resolution_reason`. It is emitted on the Logfire
+  instance the variable belongs to rather than on the run's tracer, because it is addressed to the
+  project that would hold the config
   and has to arrive whether or not core's instrumentation is active -- and as a span rather than a
   log record, because a log below the configured `min_level` is dropped and this signal is a contract
   with the Logfire UI. Everything else this capability does is already covered by core's spans and
@@ -557,9 +571,10 @@ reach it.
   entry that doesn't validate (an empty text, an entry naming neither what nor where) drops just that
   block -- each with a warning naming the offending value, emitted once per process so a per-run
   resolution can't turn it into noise. Everything else in the config still applies. A malformed
-  settings value drops independently, a settings key this SDK has no field for is dropped and
-  reported under `on_unmatched`, and a wrong instructions, settings, or tool-definitions container
-  drops only that section. Each list entry is a unit of degradation for the same reason: it addresses
+  settings value drops independently, a settings key this SDK has no field for -- or a whole
+  top-level key it has no section for -- is dropped and reported under `on_unmatched`, and a wrong
+  instructions, settings, or tool-definitions container drops only that section. Each list entry is
+  a unit of degradation for the same reason: it addresses
   exactly one thing, so dropping it costs exactly that thing. The alternative isn't stricter, it's
   blunter: an `AgentConfig` that fails validation falls back to the code-defined agent *whole*, so one
   unfamiliar enum value would silently un-manage the instructions, the model, and every tool override
