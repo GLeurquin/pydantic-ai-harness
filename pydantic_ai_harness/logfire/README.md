@@ -52,29 +52,29 @@ span of the run, so traces always show which version produced which behavior. Ea
 from `pydantic_ai_harness.logfire`) to read *why* it resolved the way it did (e.g. a
 `'code_default'` fallback), across logfire SDK versions.
 
-**Auto-create on first use:** when the backing variable doesn't exist in Logfire yet, it is
-created in the background on first use -- with the payload's JSON schema and description -- so the
-Logfire UI becomes the editing surface without a manual create step. Creation happens off the run's
-thread, is attempted at most once per process per variable and Logfire instance, and never blocks or
-fails the run. Because the variable it writes is persistent and visible to everyone with access to
-the project, the outcome is reported into that same Logfire project: a log record on success, and a
-log record plus a `UserWarning` on failure. Opt out per capability with `auto_create=False`.
-Inside a durable workflow or flow, managed values remain readable but auto-create and baseline
-publishing are skipped with one warning: their background threads and remote writes are not replay-safe.
-Create the variable in the Logfire UI, or run the SDK outside the workflow once.
+**These capabilities never write to a variable.** They read a value and nothing else, so the
+credential a deployment holds needs `project:read_variables` and nothing more. Creating the variable
+is done in the Logfire UI.
 
-`AgentControl` additionally publishes the variable's `example` as an `AgentConfig`-shaped snapshot of
-the code-side agent (instructions, model, effective settings, and each tool's description and
-parameter descriptions) -- the baseline the Logfire UI's override editor and optimizer diff managed
-values against. Each component is recorded at the point before `AgentControl` replaces it, so managed
-settings, renamed tools, and managed instructions are not mistaken for code. It publishes in the
-background after the first model request that exposes a new
-snapshot. An unchanged baseline causes no write; a changed one is published at most once per process. The
-provider's current complete definition is copied and only `example` is replaced, preserving labels,
-rollout, overrides, and other metadata. The snapshot is taken from the triggering request, so
-for instructions or a toolset that vary with `deps`, run input, or the step within a run, it is one
-point-in-time sample rather than a description of the agent. An agent that never reaches a model
-request never publishes a baseline.
+`AgentControl` is the one that does not need you to create it there first. On a run where nothing
+resolves, it emits one `agent_control_config_hint` span carrying the name of the variable the config
+belongs in and an `AgentConfig`-shaped snapshot of the code-side agent (instructions, model,
+effective settings, and each tool's description and parameter descriptions) -- the baseline the
+Logfire UI's override editor and optimizer diff managed values against. Logfire collects those hints,
+shows you the agents in your project that have no config, and creates one from the baseline on
+request. The hint is emitted at most once per process per variable and Logfire instance, on the first
+model request that has a baseline to describe, so an agent that never reaches a model reports nothing
+and a restart after a code change reports the new baseline.
+
+Because a hint travels the span pipeline rather than the variables API, three things follow: a process
+holding only a span-write token can still register an agent, the code baseline can never overwrite a
+value a teammate saved in the UI (which a read-modify-write of `example` could), and an agent that
+runs only inside a durable workflow registers like any other one.
+
+Each component of the baseline is recorded at the point before `AgentControl` replaces it, so managed
+settings, renamed tools, and managed instructions are not mistaken for code. The snapshot is taken
+from the triggering request, so for instructions or a toolset that vary with `deps`, run input, or
+the step within a run, it is one point-in-time sample rather than a description of the agent.
 
 Its `instructions` list one entry per code-defined instruction block -- the agent's own text and each
 toolset's, snapshotted before any managed block reaches the request -- each carrying the `id` that
@@ -82,12 +82,14 @@ addresses it and a `dynamic` flag. That is what the UI needs to offer an overrid
 records has no seams in it, so a baseline built from telemetry alone could only ever be copied
 wholesale, and copying it wholesale is exactly [the mistake](#where-your-base-prompt-lives) of
 sending the agent's own text to the model twice with a frozen `Today is <date>` in the middle of it.
+A block computed per request therefore contributes its `id` and its flag and never its rendered text,
+so nothing the run carried reaches the snapshot.
 
-An `example` describes the code rather than being a value to apply -- nothing resolves it -- which is
-what lets publishing default to on: a failed or stale snapshot cannot change a run. Publishing needs
-a token with `project:write_variables`; a missing scope, network failure, or missing variable warns
-once per process and leaves the run untouched. Pass `publish_baseline=False` to disable it, for example
-when the process intentionally uses a read-only variables token.
+Span attributes share a row budget the backend enforces by truncating a long string in place, which
+for JSON produces an attribute that still looks like a string and no longer parses. So the hint holds
+its own budget: a baseline over it loses its `tool_definitions`, and one still over it after that is
+left off entirely. Either way `agent_control.baseline_reduction` on the span says which happened, so
+a partial baseline is partial on the record.
 
 Install the extra:
 
@@ -298,9 +300,9 @@ Logfire instance instead of the module-level default.
   [`targeting_context`](https://logfire.pydantic.dev/docs/reference/advanced/managed-variables/)
   in an outer scope; `ManagedPrompt` only needs `targeting_key`/`attributes` when the key
   comes from the agent's `RunContext`.
-- `prompt__` is reserved for Logfire's first-party Prompt management, so `ManagedPrompt` can't
-  auto-create its variable through the generic write API -- it warns once; create the prompt via
-  the Logfire UI's Prompts flow.
+- `prompt__` is reserved for Logfire's first-party Prompt management, and `ManagedPrompt` creates
+  nothing: create the prompt via the Logfire UI's Prompts flow. Until it exists, the code default is
+  what the agent runs on.
 
 ## `AgentControl`
 
@@ -528,15 +530,27 @@ reach it.
 - **Adoption reporting:** for the run's duration, `logfire.managed.applied_sections` baggage names
   the sections the capability applied (e.g. `instructions,settings`), which the Logfire UI reads to
   distinguish a wired-up managed agent from one whose config resolves but isn't applied. `model` is
-  reported when present even if a call-site `run(model=...)` outranked it that run.
-- **One stored schema, two writers:** the variable can be created by this SDK or by the Logfire
-  Agent Control UI, and whichever gets there first stores the schema that the UI edits against and
-  that Logfire validates every later version of the value against. Both sides therefore write the
-  same hand-maintained schema, `logfire.agent_control.AGENT_CONFIG_JSON_SCHEMA`, which both cores and
-  the UI pin by digest so the three copies cannot drift apart quietly. It stays permissive on
-  purpose: `AgentConfig` ignores keys it doesn't know so a value written by a newer UI degrades to
-  the sections an older SDK understands instead of failing, and a stored schema that rejected those
-  keys would break that by refusing the write.
+  reported when present even if a call-site `run(model=...)` outranked it that run. An agent with no
+  config reports itself instead, on an `agent_control_config_hint` span: see the top of this README.
+- **Telemetry:** one span, `agent_control_config_hint`, emitted at most once per process per variable
+  and only when a run resolved no config. It carries `agent_control.variable_name`,
+  `agent_control.agent_name`, `agent_control.framework`, `agent_control.baseline_source`,
+  `agent_control.schema_sha256`, `agent_control.baseline`, `agent_control.baseline_reduction`, and
+  `agent_control.baseline_bytes`. It is emitted on the Logfire instance the variable belongs to
+  rather than on the run's tracer, because it is addressed to the project that would hold the config
+  and has to arrive whether or not core's instrumentation is active -- and as a span rather than a
+  log record, because a log below the configured `min_level` is dropped and this signal is a contract
+  with the Logfire UI. Everything else this capability does is already covered by core's spans and
+  by the resolved label and version that ride as baggage on all of them.
+- **One stored schema, one writer:** the variable is created by Logfire, which stores the schema the
+  UI edits against and validates every later version of the value against -- the hand-maintained
+  `logfire.agent_control.AGENT_CONFIG_JSON_SCHEMA`, which both cores and the UI pin by digest so the
+  copies cannot drift apart quietly. A hint carries that digest as `agent_control.schema_sha256`
+  rather than the schema itself, so Logfire stores the schema for the contract version the baseline
+  was built against instead of guessing. The schema stays permissive on purpose: `AgentConfig`
+  ignores keys it doesn't know, so a value written by a newer UI degrades to the sections an older
+  SDK understands instead of failing, and a stored schema that rejected those keys would break that
+  by refusing the write.
 - **Forward compatibility covers values, not just keys:** a `thinking` effort level that a newer
   Pydantic AI accepts and this SDK has never heard of drops just that setting; a tool override that
   doesn't validate (a missing `name`, an empty `new_name`) drops just that override; an instruction

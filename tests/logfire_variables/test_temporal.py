@@ -1,4 +1,11 @@
-"""Temporal coverage for AgentControl's workflow-side read-only behavior."""
+"""Temporal coverage for what `AgentControl` does from inside a workflow.
+
+Registration used to be the one thing an agent could not do from a workflow: it wrote a variable from
+a background thread, which is not replay-safe, so the capability skipped it and the docs told you to
+run the agent outside the workflow once. A hint is a span, and emitting one is exactly what a run
+inside a workflow already does for everything else -- so a workflow-only agent now registers like any
+other.
+"""
 
 from __future__ import annotations
 
@@ -55,7 +62,7 @@ def _model(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
 agent_control_agent = Agent(
     FunctionModel(_model),
     name='agent_control_temporal_agent',
-    capabilities=[AgentControl(publish_baseline=True, auto_create=True), TemporalDurability()],
+    capabilities=[AgentControl(), TemporalDurability()],
 )
 
 
@@ -79,19 +86,29 @@ class AgentControlWorkflow:
         return str((await agent_control_agent.run(prompt)).output)
 
 
-async def test_agent_control_skips_write_backs_in_temporal_workflow(client: Client, capfire: CaptureLogfire) -> None:
-    with pytest.warns(UserWarning, match='Skipping the write-back'):
-        async with Worker(
-            client,
+async def test_agent_control_reports_an_unconfigured_agent_from_a_temporal_workflow(
+    client: Client, capfire: CaptureLogfire
+) -> None:
+    async with Worker(
+        client,
+        task_queue=TASK_QUEUE,
+        workflows=[AgentControlWorkflow],
+        plugins=[AgentPlugin(agent_control_agent)],
+        workflow_runner=_workflow_runner(),
+    ):
+        result = await client.execute_workflow(
+            AgentControlWorkflow.run,
+            args=['hello'],
+            id='test_agent_control_temporal_config_hint',
             task_queue=TASK_QUEUE,
-            workflows=[AgentControlWorkflow],
-            plugins=[AgentPlugin(agent_control_agent)],
-            workflow_runner=_workflow_runner(),
-        ):
-            result = await client.execute_workflow(
-                AgentControlWorkflow.run,
-                args=['hello'],
-                id='test_agent_control_temporal_write_back',
-                task_queue=TASK_QUEUE,
-            )
+        )
     assert result == 'done'
+
+    hints = [
+        span['attributes']
+        for span in capfire.exporter.exported_spans_as_dict()
+        if span['name'] == 'agent_control_config_hint'
+    ]
+    assert [attributes['agent_control.variable_name'] for attributes in hints] == [
+        'agent__agent_control_temporal_agent'
+    ]

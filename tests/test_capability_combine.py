@@ -235,8 +235,8 @@ COMBINE_POLICY: dict[str, Policy] = {
     'AgentControl': Combines(
         'one managed config per agent; a second resolution would fight the first over model and settings',
         lambda: (
-            AgentControl[Any](name='alpha', auto_create=False),
-            AgentControl[Any](name='beta', auto_create=False, render_template=True),
+            AgentControl[Any](name='alpha'),
+            AgentControl[Any](name='beta', render_template=True),
         ),
         _check_agent_control,
     ),

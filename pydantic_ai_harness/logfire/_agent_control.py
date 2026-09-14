@@ -4,8 +4,12 @@ The contract itself -- what an `AgentConfig` holds, how leniently it validates, 
 value does to a request -- lives in [`logfire.agent_control`][], shared by every framework adapter and
 by the Logfire UI. This module is the Pydantic AI half of it: the capability wiring, the toolset that
 carries managed definitions to the model, the bridge between the contract's string block ids and
-[`InstructionPart.id`][pydantic_ai.messages.InstructionPart.id], and the write-backs a Logfire
-managed variable needs.
+[`InstructionPart.id`][pydantic_ai.messages.InstructionPart.id], and the hint span an
+unconfigured agent reports itself with.
+
+Nothing here writes to a Logfire variable. An agent with no published config says so on a span
+carrying its code baseline, and promoting that into a real variable is a Logfire-side flow -- so a
+deployment needs no write scope, and the code baseline can never race an edit saved in the UI.
 """
 
 from __future__ import annotations
@@ -16,13 +20,13 @@ import warnings
 from collections.abc import Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import logfire
 from logfire.agent_control import (
-    AGENT_CONFIG_JSON_SCHEMA,
     AGENT_VARIABLE_PREFIX,
     MAX_TIMEOUT_SECONDS,
+    SCHEMA_SHA256,
     AgentConfig,
     Block,
     OnUnmatched,
@@ -35,7 +39,6 @@ from logfire.agent_control import (
     is_representable_timeout,
 )
 from logfire.variables import Variable
-from logfire.variables.abstract import NoOpVariableProvider
 from pydantic_ai import AbstractToolset, RunContext, TemplateStr, ToolDefinition, WrapperToolset
 from pydantic_ai.capabilities import AbstractCapability, CapabilityOrdering, CombinedCapability
 from pydantic_ai.exceptions import UserError
@@ -47,8 +50,7 @@ from pydantic_ai.toolsets.abstract import ToolsetTool
 
 from pydantic_ai_harness.logfire._managed_variable import (
     ManagedVariableCapability,
-    _in_durable_context,  # pyright: ignore[reportPrivateUsage]
-    _warn_durable_write_skipped,  # pyright: ignore[reportPrivateUsage]
+    resolution_reason,
 )
 
 if TYPE_CHECKING:
@@ -75,11 +77,53 @@ _ROUTES_TO_METADATA_KEY = '__agent_control_routes_to__'
 # Drop warnings already emitted in this process, keyed by the message itself. See `_warn_dropped`.
 _warned_drops: set[str] = set()
 
-# Destinations handed to a baseline publisher in this process. Marking before the thread starts
-# prevents concurrent first requests from scheduling duplicate work; a failure is not retried by
-# every later run.
-_baseline_publish_attempted: set[tuple[logfire.Logfire, str]] = set()
-_baseline_publish_lock = threading.Lock()
+# Destinations already hinted in this process. The key is the Logfire instance the config would be
+# created in as well as the variable's name, so a process serving two Logfire projects reports the
+# agent to each of them rather than letting the first one it touched stand in for both.
+_config_hint_emitted: set[tuple[logfire.Logfire, str]] = set()
+_config_hint_lock = threading.Lock()
+
+_CONFIG_HINT_SPAN_NAME = 'agent_control_config_hint'
+"""The span an unconfigured agent reports itself on, and the name a Logfire-side query selects it by.
+
+Static and separate from the message, so the message can be reworded without moving what the platform
+indexes on. The attributes it carries are documented on `_emit_config_hint`.
+"""
+
+_CONFIG_HINT_MESSAGE = 'Agent Control found no config for this agent'
+"""The hint span's message. The agent it is about is the trace it sits in, and the variable it names
+is an attribute, so the message stays the same string for every agent."""
+
+_FRAMEWORK = 'pydantic-ai'
+"""Which Agent Control SDK produced a hint.
+
+The contract is shared with the TypeScript cores and the Logfire UI, and the ids a baseline addresses
+its instruction blocks by are each implementation's own, so a consumer has to know whose baseline it
+is reading.
+"""
+
+_MAX_BASELINE_BYTES = 1 << 20
+"""How much serialized baseline a hint span will carry, in UTF-8 bytes.
+
+Span attributes share a row budget in the low tens of megabytes, and the backend enforces it by
+truncating a long string *in place* -- which for JSON means an attribute that still looks like a
+string and no longer parses. So the budget is enforced here instead, an order of magnitude under the
+row's, with room left for the rest of the span and for a consumer's own overhead. A baseline over it
+is reduced by whole sections rather than cut mid-string; see `_serialize_baseline`.
+"""
+
+BaselineReduction = Literal['none', 'tool_definitions', 'omitted']
+"""What a baseline gave up to fit `_MAX_BASELINE_BYTES`, as `agent_control.baseline_reduction` reports it."""
+
+_RESOLVED_REASONS = frozenset({'resolved', 'context_override'})
+"""Resolution reasons that mean a config actually reached the run, so there is nothing to hint about.
+
+Every other reason -- an unknown variable, a variable with no targeted value, no provider at all,
+a value that failed to validate -- leaves the run on the code-defined agent, which is the state a
+hint reports. logfire collapses the first three into one `'code_default'` reason, so this is stated
+as the values to *exclude*: a reason this SDK has never heard of is one it should not read as "a
+config is in force".
+"""
 
 
 def _warn_dropped(message: str) -> None:
@@ -132,44 +176,40 @@ def _report_unapplied(policy: OnUnmatched, entries: Sequence[UnappliedEntry]) ->
         _report_unmatched(policy, entry.message)
 
 
-def _reset_baseline_publish_guard() -> None:  # pyright: ignore[reportUnusedFunction]
-    """Clear baseline publishing process state. Intended for tests only."""
-    with _baseline_publish_lock:
-        _baseline_publish_attempted.clear()
+def _reset_config_hint_guard() -> None:  # pyright: ignore[reportUnusedFunction]
+    """Clear the once-per-process hint guard. Intended for tests only."""
+    with _config_hint_lock:
+        _config_hint_emitted.clear()
 
 
-def _spawn_baseline_publish(variable: Variable[Any], example: str) -> None:
-    """Move the provider read and targeted write off the model request's thread."""
-    threading.Thread(target=_publish_baseline, args=(variable, example), daemon=True).start()
+def _serialize_baseline(baseline: AgentConfig) -> tuple[str | None, BaselineReduction, int]:
+    """Serialize a baseline to fit `_MAX_BASELINE_BYTES`, dropping whole sections when it does not.
 
+    Returns the JSON to put on the hint span (`None` when even the reduced baseline does not fit),
+    which reduction was applied, and the full baseline's size in UTF-8 bytes before any of it.
 
-def _publish_baseline(variable: Variable[Any], example: str) -> None:
-    """Update only the `example` on the provider's current complete variable definition.
-
-    Read-modify-write, because the provider offers nothing narrower: `update_variable` PUTs the whole
-    definition to `/v1/variables/{name}/` and takes no revision or `If-Match` input, so an edit saved
-    in the Logfire UI between the read and the write is lost. The window is one HTTP round trip, the
-    publish runs at most once per process per variable, and it returns early when `example` already
-    matches -- but the race is real and cannot be closed from this side. Narrowing it needs a partial
-    write or a conditional one on the platform API: https://github.com/pydantic/pydantic-ai-harness/issues/565
+    Reduction drops `tool_definitions` first and then gives up, rather than trimming text to a
+    budget. The contract already bounds a single instruction block, so a baseline this large is one
+    with an unbounded *number* of things in it, and tool definitions are where that goes: every
+    advertised tool, its description, and an entry per parameter. They are also the section a config
+    needs least -- the editor can offer a tool override without one, while a baseline with no
+    instructions has nothing to show at all. Either way the result is a whole, valid `AgentConfig`
+    and the reduction is named on the span, so a consumer reads a baseline that is complete or
+    knowingly partial, never one that parses into something the agent does not do.
     """
-    provider = variable.logfire_instance.config.get_variable_provider()
-    try:
-        config = provider.get_variable_config(variable.name)
-        if config is None:
-            if isinstance(provider, NoOpVariableProvider):
-                return
-            raise LookupError(f'variable {variable.name!r} was not found')
-        if config.example == example:
-            return
-        provider.update_variable(variable.name, config.model_copy(update={'example': example}))
-    except Exception as exc:
-        variable.logfire_instance.warn(
-            'Failed to publish the code baseline for Logfire managed variable {variable_name}',
-            variable_name=variable.name,
-            _exc_info=True,
-        )
-        warnings.warn(f'Failed to publish the code baseline for Logfire managed variable {variable.name!r}: {exc}')
+    serialized = _dump(baseline)
+    size = len(serialized.encode())
+    if size <= _MAX_BASELINE_BYTES:
+        return serialized, 'none', size
+    reduced = _dump(baseline.model_copy(update={'tool_definitions': None}))
+    if len(reduced.encode()) <= _MAX_BASELINE_BYTES:
+        return reduced, 'tool_definitions', size
+    return None, 'omitted', size
+
+
+def _dump(baseline: AgentConfig) -> str:
+    """The baseline as the JSON a hint carries, indented the way a variable's `example` is read."""
+    return json.dumps(baseline.model_dump(exclude_none=True), indent=2)
 
 
 def _toolset_key(toolset: AbstractToolset[Any]) -> str:
@@ -361,19 +401,19 @@ class AgentControl(ManagedVariableCapability[AgentDepsT, AgentConfig]):
     Missing, invalid, or unreachable remote values degrade to the code-defined agent through Logfire's
     resolution fallback, which is why a value the contract doesn't recognize degrades the narrowest
     unit that contains it -- one setting, one tool override, one section -- rather than the whole
-    config. If the provider does not know the variable, auto-create is attempted once per process in
-    the background, storing the contract's stored JSON schema on the variable and logging the creation
-    to Logfire.
+    config.
 
-    Its `example` is an `AgentConfig`-shaped snapshot of the code-side agent taken from whichever model
-    request happens to come first in the process. The Logfire UI presents that snapshot as the code
-    baseline to diff managed values against, so it is worth knowing what it really is: for instructions
-    or a toolset that vary with `deps`, run input, or the step within a run, it is one point-in-time
-    sample rather than a description of the agent. An agent that never reaches a model request never
-    auto-creates at all. Its `instructions` are the code-defined blocks, listed separately with the
-    `id` that addresses each block and a `dynamic` flag. This lets the UI offer an override per block
-    instead of one copy-the-whole-prompt button that would produce exactly the duplication described
-    above.
+    Nothing here ever writes to a variable. A run that resolves no config emits one
+    `agent_control_config_hint` span per process carrying an `AgentConfig`-shaped snapshot of the
+    code-side agent, and turning that into a real config is a Logfire-side flow the project's owner
+    clicks through -- so the credential this needs is read-only, and a code baseline can never
+    overwrite something saved in the UI. The snapshot is taken from whichever model request comes
+    first in the process, so for instructions or a toolset that vary with `deps`, run input, or the
+    step within a run it is one point-in-time sample rather than a description of the agent, and an
+    agent that never reaches a model request reports nothing. Its `instructions` are the code-defined
+    blocks, listed separately with the `id` that addresses each block and a `dynamic` flag. This lets
+    the UI offer an override per block instead of one copy-the-whole-prompt button that would produce
+    exactly the duplication described above.
 
     ```python
     import logfire
@@ -413,13 +453,6 @@ class AgentControl(ManagedVariableCapability[AgentDepsT, AgentConfig]):
     An entry that addresses an existing block by `id` is applied to the assembled request and is never
     templated: it replaces a block with exactly the text that was published.
     """
-    publish_baseline: bool = True
-    """Publish the code-side agent snapshot to the variable's `example` when it changes.
-
-    Enabled by default because `example` is documentation for the Logfire editor and is never resolved
-    or applied to a run. A failed or stale publish therefore cannot change agent behavior. Disable it
-    when the variables token is intentionally read-only or code must not update variable metadata.
-    """
     on_unmatched: OnUnmatched = field(default='warn', kw_only=True)
     """What to do with a published entry that reaches nothing in this deployment.
 
@@ -448,7 +481,6 @@ class AgentControl(ManagedVariableCapability[AgentDepsT, AgentConfig]):
     # which is where the framework reads it from.
     id: str | None = field(default=_AGENT_CONTROL_ID, kw_only=True)
 
-    _auto_create_in_wrap_run: ClassVar[bool] = False
     _selection_resolved: ContextVar[ResolvedVariable[AgentConfig] | None] = field(init=False, repr=False)
     _code_model: ContextVar[str | None] = field(init=False, repr=False)
     _code_settings: ContextVar[Mapping[str, Any] | None] = field(init=False, repr=False)
@@ -475,7 +507,6 @@ class AgentControl(ManagedVariableCapability[AgentDepsT, AgentConfig]):
             prefix=AGENT_VARIABLE_PREFIX,
             value_type=AgentConfig,
             default=AgentConfig(),
-            json_schema=AGENT_CONFIG_JSON_SCHEMA,
         )
 
     def for_agent(self, agent: AbstractAgent[AgentDepsT, Any]) -> AbstractCapability[AgentDepsT]:
@@ -592,13 +623,13 @@ class AgentControl(ManagedVariableCapability[AgentDepsT, AgentConfig]):
     async def before_model_request(
         self, ctx: RunContext[AgentDepsT], request_context: ModelRequestContext
     ) -> ModelRequestContext:
-        """Capture the code-side baseline from the first assembled request.
+        """Report an agent with no config, with the code-side baseline from the first assembled request.
 
         Runs on this outermost half deliberately: the snapshot has to describe the agent *before*
         managed values reach it, and the overriding half applies the managed instructions from the
         innermost position, after this. The request is left untouched here.
         """
-        self._publish_request_baseline(ctx, request_context)
+        self._emit_config_hint(ctx, request_context)
         return request_context
 
     def _managed_settings(self, config: AgentConfig) -> ModelSettings:
@@ -698,50 +729,88 @@ class AgentControl(ManagedVariableCapability[AgentDepsT, AgentConfig]):
             return InstructionPart(content=text)
         return InstructionPart(content=TemplateStr[AgentDepsT](text).render(ctx.deps), dynamic=True)
 
-    def _publish_request_baseline(self, ctx: RunContext[AgentDepsT], request_context: ModelRequestContext) -> None:
-        """Publish the code-side `AgentConfig` baseline at the first eligible model request.
+    def _emit_config_hint(self, ctx: RunContext[AgentDepsT], request_context: ModelRequestContext) -> None:
+        """Report an agent Logfire holds no config for, once per process, on one span.
 
-        Model, settings, and tool definitions are captured at their override sites before managed
-        behavior replaces them, and the instructions are the ones assembled before the overriding half
-        applies anything. The result is what the agent would do with `AgentControl` removed, without
-        reverse-engineering an already modified request.
+        This is how an agent gets onto the Agent Control page. The SDK does not create the variable
+        itself: a run that resolved nothing says so, carrying everything a config would be created
+        from, and Logfire turns a hint into a real variable when someone asks it to. That keeps the
+        deployment's credential read-only, and it keeps a snapshot of the code from ever overwriting
+        a value a teammate saved in the UI.
 
-        Instructions are snapshotted per block, straight off
-        [`instruction_parts`][pydantic_ai.models.ModelRequestParameters.instruction_parts], keeping each
-        block's `id` and `dynamic` flag. That is the whole reason the UI can offer an override at all:
-        the joined prompt telemetry records has no seams in it, so a baseline built from that could only
-        ever be copied wholesale -- which, since managed instructions *add*, is how you get the agent's
-        own text sent to the model twice with a frozen `Today is <date>` in the middle of it.
+        The span is named `agent_control_config_hint` and carries:
 
-        Dynamic instructions and dynamic toolsets make the snapshot a sample of one request. Only the
-        first request in a process is eligible, so request-to-request variation does not turn into
-        writes from live traffic. A new process publishes a changed deployed baseline.
+        - `agent_control.variable_name` -- the `agent__<key>` variable the config belongs in.
+        - `agent_control.agent_name` -- the agent's `name` as written in code. The variable name is
+          derived from it lossily, so this is what says *which* agent landed on that key. Left off
+          when the capability was given a variable name of its own and the agent has no name at all:
+          absent says "there is none", where a null-valued attribute would only raise the question of
+          whether that is a name.
+        - `agent_control.framework` -- which Agent Control SDK produced the hint; see `_FRAMEWORK`.
+        - `agent_control.baseline_source` -- `'code'`, the contract's
+          [`BaselineSource`][logfire.agent_control.BaselineSource] for a baseline read off the running
+          code rather than observed from traffic.
+        - `agent_control.schema_sha256` -- the contract schema this baseline was built against, so a
+          consumer stores the matching JSON schema on the variable rather than guessing, and can tell
+          a baseline from an older SDK from one it wrote the schema for.
+        - `agent_control.baseline` -- the `AgentConfig` snapshot, as the JSON a variable's `example`
+          holds. Absent when `agent_control.baseline_reduction` is `'omitted'`.
+        - `agent_control.baseline_reduction` -- `'none'`, `'tool_definitions'`, or `'omitted'`: what
+          the baseline had to give up to fit `_MAX_BASELINE_BYTES`. Always present, so a partial
+          baseline is partial on the record rather than by inference.
+        - `agent_control.baseline_bytes` -- the full baseline's UTF-8 size before any reduction.
 
-        An `example` is a description of the code, not a value to apply -- nothing resolves it -- which
-        is what lets it use these same fields to say *what exists* rather than *what to change*.
+        Attributes rather than one nested blob because the hint is a contract with a consumer that
+        queries it: a name it filters on and a size it can threshold have to be columns, and the
+        baseline is the only one of them that is a document. They are prefixed with the capability's
+        name the way every other harness capability's are.
+
+        Emitted on the variable's own Logfire instance rather than on `ctx.tracer`, which is where
+        this capability's operational telemetry would go. A hint is addressed to the project that
+        would hold the config -- a process serving two projects has to reach each -- and it must not
+        depend on core instrumentation being active to arrive. Emitted as a span rather than a log
+        record for one more reason: a log below the configured `min_level` is dropped, and a signal
+        the platform contract depends on cannot be something a logging setting silently withholds.
+
+        The baseline quotes the agent's own instructions and tool descriptions, and is *not* held
+        back by `trace_include_content`. What that flag governs is run content -- prompts, tool
+        arguments, outputs -- and the contract's baseline builder already excludes every run-derived
+        value: a dynamic block contributes its seam and never its rendering, and settings are reduced
+        to the canonical keys, which is what keeps `extra_headers` and `extra_body` out. What remains
+        is the agent as written, and an agent wired to Agent Control is one whose author asked for
+        exactly that text to be editable in this Logfire project.
         """
         resolved = self.resolved
-        if resolved is None or not self.publish_baseline:
+        if resolved is None or resolution_reason(resolved) in _RESOLVED_REASONS:
             return
         # The agent's own variable, not a shared attribute: a nameless capability backs one variable
-        # per agent, so publishing has to name the one this run resolved.
+        # per agent, so the hint has to name the one this run resolved.
         variable = self._ensure_variable(ctx)
-        if _in_durable_context(ctx):
-            _warn_durable_write_skipped(variable)
-            return
+        key = (variable.logfire_instance, variable.name)
+        with _config_hint_lock:
+            if key in _config_hint_emitted:
+                return
+            _config_hint_emitted.add(key)
         # Nothing about describing the agent raises: code-side text the contract cannot hold -- a
         # block past the length bound, a setting it has no word for -- is left out of the baseline and
-        # warned about, so an agent whose own prompt is too big to publish keeps making requests.
-        serialized = json.dumps(self._code_baseline(request_context).model_dump(exclude_none=True), indent=2)
-        key = (variable.logfire_instance, variable.name)
-        with _baseline_publish_lock:
-            if key in _baseline_publish_attempted:
-                return
-            _baseline_publish_attempted.add(key)
-        if self._should_auto_create_for(variable, resolved):
-            self._maybe_auto_create(variable, example=serialized, ctx=ctx)
-            return
-        _spawn_baseline_publish(variable, serialized)
+        # warned about, so an agent whose own prompt is too big to describe keeps making requests.
+        baseline, reduction, size = _serialize_baseline(self._code_baseline(request_context))
+        attributes: dict[str, Any] = {
+            'agent_control.variable_name': variable.name,
+            'agent_control.framework': _FRAMEWORK,
+            'agent_control.baseline_source': 'code',
+            'agent_control.schema_sha256': SCHEMA_SHA256,
+            'agent_control.baseline_reduction': reduction,
+            'agent_control.baseline_bytes': size,
+        }
+        agent = ctx.agent
+        if agent is not None and agent.name:
+            attributes['agent_control.agent_name'] = agent.name
+        if baseline is not None:
+            attributes['agent_control.baseline'] = baseline
+        # A decision that took no time, so the span opens and closes on the spot.
+        with variable.logfire_instance.span(_CONFIG_HINT_MESSAGE, _span_name=_CONFIG_HINT_SPAN_NAME, **attributes):
+            pass
 
     def _code_baseline(self, request_context: ModelRequestContext) -> AgentConfig:
         """The agent as written: what it would do with `AgentControl` removed.

@@ -13,7 +13,7 @@ keeps its variable registry across `configure()` calls.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from typing import Any
 
@@ -21,6 +21,7 @@ import logfire
 import pytest
 from logfire.agent_control._reporting import reset_warned_messages
 from logfire.testing import CaptureLogfire
+from logfire.variables.local import LocalVariableProvider
 from pydantic import BaseModel
 
 from pydantic_ai_harness.logfire import _agent_control
@@ -34,18 +35,45 @@ _LOGFIRE_CREDENTIAL_VARS = ('LOGFIRE_TOKEN', 'LOGFIRE_API_KEY')
 def _forget_process_state() -> Iterator[None]:
     """Start each test with the once-per-process guards empty, on both sides of the contract.
 
-    A drop warns once per process and a baseline publishes once per process, by design, so without
-    this a test's outcome would depend on which tests ran before it. The parser's guard lives in
-    `logfire.agent_control` and the capability's in this package; the two never emit the same
+    A drop warns once per process and an unconfigured agent is reported once per process, by design,
+    so without this a test's outcome would depend on which tests ran before it. The parser's guard
+    lives in `logfire.agent_control` and the capability's in this package; the two never emit the same
     message, and a test that counts warnings has to reach both.
     """
     reset_warned_messages()
     _agent_control._warned_drops.clear()
-    _agent_control._reset_baseline_publish_guard()
+    _agent_control._reset_config_hint_guard()
     yield
     reset_warned_messages()
     _agent_control._warned_drops.clear()
-    _agent_control._reset_baseline_publish_guard()
+    _agent_control._reset_config_hint_guard()
+
+
+@pytest.fixture(autouse=True)
+def _refuse_variable_writes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail any test in which a managed capability writes to a variable.
+
+    These capabilities read a variable's value and nothing else. An agent Logfire holds no config for
+    reports itself on a span and Logfire creates the config from that, so a deployment needs no write
+    scope and a code baseline can never overwrite an edit saved in the UI. Stated as a fixture over
+    the whole package rather than as one test, because the claim is about every code path here rather
+    than about the one a single test happens to take.
+
+    Only the writes are refused. `get_variable_config` reads, and resolution itself calls it whenever
+    a `label` is pinned -- `get_serialized_value_for_label` is implemented on top of it.
+    """
+
+    def refuse(method: str) -> Callable[..., Any]:
+        def refused(self: LocalVariableProvider, *args: Any, **kwargs: Any) -> Any:
+            raise AssertionError(
+                f'A managed capability called {method!r} on the variable provider. '
+                'Reading a value is the only thing these capabilities may do to a variable.'
+            )
+
+        return refused
+
+    for method in ('create_variable', 'update_variable', 'delete_variable'):
+        monkeypatch.setattr(LocalVariableProvider, method, refuse(method))
 
 
 @pytest.fixture(autouse=True, scope='package')

@@ -14,21 +14,19 @@ import warnings
 from collections.abc import Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, ClassVar, Generic
+from typing import TYPE_CHECKING, Any, Generic
 
 import logfire
 from logfire.agent_control import normalize_agent_name
-from logfire.variables import Variable, VariableAlreadyExistsError
-from logfire.variables.abstract import NoOpVariableProvider
+from logfire.variables import Variable
 from pydantic_ai.capabilities import AbstractCapability, CapabilityOrdering, Instrumentation
-from pydantic_ai.capabilities.abstract import leaf_capabilities
 from pydantic_ai.exceptions import UserError
 from pydantic_ai.tools import AgentDepsT, RunContext
 from typing_extensions import TypeVar
 
 if TYPE_CHECKING:
     from logfire import Logfire
-    from logfire.variables import ResolvedVariable, VariableConfig
+    from logfire.variables import ResolvedVariable
     from pydantic_ai.agent.abstract import AbstractAgent
     from pydantic_ai.capabilities.abstract import WrapRunHandler
     from pydantic_ai.run import AgentRunResult
@@ -49,101 +47,6 @@ def resolution_reason(resolved: ResolvedVariable[Any]) -> str | None:
     if reason is not None:
         return reason
     return getattr(resolved, '_reason', None)
-
-
-# Variables we have already attempted to auto-create in this process, guarded by a lock. The key is
-# the destination -- the Logfire instance the variable would be created in -- as well as its name, so
-# a process serving more than one Logfire project creates the variable in each of them rather than
-# letting the first one it touched stand in for all of them. The contract is one attempt per process
-# per key: we mark a key when spawning the creation thread (not on success), so a failed create --
-# e.g. a read-only token -- does not retry on every run.
-_auto_create_attempted: set[tuple[Logfire, str]] = set()
-_auto_create_lock = threading.Lock()
-_durable_write_warnings: set[tuple[Logfire, str]] = set()
-
-
-def _auto_create_key(variable: Variable[Any]) -> tuple[Logfire, str]:
-    """The once-per-process guard key for a variable: where it would be created, and under what name."""
-    return (variable.logfire_instance, variable.name)
-
-
-# Resolution reasons that mean "the value fell back to the code default because the provider had no
-# value for it". logfire >= 4.37 collapses the "provider doesn't recognize this variable" case into
-# the general `'code_default'` reason; older SDKs surface `'unrecognized_variable'` directly. We
-# accept both and then confirm the actual cause against the provider (see `_maybe_auto_create_for`).
-_CODE_DEFAULT_REASONS = frozenset({'code_default', 'unrecognized_variable'})
-
-
-def _reset_auto_create_guard() -> None:  # pyright: ignore[reportUnusedFunction]
-    """Clear the once-per-process auto-create guard. Intended for tests only."""
-    with _auto_create_lock:
-        _auto_create_attempted.clear()
-
-
-def _spawn_create(variable: Variable[Any], config: VariableConfig) -> None:
-    """Run the (blocking, sync-HTTP) creation off the run's thread so it never blocks or fails it.
-
-    Isolated as a module-level function so tests can monkeypatch it to run `_create_variable`
-    inline for determinism.
-    """
-    threading.Thread(target=_create_variable, args=(variable, config), daemon=True).start()
-
-
-def _in_durable_context(ctx: RunContext[Any]) -> bool:
-    """Use the active durability capability's engine-specific context detection."""
-    root = ctx.root_capability
-    if root is None:
-        return False
-    return any(getattr(capability, 'in_durable_context', False) is True for capability in leaf_capabilities(root))
-
-
-def _warn_durable_write_skipped(variable: Variable[Any]) -> None:
-    """Explain a skipped workflow-side write once per destination."""
-    key = _auto_create_key(variable)
-    if key in _durable_write_warnings:
-        return
-    _durable_write_warnings.add(key)
-    warnings.warn(
-        f'Skipping the write-back for Logfire managed variable {variable.name!r} inside a durable workflow '
-        'because background threads and remote writes are not replay-safe there. Reading managed config '
-        'still works. Create the variable in the Logfire UI, or run the SDK outside a workflow once.'
-    )
-
-
-def _create_variable(variable: Variable[Any], config: VariableConfig) -> None:
-    """Create the variable in Logfire from its code default, JSON schema, and description.
-
-    The outcome is reported through the Logfire instance the variable belongs to: creation writes a
-    persistent, teammate-visible object into the user's project, so it belongs in the place they are
-    already looking rather than in a `warnings.warn` raised on a daemon thread that no one sees. The
-    failure keeps the warning as well, for local development that exports nowhere.
-
-    Best-effort: an already-existing variable (a race with another process or the UI) is fine, and
-    any other failure is surfaced rather than crashing the background thread.
-    """
-    provider = variable.logfire_instance.config.get_variable_provider()
-    # Duck-type the write path: a provider without it (or without persistence) can't be created into.
-    create = getattr(provider, 'create_variable', None)
-    if not callable(create):  # pragma: no cover
-        return
-    try:
-        create(config)
-    except VariableAlreadyExistsError:
-        # The variable already exists server-side (another process or the UI created it first).
-        pass
-    except Exception as exc:
-        variable.logfire_instance.warn(
-            'Failed to auto-create Logfire managed variable {variable_name}',
-            variable_name=variable.name,
-            _exc_info=True,
-        )
-        warnings.warn(f'Failed to auto-create Logfire managed variable {variable.name!r}: {exc}')
-    else:
-        variable.logfire_instance.info(
-            'Created Logfire managed variable {variable_name} from the code default; '
-            'set a value in Logfire to manage this agent from there',
-            variable_name=variable.name,
-        )
 
 
 @dataclass(frozen=True)
@@ -193,21 +96,6 @@ class ManagedVariableCapability(AbstractCapability[AgentDepsT], Generic[AgentDep
     """Logfire instance to resolve the variable on. When `None`, the global default instance is
     used. Ignored when the capability is given a pre-built `Variable`."""
 
-    auto_create: bool = field(default=True, kw_only=True)
-    """Whether to create the variable in Logfire the first time it is used but doesn't exist there yet.
-
-    When the variable is unknown to the configured Logfire provider, it is created in the background
-    with the code default as its value (plus the payload's JSON schema and description), so the
-    Logfire UI becomes the editing surface without a manual create-in-UI step. Until someone
-    configures a label there, resolution keeps falling back to the code default. Creation happens
-    off the run's thread and never blocks or fails the run; it is attempted at most once per process
-    per variable and Logfire instance. Set to `False` to opt out.
-
-    Because the variable is persistent and visible to everyone with access to the Logfire project,
-    both outcomes are reported: a successful creation is logged to the same Logfire instance, and a
-    failure is logged there and raised as a `UserWarning`. Creation is triggered by a run that
-    actually resolves the variable, so an agent that is never run creates nothing."""
-
     _variable: Variable[ValueT] = field(init=False, repr=False, compare=False)
     """The managed variable backing this capability. Assigned eagerly in `_setup_variable` for an
     explicit name/`Variable`; for a nameless capability it is left unset until `_ensure_variable`
@@ -226,22 +114,11 @@ class ManagedVariableCapability(AbstractCapability[AgentDepsT], Generic[AgentDep
     instance can back more than one agent -- `SubAgents.shared_capabilities` passes the same object
     to every sub-agent -- and each of them must read its own `<prefix><agent name>`."""
 
-    _json_schema: dict[str, Any] | None = field(init=False, default=None, repr=False, compare=False)
-    """The JSON schema auto-create stores on the variable, when the capability maintains its own.
-
-    `None` keeps the Pydantic-derived schema [`Variable.to_config`][logfire.variables.Variable.to_config]
-    produces, which is right for a payload whose schema is trivially stable (`ManagedPrompt`'s
-    `{'type': 'string'}`). A capability whose stored schema is a contract shared with the Logfire UI
-    passes its own through `_setup_variable` instead."""
-
     _build_lock: threading.Lock = field(init=False, default_factory=threading.Lock, repr=False, compare=False)
     """Guards the lazy build of `_variable` so concurrent first runs don't each construct one."""
 
     _resolved: ContextVar[ResolvedVariable[ValueT] | None] = field(init=False, repr=False, compare=False)
     """Per-run resolution, isolated across concurrent runs via the context variable."""
-
-    _auto_create_in_wrap_run: ClassVar[bool] = True
-    """Whether the base run wrapper triggers auto-create; subclasses with richer config set `False`."""
 
     def _new_resolved(self) -> ContextVar[ResolvedVariable[ValueT] | None]:
         """A fresh per-run resolution context variable; `None` means nothing is resolved yet."""
@@ -254,7 +131,6 @@ class ManagedVariableCapability(AbstractCapability[AgentDepsT], Generic[AgentDep
         prefix: str,
         value_type: type[ValueT],
         default: ValueT,
-        json_schema: dict[str, Any] | None = None,
     ) -> None:
         """Wire up the backing variable from `name`, deferring construction when `name` was omitted.
 
@@ -262,10 +138,7 @@ class ManagedVariableCapability(AbstractCapability[AgentDepsT], Generic[AgentDep
         pre-built [`Variable`][logfire.variables.Variable] is used as-is (with full `get_model`
         support); `None` records the build inputs so the variable is derived from the running agent's
         own `name` on first run-time use (this pydantic-ai version has no construction-time agent hook).
-
-        `json_schema` overrides the schema auto-create stores on the variable; see `_json_schema`.
         """
-        self._json_schema = json_schema
         self._resolved = self._new_resolved()
         if isinstance(name, str):
             self._variable = self._build_managed_variable(name, prefix=prefix, value_type=value_type, default=default)
@@ -405,83 +278,6 @@ class ManagedVariableCapability(AbstractCapability[AgentDepsT], Generic[AgentDep
         """Run outermost so the resolution's baggage envelops the whole run, including the run span."""
         return CapabilityOrdering(position='outermost', wraps=[Instrumentation])
 
-    def _auto_create_config(self, variable: Variable[ValueT], *, example: str | None) -> VariableConfig:
-        """The config auto-create writes: the variable's own, with the capability's schema and example.
-
-        [`Variable.to_config`][logfire.variables.Variable.to_config] derives `json_schema` from the
-        payload's Pydantic type adapter, which tracks both the model's Python types and the Pydantic
-        version that generated them. A capability that maintains its own stored schema (`_json_schema`)
-        substitutes it here, so the persisted contract does not change shape underneath the Logfire UI
-        when either side is upgraded.
-        """
-        updates: dict[str, Any] = {}
-        if self._json_schema is not None:
-            updates['json_schema'] = self._json_schema
-        if example is not None:
-            updates['example'] = example
-        return variable.to_config().model_copy(update=updates)
-
-    def _maybe_auto_create(
-        self, variable: Variable[ValueT], *, example: str | None = None, ctx: RunContext[Any] | None = None
-    ) -> None:
-        """Kick off background creation of the backing variable, at most once per process per key."""
-        if ctx is not None and _in_durable_context(ctx):
-            _warn_durable_write_skipped(variable)
-            return
-        key = _auto_create_key(variable)
-        with _auto_create_lock:
-            if key in _auto_create_attempted:
-                return
-            # Mark before spawning: one attempt per process, so a failed create doesn't retry.
-            _auto_create_attempted.add(key)
-        _spawn_create(variable, self._auto_create_config(variable, example=example))
-
-    def _should_auto_create_for(self, variable: Variable[ValueT], resolved: ResolvedVariable[ValueT]) -> bool:
-        """Whether a configured provider does not recognize this variable and creation is still eligible.
-
-        Auto-create is for exactly one case: a provider is configured but has no entry for this name,
-        so resolution fell back to the code default. logfire >= 4.37 reports that as `'code_default'`
-        (older SDKs as `'unrecognized_variable'`), but `'code_default'` also covers "no provider
-        configured" and "known variable with no targeted value" -- neither of which should create
-        anything. The once-per-process guard is only peeked at here; `_maybe_auto_create` re-checks
-        and marks it under the same lock, making concurrent callers race-safe.
-
-        Takes the variable the caller resolved rather than reading it off the capability: a nameless
-        capability backs one variable per agent, so there is no single `_variable` to read.
-
-        The provider probe is the one remote call on the run thread. Auto-create is documented as
-        best-effort -- an unreachable provider degrades to the code default and never fails a run --
-        so any error it raises means "cannot tell whether this exists", which is answered `False`.
-        """
-        if not self.auto_create or resolution_reason(resolved) not in _CODE_DEFAULT_REASONS:
-            return False
-        with _auto_create_lock:
-            if _auto_create_key(variable) in _auto_create_attempted:
-                return False
-        provider = variable.logfire_instance.config.get_variable_provider()
-        if isinstance(provider, NoOpVariableProvider):
-            return False
-        try:
-            return provider.get_variable_config(variable.name) is None
-        except Exception:
-            return False
-
-    def _maybe_auto_create_for(
-        self, variable: Variable[ValueT], resolved: ResolvedVariable[ValueT], *, ctx: RunContext[Any] | None = None
-    ) -> None:
-        """Trigger background auto-create when a configured provider doesn't recognize the variable yet.
-
-        Auto-create is for exactly one case: a provider is configured but has no entry for this name,
-        so resolution fell back to the code default. logfire >= 4.37 reports that as `'code_default'`
-        (older SDKs as `'unrecognized_variable'`), but `'code_default'` also covers "no provider
-        configured" and "known variable with no targeted value" -- neither of which should create
-        anything. So we confirm against the provider itself: it must be a real (non-`NoOp`) provider
-        that has no config for this name. A `resolved`/`context_override` value isn't a candidate at
-        all, and is filtered out by the reason check up front.
-        """
-        if self._should_auto_create_for(variable, resolved):
-            self._maybe_auto_create(variable, ctx=ctx)
-
     def _resolve(self, ctx: RunContext[AgentDepsT]) -> ResolvedVariable[ValueT]:
         """Resolve the backing variable for this run using the capability's targeting inputs.
 
@@ -506,8 +302,6 @@ class ManagedVariableCapability(AbstractCapability[AgentDepsT], Generic[AgentDep
     async def wrap_run(self, ctx: RunContext[AgentDepsT], *, handler: WrapRunHandler) -> AgentRunResult[Any]:
         """Resolve the variable once and keep its baggage active for the duration of the run."""
         resolved = self._resolve(ctx)
-        if self._auto_create_in_wrap_run:
-            self._maybe_auto_create_for(self._ensure_variable(ctx), resolved, ctx=ctx)
         with resolved:
             token = self._resolved.set(resolved)
             try:

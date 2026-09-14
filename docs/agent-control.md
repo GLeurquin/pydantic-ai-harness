@@ -63,14 +63,17 @@ result = agent.run_sync('Refund my last order.')
 print(result.output)
 ```
 
-That's the whole setup. The agent's `name` is how Logfire matches it to the agent you can already see
-in your traces, and the first run puts it on the Agent Control page with nothing to create by hand.
+The agent's `name` is how Logfire matches it to the agent you can already see in your traces, and
+the first run reports the agent to your project so there is nothing to describe by hand.
 
-Agent Control needs a `LOGFIRE_API_KEY` with the `project:read_variables` and
-`project:write_variables` scopes -- a different credential from the write token that sends spans.
-Instrumentation is worth keeping even if you have it elsewhere: without spans, neither the version
-that produced a given run nor whether the agent is picking its config up at all makes it back to
-Logfire.
+Agent Control needs a `LOGFIRE_API_KEY` with the `project:read_variables` scope -- a different
+credential from the write token that sends spans. Read-only is all it is: nothing here writes to your
+project's variables. Instrumentation is not optional, though: it is how the agent tells Logfire it
+exists at all (see [Registration and the baseline](#registration-and-the-baseline)), and without
+spans neither the version that produced a given run nor whether the agent is picking its config up
+makes it back to Logfire.
+
+That's the whole setup on the code side. Creating the config itself is done in Logfire.
 
 Pinning `label='production'` is the recommended default, for the same
 [prompt-cache reasons](managed-prompt.md#prompt-cache-trade-off) as a managed prompt.
@@ -219,32 +222,39 @@ lets every span of a run agree on the version that produced it.
 
 ## Registration and the baseline
 
-You never have to create anything in Logfire by hand. The two write-backs that make that true both
-run in the background, off the run's thread, and neither can fail or slow a run.
+**Nothing in your process ever writes to a variable.** An agent with no config tells Logfire it
+exists, and creating the config from what it reported happens in Logfire.
 
-**Registering the agent.** On a run where Logfire has no config for this agent yet, `AgentControl`
-creates one, seeded with the code baseline below. It first confirms with Logfire that the agent
-really is unknown -- "there is no config" and "there is no config *for you*" are different answers,
-and only the first should create anything. It is attempted **once per process per agent**, so a
-failed attempt does not retry in a loop. Because what it creates is visible to everyone with access
-to the project, the outcome is reported there: a log record on success, a log record and a
-`UserWarning` on failure. `auto_create=False` opts out.
+**Registering the agent.** On a run that resolves no config, `AgentControl` emits one
+`agent_control_config_hint` span carrying the name of the variable the config belongs in and the code
+baseline below -- everything a config would be created from. Until one is created, the agent keeps
+running exactly as the code says.
+
+The hint is emitted **once per process per agent**, on the first model request that has a baseline to
+describe. So an agent that never reaches a model reports nothing, and a restart after a code change
+reports the new baseline.
+
+Reporting rather than writing is what makes three things true: the credential your deployment holds
+stays read-only, a snapshot of your code can never overwrite a value a teammate saved in Logfire, and
+an agent that only ever runs **inside a durable workflow** (Temporal, DBOS, ...) registers like any
+other one -- a write from a workflow would not be replay-safe, and a span is.
 
 **The baseline.** Logfire's editor shows published values as changes *to something*, and that
 something is a snapshot of what your agent does in code: its prompt block by block, its model, its
 settings, its tool definitions. It is documentation -- never resolved, never applied to a run -- so a
-stale or failed snapshot cannot change what your agent does.
+missing or stale snapshot cannot change what your agent does.
 
-It is captured on the first model request of the process that has one to capture, which means an
-agent that never reaches a model never publishes, and a prompt or toolset that varies with `deps`,
-the run's input, or the step within a run is a point-in-time sample. Publishing is attempted once per
-process per agent, is a no-op when the snapshot already matches what Logfire holds, and writes only
-the baseline -- your published config, labels, and rollout are preserved. `publish_baseline=False`
-opts out, for instance when the process deliberately holds a read-only token.
+It is a snapshot of one request, which matters when things vary: a prompt or toolset that changes
+with `deps`, the run's input, or the step within a run is sampled rather than described. An
+instruction block computed per request contributes that it exists and never what it rendered to, so
+nothing a run carried -- a tenant, a user, a retrieved document -- ends up in the snapshot. Neither do
+the settings the contract has no field for, which is what keeps `extra_headers` and `extra_body` out
+of it.
 
-**Inside a durable workflow** (Temporal, DBOS, ...) published config still applies, but both
-write-backs are skipped with one warning: they write from background threads, which is not
-replay-safe. Run the agent outside the workflow once to get it registered.
+A very large baseline is reduced rather than cut: if it does not fit on a span attribute, its tool
+definitions are left out, and if it still does not fit it is left out entirely. Either way the hint
+says which of the two happened, so a config created from it is never quietly a config for a different
+agent than the one you wrote.
 
 ## Which agent in Logfire it controls
 

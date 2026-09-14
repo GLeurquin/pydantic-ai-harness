@@ -12,20 +12,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, ClassVar, cast
+from typing import Any, cast
 
 import logfire
 import pytest
 from logfire.variables import Variable
-from pydantic_ai import Agent, RunContext
-from pydantic_ai.models.test import TestModel
-from pydantic_ai.usage import RunUsage
 
-from pydantic_ai_harness.logfire._managed_variable import (
-    ManagedVariableCapability,
-    _in_durable_context,
-    resolution_reason,
-)
+from pydantic_ai_harness.logfire._managed_variable import ManagedVariableCapability, resolution_reason
 
 _PREFIX = 'var__'
 
@@ -39,23 +32,6 @@ class _StrVariable(ManagedVariableCapability[None, str]):
     def __post_init__(self) -> None:
         self._resolved = self._new_resolved()
         self._variable = self._build_managed_variable(self.raw_name, prefix=_PREFIX, value_type=str, default='')
-
-
-@dataclass
-class _NoAutoStrVariable(_StrVariable):
-    _auto_create_in_wrap_run: ClassVar[bool] = False
-
-
-def test_context_without_capability_tree_is_not_durable() -> None:
-    ctx = RunContext(deps=None, model=TestModel(), usage=RunUsage())
-    assert not _in_durable_context(ctx)
-
-
-async def test_base_wrap_run_can_disable_auto_create() -> None:
-    capability = _NoAutoStrVariable('no_auto')
-    assert (
-        await Agent[None](TestModel(), deps_type=type(None), capabilities=[capability]).run('hello', deps=None)
-    ).output.startswith('success')
 
 
 @dataclass
@@ -150,16 +126,3 @@ def test_ensure_variable_returns_variable_built_while_awaiting_lock() -> None:
 
     capability._build_lock = cast(Any, _RaceLock())
     assert capability._ensure_variable_for_agent(cast(Any, SimpleNamespace(name='racer'))) is built
-
-
-def test_auto_create_marking_rechecks_guard_under_lock(monkeypatch: pytest.MonkeyPatch) -> None:
-    capability = _StrVariable('guard_recheck')
-    spawned: list[str] = []
-
-    def record(variable: Variable[Any], config: Any = None) -> None:
-        spawned.append(variable.name)
-
-    monkeypatch.setattr('pydantic_ai_harness.logfire._managed_variable._spawn_create', record)
-    capability._maybe_auto_create(capability._variable)
-    capability._maybe_auto_create(capability._variable)
-    assert spawned == ['var__guard_recheck']

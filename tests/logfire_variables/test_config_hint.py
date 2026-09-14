@@ -1,0 +1,473 @@
+"""The span an agent with no Agent Control config reports itself on.
+
+The SDK never creates or updates a managed variable. When a run resolves no config, `AgentControl`
+emits one `agent_control_config_hint` span per process carrying everything a config would be created
+from, and promoting that into a real variable is a Logfire-side flow. These tests are therefore the
+contract the platform side consumes: the span's name, its attributes, when it is and is not emitted,
+and how a baseline too large for a span attribute degrades.
+
+That nothing writes is asserted for every test in this package by the `_refuse_variable_writes`
+fixture in `conftest.py`; `test_a_run_writes_nothing_to_the_variable_api` says it once explicitly.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+import logfire
+import pytest
+from logfire.agent_control import SCHEMA_SHA256
+from logfire.testing import CaptureLogfire
+from logfire.variables import Rollout, VariableConfig, VariablesConfig
+from logfire.variables.local import LocalVariableProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from pydantic_ai import Agent, RunContext, Tool
+from pydantic_ai.models.test import TestModel
+from pydantic_ai.toolsets import FunctionToolset
+
+from pydantic_ai_harness.logfire import AgentControl, _agent_control
+
+from ._helpers import Publish, get_weather, variables_provider, weather_toolset
+
+pytestmark = pytest.mark.anyio
+
+_SPAN_NAME = 'agent_control_config_hint'
+
+
+def hints(capfire: CaptureLogfire) -> list[dict[str, Any]]:
+    """The attributes of each config-hint span the run exported, in order."""
+    return [span['attributes'] for span in capfire.exporter.exported_spans_as_dict() if span['name'] == _SPAN_NAME]
+
+
+def baseline(attributes: dict[str, Any]) -> Any:
+    """The `AgentConfig` a hint carries, parsed."""
+    return json.loads(attributes['agent_control.baseline'])
+
+
+def existing_variable(name: str) -> VariablesConfig:
+    """A project that knows `name` but has no value published under any label."""
+    return VariablesConfig(
+        variables={name: VariableConfig(name=name, labels={}, rollout=Rollout(labels={}), overrides=[])}
+    )
+
+
+async def test_an_unconfigured_agent_reports_its_whole_baseline(capfire: CaptureLogfire) -> None:
+    def lookup(city: str) -> str:
+        """Look up a city.
+
+        Args:
+            city: City to look up.
+        """
+        return city
+
+    def raw() -> str:
+        return 'raw'
+
+    raw_tool = Tool.from_schema(
+        raw,
+        name='raw',
+        description=None,
+        json_schema={
+            'type': 'object',
+            'properties': {'plain': 'not-a-schema', 'count': {'description': 5}, 'named': {'description': 'Named.'}},
+        },
+    )
+    empty_tool = Tool.from_schema(raw, name='empty', description=None, json_schema={'type': 'object'})
+
+    with variables_provider(capfire, VariablesConfig(variables={})):
+        agent = Agent(
+            TestModel(),
+            name='Snapshot Agent',
+            instructions='Code instructions.',
+            model_settings={'temperature': 0.3},
+            tools=[lookup],
+            # One toolset with an `id` and one without: the baseline reports the id when there is
+            # one and falls back to the label, so the UI can group tools by origin either way.
+            toolsets=[FunctionToolset([raw_tool], id='raw-tools'), FunctionToolset([empty_tool])],
+            capabilities=[AgentControl()],
+        )
+        await agent.run('hello')
+
+    assert len(hints(capfire)) == 1
+    attributes = hints(capfire)[0]
+    # The identity half of the contract. `agent_name` is the name as written and `variable_name` is
+    # what normalizing it produced, which is how a consumer tells two agents apart after they have
+    # landed on one key.
+    assert attributes['agent_control.variable_name'] == 'agent__snapshot_agent'
+    assert attributes['agent_control.agent_name'] == 'Snapshot Agent'
+    assert attributes['agent_control.framework'] == 'pydantic-ai'
+    assert attributes['agent_control.baseline_source'] == 'code'
+    assert attributes['agent_control.schema_sha256'] == SCHEMA_SHA256
+    assert attributes['agent_control.baseline_reduction'] == 'none'
+    assert attributes['agent_control.baseline_bytes'] == len(attributes['agent_control.baseline'].encode())
+    # The message names no agent, so it stays one string across a project's agents. The span name is
+    # separate from it, so the message can be reworded without moving what a query selects on.
+    assert attributes['logfire.msg'] == 'Agent Control found no config for this agent'
+
+    assert baseline(attributes) == {
+        'instructions': [{'id': 'agent', 'instructions': 'Code instructions.', 'dynamic': False}],
+        'model': 'test:test',
+        'settings': {'temperature': 0.3},
+        'tool_definitions': [
+            {
+                'name': 'lookup',
+                'description': 'Look up a city.',
+                'parameters': {'city': {'description': 'City to look up.'}},
+                'toolset': '<agent>',
+            },
+            # An undocumented parameter is listed with nothing in it, which is the point: it is
+            # exactly the one somebody wants to describe from Logfire, and a baseline that listed
+            # only the documented ones would hide it until it had been documented in code first.
+            {
+                'name': 'raw',
+                'parameters': {'plain': {}, 'count': {}, 'named': {'description': 'Named.'}},
+                'toolset': 'raw-tools',
+            },
+            {'name': 'empty', 'toolset': 'FunctionToolset'},
+        ],
+    }
+
+
+async def test_the_hint_lists_every_instruction_block(capfire: CaptureLogfire) -> None:
+    # The baseline the Logfire UI diffs managed values against, and the reason it can offer an
+    # override per block rather than one copy-the-whole-prompt button: the joined prompt telemetry
+    # records has no seams, so a snapshot taken from that could only be copied wholesale -- which,
+    # since managed instructions *add*, would send the agent's own text twice with a frozen date in
+    # the middle.
+    agent = Agent(
+        TestModel(),
+        name='blocks_snapshot',
+        instructions='AGENT: You are a concise checkout assistant.',
+        toolsets=[weather_toolset()],
+        capabilities=[AgentControl()],
+    )
+
+    @agent.instructions(name='today')
+    def today(_ctx: RunContext[object]) -> str:
+        return 'DYNAMIC: today is Monday.'
+
+    @agent.instructions
+    def unnamed(_ctx: RunContext[object]) -> str:
+        return 'UNNAMED: no declared id.'
+
+    with variables_provider(capfire, VariablesConfig(variables={})):
+        await agent.run('hello')
+
+    attributes = hints(capfire)[0]
+    assert baseline(attributes)['instructions'] == [
+        {'id': 'agent', 'instructions': 'AGENT: You are a concise checkout assistant.', 'dynamic': False},
+        # A dynamic block contributes its seam and not its text: what it rendered to here is one
+        # request's answer, built from whatever that run carried. The `id` and the flag are what the
+        # editor needs -- enough to show the block and that it is recomputed per request.
+        {'id': 'agent:today', 'dynamic': True},
+        {'id': 'toolset:weather', 'dynamic': True},
+    ]
+    # `UNNAMED: no declared id.` is absent entirely: the function declared no id, so there is nothing
+    # to address it by, and it is dynamic, so there is no text to report. Nothing left to say about it.
+    assert 'UNNAMED' not in attributes['agent_control.baseline']
+
+
+async def test_a_dynamic_blocks_rendered_text_never_reaches_the_hint(capfire: CaptureLogfire) -> None:
+    """An instruction function reads the run: a tenant, a user, a retrieved document.
+
+    A hint is exported to the Logfire project, so it describes the agent rather than recording a
+    request. A dynamic block therefore contributes its `id` and its flag and nothing else -- which is
+    also all an editor needs to show it and to not offer to change it.
+    """
+    agent = Agent(
+        TestModel(),
+        name='no_request_data',
+        deps_type=str,
+        instructions='You are a support agent.',
+        capabilities=[AgentControl()],
+    )
+
+    @agent.instructions(name='tenant')
+    def tenant(ctx: RunContext[str]) -> str:
+        return f'You are serving tenant {ctx.deps}. Their account token is tok_SECRET_9f2.'
+
+    with variables_provider(capfire, VariablesConfig(variables={})):
+        await agent.run('hello', deps='ACME Health (patient records)')
+
+    attributes = hints(capfire)[0]
+    assert 'tok_SECRET_9f2' not in attributes['agent_control.baseline']
+    assert 'ACME Health' not in attributes['agent_control.baseline']
+    assert baseline(attributes)['instructions'] == [
+        {'id': 'agent', 'instructions': 'You are a support agent.', 'dynamic': False},
+        {'id': 'agent:tenant', 'dynamic': True},
+    ]
+
+
+async def test_only_canonical_settings_reach_the_hint(capfire: CaptureLogfire) -> None:
+    """`extra_headers` and `extra_body` are forwarded to the provider and routinely carry authorization.
+
+    The baseline holds the canonical keys only -- because that is all `AgentConfigSettings` has fields
+    for, not because of a list of names to withhold. The run itself still sends everything.
+    """
+    with variables_provider(capfire, VariablesConfig(variables={})):
+        await Agent(
+            TestModel(),
+            name='secretless_hint',
+            model_settings={  # pyright: ignore[reportArgumentType]
+                'temperature': 0.1,
+                'extra_headers': {'Authorization': 'Bearer sk-secret'},
+                'extra_body': {'signature': 'sk-secret'},
+            },
+            capabilities=[AgentControl()],
+        ).run('hello')
+
+    attributes = hints(capfire)[0]
+    assert baseline(attributes)['settings'] == {'temperature': 0.1}
+    assert 'sk-secret' not in attributes['agent_control.baseline']
+
+
+async def test_the_baseline_is_the_code_and_not_what_a_managed_config_would_do(capfire: CaptureLogfire) -> None:
+    # A config published under a label this capability does not select leaves the run on the
+    # code-defined agent, so the hint still fires -- and what it carries has to be the code, not the
+    # value that was not applied.
+    with variables_provider(capfire, VariablesConfig(variables={})):
+        await Agent(
+            TestModel(),
+            name='code_only_hint',
+            instructions='CODE instruction.',
+            model_settings={'temperature': 0.1},
+            tools=[get_weather],
+            capabilities=[AgentControl(label='production')],
+        ).run('hello')
+
+    assert baseline(hints(capfire)[0]) == {
+        'instructions': [{'id': 'agent', 'instructions': 'CODE instruction.', 'dynamic': False}],
+        'model': 'test:test',
+        'settings': {'temperature': 0.1},
+        'tool_definitions': [{'name': 'get_weather', 'parameters': {'city': {}}, 'toolset': '<agent>'}],
+    }
+
+
+async def test_a_resolved_config_reports_no_hint(capfire: CaptureLogfire, publish: Publish) -> None:
+    # The gate. A config reached the run, so there is nothing to ask for. Without it, every run of
+    # every already-configured agent in a project would keep asking to be configured.
+    publish('configured', {'instructions': 'MANAGED: be brief.'})
+    await Agent(
+        TestModel(), name='configured', instructions='code', capabilities=[AgentControl(label='production')]
+    ).run('hello')
+
+    assert hints(capfire) == []
+
+
+async def test_an_agent_reports_once_per_process(capfire: CaptureLogfire) -> None:
+    # The provider is left knowing nothing, so the second run resolves nothing either: the guard is
+    # what keeps it from reporting again, not a config that now exists.
+    with variables_provider(capfire, VariablesConfig(variables={})):
+        agent = Agent(TestModel(), name='reported_once', capabilities=[AgentControl()])
+        await agent.run('hello')
+        await agent.run('hello again')
+
+    assert len(hints(capfire)) == 1
+
+
+async def test_each_logfire_project_is_reported_to(capfire: CaptureLogfire) -> None:
+    # A process can serve several Logfire projects, and a config in the first is not a config in the
+    # second, so the guard is keyed by destination as well as by variable name. Each hint also has to
+    # be emitted on its own project's instance rather than on whichever one happens to be the default.
+    instances = [
+        logfire.configure(
+            local=True,
+            send_to_logfire=False,
+            console=False,
+            variables=logfire.LocalVariablesOptions(config=VariablesConfig(variables={})),
+            additional_span_processors=[SimpleSpanProcessor(capfire.exporter)],
+        )
+        for _ in range(2)
+    ]
+
+    for instance in instances:
+        agent = Agent(TestModel(), name='two_projects', capabilities=[AgentControl(logfire_instance=instance)])
+        await agent.run('hello')
+        # A second run against the same instance is still guarded.
+        await agent.run('hello again')
+
+    assert [attributes['agent_control.variable_name'] for attributes in hints(capfire)] == [
+        'agent__two_projects',
+        'agent__two_projects',
+    ]
+
+
+async def test_a_variable_with_no_published_value_is_still_reported(capfire: CaptureLogfire) -> None:
+    """A variable that exists but holds no value leaves the run on the code-defined agent, so it reports.
+
+    The SDK cannot tell that case from an unknown variable: logfire collapses "no entry for this
+    name", "no targeted value", and "no provider at all" into one `'code_default'` reason, and the
+    only way to narrow it was a pre-flight call to the variable-management API on the run's thread --
+    a blocking round trip whose best-effort failure suppressed the signal. Deduplicating a hint
+    against the variables that already exist is the platform's job, and the platform is the side that
+    actually knows.
+    """
+    with variables_provider(capfire, existing_variable('agent__known_but_empty')):
+        await Agent(TestModel(), name='known_but_empty', capabilities=[AgentControl()]).run('hello')
+
+    assert [attributes['agent_control.variable_name'] for attributes in hints(capfire)] == ['agent__known_but_empty']
+
+
+async def test_an_agent_with_no_variables_provider_is_still_reported(capfire: CaptureLogfire) -> None:
+    # Registration used to need the variable-management API, which a process holding only a
+    # span-write token does not have. A hint travels the span pipeline, so that process registers too.
+    await Agent(TestModel(), name='no_provider_hint', capabilities=[AgentControl()]).run('hello')
+
+    assert [attributes['agent_control.variable_name'] for attributes in hints(capfire)] == ['agent__no_provider_hint']
+
+
+async def test_the_hint_survives_a_raised_min_level(capfire: CaptureLogfire) -> None:
+    """A hint is a span and not a log record, so a logging threshold cannot withhold it.
+
+    `min_level` drops a log below it before it is ever exported, and a span with no level of its own
+    is not subject to it. The platform side of Agent Control depends on this signal arriving, which
+    is not something a project's logging configuration should get a vote on.
+    """
+    logfire.configure(
+        send_to_logfire=False,
+        console=False,
+        min_level='warn',
+        variables=logfire.LocalVariablesOptions(config=VariablesConfig(variables={})),
+        additional_span_processors=[SimpleSpanProcessor(capfire.exporter)],
+    )
+    try:
+        await Agent(TestModel(), name='quiet_project', capabilities=[AgentControl()]).run('hello')
+    finally:
+        logfire.configure(send_to_logfire=False, console=False)
+
+    assert [attributes['agent_control.variable_name'] for attributes in hints(capfire)] == ['agent__quiet_project']
+
+
+async def test_an_explicitly_named_capability_on_a_nameless_agent_reports_no_agent_name(
+    capfire: CaptureLogfire,
+) -> None:
+    # An explicit capability `name` decouples the config from the agent's own name, and Pydantic AI
+    # only infers an agent name from the variable an agent was assigned to -- which this one is not.
+    with variables_provider(capfire, VariablesConfig(variables={})):
+        await Agent(TestModel(), capabilities=[AgentControl('detached')]).run('hello')
+
+    attributes = hints(capfire)[0]
+    assert attributes['agent_control.variable_name'] == 'agent__detached'
+    # Left off the span rather than carried as a null: absent says "there is none", where a
+    # null-valued attribute would only raise the question of whether that is what the agent is called.
+    assert 'agent_control.agent_name' not in attributes
+
+
+async def test_an_agent_that_never_reaches_a_model_reports_nothing(capfire: CaptureLogfire) -> None:
+    # The baseline is read off an assembled request, so there is nothing to report before one exists.
+    # Constructing the capability and binding it to an agent must not report on their own.
+    with variables_provider(capfire, VariablesConfig(variables={})):
+        AgentControl().for_agent(Agent(TestModel(), name='never_run'))
+
+    assert hints(capfire) == []
+
+
+async def test_an_oversized_baseline_drops_its_tool_definitions(
+    capfire: CaptureLogfire, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A baseline over the budget gives up whole sections rather than being cut to length.
+
+    The backend enforces its own attribute budget by truncating a long string in place, which for
+    JSON yields an attribute that still looks like a string and no longer parses. So the reduction
+    happens here, is named on the span, and leaves a whole valid `AgentConfig` behind.
+    """
+    # A budget between this agent's full baseline and the same baseline without its tool definitions,
+    # so the first rung of the ladder is the one taken. Tightening it real-world is what a 64 KiB
+    # instruction block and a few dozen tool schemas do on their own.
+    monkeypatch.setattr(_agent_control, '_MAX_BASELINE_BYTES', 200)
+    with variables_provider(capfire, VariablesConfig(variables={})):
+        await Agent(
+            TestModel(),
+            name='oversized_tools',
+            instructions='CODE instruction.',
+            tools=[get_weather],
+            capabilities=[AgentControl()],
+        ).run('hello')
+
+    attributes = hints(capfire)[0]
+    assert attributes['agent_control.baseline_reduction'] == 'tool_definitions'
+    # Still a parseable, whole config, with the section that carries the unbounded part left out.
+    assert baseline(attributes) == {
+        'instructions': [{'id': 'agent', 'instructions': 'CODE instruction.', 'dynamic': False}],
+        'model': 'test:test',
+    }
+    # The size reported is the full baseline's, so a consumer sees how far over the budget it was
+    # rather than how big the part that survived is.
+    assert attributes['agent_control.baseline_bytes'] > len(attributes['agent_control.baseline'].encode())
+
+
+async def test_a_baseline_too_large_even_reduced_is_omitted_and_says_so(
+    capfire: CaptureLogfire, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Nothing is guessed at and nothing is cut: the hint still registers the agent, and the reduction
+    # says why no baseline is on it.
+    monkeypatch.setattr(_agent_control, '_MAX_BASELINE_BYTES', 10)
+    with variables_provider(capfire, VariablesConfig(variables={})):
+        await Agent(
+            TestModel(),
+            name='omitted_baseline',
+            instructions='CODE instruction.',
+            tools=[get_weather],
+            capabilities=[AgentControl()],
+        ).run('hello')
+
+    attributes = hints(capfire)[0]
+    assert attributes['agent_control.baseline_reduction'] == 'omitted'
+    assert 'agent_control.baseline' not in attributes
+    assert attributes['agent_control.variable_name'] == 'agent__omitted_baseline'
+    assert attributes['agent_control.baseline_bytes'] > 10
+
+
+def test_the_budget_stays_an_order_of_magnitude_under_the_backends() -> None:
+    # A guard on the constant itself. The whole point of enforcing a budget here is to stay well
+    # under the row budget the backend truncates against, so a change to it is a decision to make
+    # deliberately rather than a number to drift.
+    assert _agent_control._MAX_BASELINE_BYTES == 1024 * 1024
+
+
+async def test_a_run_writes_nothing_to_the_variable_api(capfire: CaptureLogfire) -> None:
+    """The removed halves of this capability, asserted as the absence they now are.
+
+    Creating the variable from the code baseline, and read-modify-writing its `example` to keep that
+    baseline current, both went through these methods. Recorded rather than refused here, even though
+    the package-wide `_refuse_variable_writes` fixture already refuses them, so that this test says
+    what it is about instead of leaving a fixture to fail on its behalf.
+    """
+    calls: list[str] = []
+
+    def record(method: str) -> Any:
+        def recorded(_self: LocalVariableProvider, *_args: Any, **_kwargs: Any) -> None:
+            calls.append(method)
+
+        return recorded
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        for method in ('create_variable', 'update_variable', 'delete_variable'):
+            monkeypatch.setattr(LocalVariableProvider, method, record(method))
+        with variables_provider(capfire, VariablesConfig(variables={})):
+            agent = Agent(TestModel(), name='no_writes', instructions='code', capabilities=[AgentControl()])
+            result = await agent.run('hello')
+            await agent.run('again')
+            assert calls == []
+            # And the recorder is live, so an empty list means the runs called nothing rather than
+            # that the patch landed somewhere the capability never reaches.
+            provider = logfire.DEFAULT_LOGFIRE_INSTANCE.config.get_variable_provider()
+            provider.create_variable(existing_variable('agent__probe').variables['agent__probe'])
+
+    assert result.output.startswith('success')
+    assert calls == ['create_variable']
+    assert len(hints(capfire)) == 1
+
+
+async def test_the_packages_no_write_guard_refuses_a_write(capfire: CaptureLogfire) -> None:
+    """`conftest.py`'s `_refuse_variable_writes` is what makes every test here an assertion about writing.
+
+    Exercised directly so that "nothing in this package writes" is a property something enforces
+    rather than a fixture no test ever reached.
+    """
+    with variables_provider(capfire, VariablesConfig(variables={})):
+        provider = logfire.DEFAULT_LOGFIRE_INSTANCE.config.get_variable_provider()
+        config = existing_variable('agent__guarded').variables['agent__guarded']
+        with pytest.raises(AssertionError, match="called 'update_variable' on the variable provider"):
+            provider.update_variable('agent__guarded', config)

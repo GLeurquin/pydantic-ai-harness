@@ -18,7 +18,8 @@ from logfire.variables import LabeledValue, Rollout, VariableConfig, VariablesCo
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
-from pydantic_ai.tools import ToolDefinition
+from pydantic_ai.tools import RunContext, ToolDefinition
+from pydantic_ai.toolsets import FunctionToolset
 
 
 def get_weather(city: str) -> str:
@@ -27,6 +28,17 @@ def get_weather(city: str) -> str:
 
 def get_forecast(city: str) -> str:
     return f'forecast for {city}'  # pragma: no cover - advertised only; the test models never call it
+
+
+def weather_toolset() -> FunctionToolset[object]:
+    """A toolset with an `id` and instructions of its own, so `toolset:weather` is addressable."""
+    toolset = FunctionToolset[object]([get_weather], id='weather')
+
+    @toolset.instructions
+    def call_weather_first(_ctx: RunContext[object]) -> str:
+        return 'TOOLSET: call get_weather first.'
+
+    return toolset
 
 
 def capture_tools(seen: list[ToolDefinition]) -> FunctionModel:

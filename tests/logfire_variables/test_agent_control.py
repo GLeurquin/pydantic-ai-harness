@@ -8,7 +8,6 @@ from typing import Any, cast
 import logfire
 import pytest
 from logfire.agent_control import (
-    AGENT_CONFIG_JSON_SCHEMA,
     MAX_MODEL_FACING_TEXT_LENGTH,
     AgentConfig,
     AgentConfigSettings,
@@ -17,7 +16,7 @@ from logfire.agent_control import (
     ToolDefinitionOverride,
 )
 from logfire.testing import CaptureLogfire
-from logfire.variables import Rollout, Variable, VariableConfig, VariablesConfig
+from logfire.variables import Variable, VariablesConfig
 from pydantic_ai import Agent, RunContext, Tool
 from pydantic_ai.capabilities import AbstractCapability, Capability, CombinedCapability
 from pydantic_ai.exceptions import UserError
@@ -30,7 +29,7 @@ from pydantic_ai.toolsets import FunctionToolset, ToolsetTool, WrapperToolset
 from pydantic_ai.usage import RunUsage
 
 from pydantic_ai_harness import AgentControl as RootAgentControl
-from pydantic_ai_harness.logfire import AgentControl, _agent_control, _managed_variable
+from pydantic_ai_harness.logfire import AgentControl, _agent_control
 
 from ._helpers import (
     Publish,
@@ -40,6 +39,7 @@ from ._helpers import (
     get_weather,
     published_value,
     variables_provider,
+    weather_toolset,
 )
 
 pytestmark = pytest.mark.anyio
@@ -49,6 +49,12 @@ assert RootAgentControl is AgentControl
 
 def instructions_seen(messages: list[ModelMessage]) -> list[str]:
     return [m.instructions for m in messages if isinstance(m, ModelRequest) and m.instructions is not None]
+
+
+def config_hint(capfire: CaptureLogfire) -> dict[str, Any]:
+    """The attributes of the run's config-hint span. `test_config_hint.py` owns its full contract."""
+    spans = capfire.exporter.exported_spans_as_dict()
+    return next(span['attributes'] for span in spans if span['name'] == 'agent_control_config_hint')
 
 
 async def test_empty_config_keeps_code_behavior() -> None:
@@ -74,17 +80,6 @@ async def test_managed_instructions_are_appended_not_replaced(publish: Publish) 
     # added block lands at the end of the static run -- last in the prompt as written, and still
     # ahead of the dynamic text a provider cannot cache.
     assert instructions_seen(result.all_messages()) == ['code\n\ntoolset\n\nmanaged\n\ndynamic']
-
-
-def weather_toolset() -> FunctionToolset[object]:
-    """A toolset with an `id` and instructions of its own, so `toolset:weather` is addressable."""
-    toolset = FunctionToolset[object]([get_weather], id='weather')
-
-    @toolset.instructions
-    def call_weather_first(_ctx: RunContext[object]) -> str:
-        return 'TOOLSET: call get_weather first.'
-
-    return toolset
 
 
 def capture_instructions(seen: list[InstructionPart]) -> FunctionModel:
@@ -467,281 +462,14 @@ def test_explicit_capability_id_is_preserved() -> None:
     assert AgentControl('explicit_id', id='custom').id == 'custom'
 
 
-async def test_auto_create_uses_request_snapshot(capfire: CaptureLogfire, monkeypatch: pytest.MonkeyPatch) -> None:
-    _managed_variable._reset_auto_create_guard()
-    created: list[VariableConfig] = []
-
-    def create_inline(variable: Variable[object], config: VariableConfig) -> None:
-        created.append(config)
-        _managed_variable._create_variable(variable, config)
-
-    monkeypatch.setattr(_managed_variable, '_spawn_create', create_inline)
-    config = VariablesConfig(variables={})
-
-    def lookup(city: str) -> str:
-        """Look up a city.
-
-        Args:
-            city: City to look up.
-        """
-        return city
-
-    def raw() -> str:
-        return 'raw'
-
-    raw_tool = Tool.from_schema(
-        raw,
-        name='raw',
-        description=None,
-        json_schema={
-            'type': 'object',
-            'properties': {'plain': 'not-a-schema', 'count': {'description': 5}, 'named': {'description': 'Named.'}},
-        },
-    )
-    empty_tool = Tool.from_schema(raw, name='empty', description=None, json_schema={'type': 'object'})
-
-    with variables_provider(capfire, config):
-        agent = Agent(
-            TestModel(),
-            name='snapshot_agent',
-            instructions='Code instructions.',
-            model_settings={'temperature': 0.3},
-            tools=[lookup],
-            # One toolset with an `id` and one without: the baseline reports the id when there is
-            # one and falls back to the label, so the UI can group tools by origin either way.
-            toolsets=[FunctionToolset([raw_tool], id='raw-tools'), FunctionToolset([empty_tool])],
-            capabilities=[AgentControl()],
-        )
-        await agent.run('hello')
-
-    assert len(created) == 1
-    # The stored schema is the canonical hand-maintained one, not the payload's Pydantic-derived one.
-    assert created[0].json_schema == AGENT_CONFIG_JSON_SCHEMA
-    example = json.loads(created[0].example or '{}')
-    assert example == {
-        'instructions': [{'id': 'agent', 'instructions': 'Code instructions.', 'dynamic': False}],
-        'model': 'test:test',
-        'settings': {'temperature': 0.3},
-        'tool_definitions': [
-            {
-                'name': 'lookup',
-                'description': 'Look up a city.',
-                'parameters': {'city': {'description': 'City to look up.'}},
-                'toolset': '<agent>',
-            },
-            # An undocumented parameter is listed with nothing in it, which is the point: it is
-            # exactly the one somebody wants to describe from Logfire, and a baseline that listed
-            # only the documented ones would hide it until it had been documented in code first.
-            {
-                'name': 'raw',
-                'parameters': {'plain': {}, 'count': {}, 'named': {'description': 'Named.'}},
-                'toolset': 'raw-tools',
-            },
-            {'name': 'empty', 'toolset': 'FunctionToolset'},
-        ],
-    }
-
-
-async def test_auto_create_snapshots_every_instruction_block(
-    capfire: CaptureLogfire, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # The baseline the Logfire UI diffs managed values against, and the reason it can offer an override
-    # per block rather than one copy-the-whole-prompt button: the joined prompt telemetry records has no
-    # seams, so a snapshot taken from that could only be copied wholesale -- which, since managed
-    # instructions *add*, would send the agent's own text twice with a frozen date in the middle.
-    _managed_variable._reset_auto_create_guard()
-    created: list[VariableConfig] = []
-
-    def create_inline(variable: Variable[object], config: VariableConfig) -> None:
-        created.append(config)
-
-    monkeypatch.setattr(_managed_variable, '_spawn_create', create_inline)
-
-    agent = Agent(
-        TestModel(),
-        name='blocks_snapshot',
-        instructions='AGENT: You are a concise checkout assistant.',
-        toolsets=[weather_toolset()],
-        capabilities=[AgentControl()],
-    )
-
-    @agent.instructions(name='today')
-    def today(_ctx: RunContext[object]) -> str:
-        return 'DYNAMIC: today is Monday.'
-
-    @agent.instructions
-    def unnamed(_ctx: RunContext[object]) -> str:
-        return 'UNNAMED: no declared id.'
-
-    with variables_provider(capfire, VariablesConfig(variables={})):
-        await agent.run('hello')
-
-    example = json.loads(created[0].example or '{}')
-    assert example['instructions'] == [
-        {'id': 'agent', 'instructions': 'AGENT: You are a concise checkout assistant.', 'dynamic': False},
-        # A dynamic block contributes its seam and not its text: what it rendered to here is one
-        # request's answer, built from whatever that run carried, and the baseline is published to a
-        # variable every project member can read. The `id` and the flag are what the editor needs --
-        # enough to show the block and that it is recomputed per request.
-        {'id': 'agent:today', 'dynamic': True},
-        {'id': 'toolset:weather', 'dynamic': True},
-    ]
-    # `UNNAMED: no declared id.` is absent entirely: the function declared no id, so there is nothing
-    # to address it by, and it is dynamic, so there is no text to publish. Nothing left to say about it.
-    assert 'UNNAMED' not in (created[0].example or '')
-    # A toolset's instruction function is `dynamic` too even when it returns a constant, so one rule
-    # covers agent-level and toolset-level blocks alike. A toolset that wants its fixed text published
-    # and overridable returns an `InstructionPart` from `get_instructions()` instead, which is static
-    # by default and keeps the flag it was authored with.
-    assert [block['dynamic'] for block in example['instructions']] == [False, True, True]
-
-
-async def test_existing_variable_publishes_changed_baseline_once_without_clobbering_config(
-    capfire: CaptureLogfire, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(_agent_control, '_spawn_baseline_publish', _agent_control._publish_baseline)
-    config = published_value('agent__published_baseline', {})
-    original = config.variables['agent__published_baseline'].model_copy(
-        update={'description': 'Kept description.', 'aliases': ['kept_alias']}
-    )
-    config.variables['agent__published_baseline'] = original
-    today = ['Monday']
-
-    def build(instructions: str) -> Agent[object, str]:
-        agent = Agent(
-            TestModel(),
-            name='published_baseline',
-            instructions=instructions,
-            toolsets=[weather_toolset()],
-            capabilities=[AgentControl(label='production')],
-        )
-
-        @agent.instructions(name='today')
-        def dynamic(_ctx: RunContext[object]) -> str:
-            return f'DYNAMIC: today is {today[0]}.'
-
-        return agent
-
-    agent = build('AGENT: code instructions.')
-    with variables_provider(capfire, config):
-        provider = logfire.DEFAULT_LOGFIRE_INSTANCE.config.get_variable_provider()
-        updates: list[VariableConfig] = []
-        original_update = provider.update_variable
-
-        def record_update(name: str, updated: VariableConfig) -> VariableConfig:
-            updates.append(updated)
-            return original_update(name, updated)
-
-        monkeypatch.setattr(provider, 'update_variable', record_update)
-        await agent.run('first')
-        _agent_control._reset_baseline_publish_guard()  # model a fresh process with the published baseline
-        await agent.run('unchanged')
-        _agent_control._reset_baseline_publish_guard()
-        # A dynamic block renders differently, and the baseline does not move: its text was never in
-        # there. One fewer republish, and one fewer read-modify-write racing the UI (see #565).
-        today[0] = 'Tuesday'
-        await agent.run('dynamic value changed')
-        assert len(updates) == 1
-        _agent_control._reset_baseline_publish_guard()
-        await build('AGENT: rewritten instructions.').run('code changed')
-
-    assert len(updates) == 2
-    assert json.loads(updates[0].example or '{}')['instructions'] == [
-        {'id': 'agent', 'instructions': 'AGENT: code instructions.', 'dynamic': False},
-        {'id': 'agent:today', 'dynamic': True},
-        {'id': 'toolset:weather', 'dynamic': True},
-    ]
-    assert json.loads(updates[1].example or '{}')['instructions'][0]['instructions'] == 'AGENT: rewritten instructions.'
-    for updated in updates:
-        assert updated.model_copy(update={'example': original.example}) == original
-
-
-async def test_published_baseline_contains_only_code_side_behavior(
-    capfire: CaptureLogfire, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(_agent_control, '_spawn_baseline_publish', _agent_control._publish_baseline)
-    managed = {
-        'instructions': 'MANAGED instruction.',
-        'model': 'test',
-        'settings': {'temperature': 0.77},
-        'tool_definitions': [{'name': 'get_weather', 'new_name': 'weather_now', 'description': 'Managed description.'}],
-    }
-    config = published_value('agent__code_only_baseline', managed)
-    with variables_provider(capfire, config):
-        provider = logfire.DEFAULT_LOGFIRE_INSTANCE.config.get_variable_provider()
-        updates: list[VariableConfig] = []
-        original_update = provider.update_variable
-
-        def record_update(name: str, updated: VariableConfig) -> VariableConfig:
-            updates.append(updated)
-            return original_update(name, updated)
-
-        monkeypatch.setattr(provider, 'update_variable', record_update)
-        await Agent(
-            FunctionModel(lambda _messages, _info: ModelResponse(parts=[TextPart('done')])),
-            instructions='CODE instruction.',
-            model_settings={'temperature': 0.1},
-            tools=[get_weather],
-            capabilities=[AgentControl('code_only_baseline', label='production')],
-        ).run('hello')
-
-    assert json.loads(updates[0].example or '{}') == {
-        'instructions': [{'id': 'agent', 'instructions': 'CODE instruction.', 'dynamic': False}],
-        'model': 'function:function:<lambda>:',
-        'settings': {'temperature': 0.1},
-        'tool_definitions': [{'name': 'get_weather', 'parameters': {'city': {}}, 'toolset': '<agent>'}],
-    }
-
-
-async def test_baseline_publish_failure_does_not_affect_run_and_warns_once(
-    capfire: CaptureLogfire, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(_agent_control, '_spawn_baseline_publish', _agent_control._publish_baseline)
-    config = published_value('agent__publish_failure', {})
-    instruction = ['first']
-    agent = Agent(TestModel(), name='publish_failure', capabilities=[AgentControl(label='production')])
-
-    @agent.instructions(name='changing')
-    def changing(_ctx: RunContext[object]) -> str:
-        return instruction[0]
-
-    with variables_provider(capfire, config):
-        provider = logfire.DEFAULT_LOGFIRE_INSTANCE.config.get_variable_provider()
-
-        def fail_update(_name: str, _config: VariableConfig) -> VariableConfig:
-            raise PermissionError('missing project:write_variables')
-
-        monkeypatch.setattr(provider, 'update_variable', fail_update)
-        with pytest.warns(UserWarning, match='missing project:write_variables') as caught:
-            first = await agent.run('first')
-            instruction[0] = 'second'
-            second = await agent.run('second')
-
-    assert len(caught) == 1
-    assert first.output.startswith('success')
-    assert second.output.startswith('success')
-
-
-async def test_oversized_code_instructions_do_not_affect_run(
-    capfire: CaptureLogfire, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_oversized_code_instructions_do_not_affect_run(capfire: CaptureLogfire) -> None:
     """The length bound is about what a managed value may add, not about what the agent already says.
 
-    An agent whose own instructions exceed it has a block too big to publish, not a broken run, so the
-    baseline leaves that block out and says so. Nothing about describing the agent may raise into a
-    request, and the rest of the snapshot is still worth publishing.
+    An agent whose own instructions exceed it has a block too big to describe, not a broken run, so
+    the baseline leaves that block out and says so. Nothing about describing the agent may raise into
+    a request, and the rest of the snapshot is still worth reporting.
     """
-    monkeypatch.setattr(_agent_control, '_spawn_baseline_publish', _agent_control._publish_baseline)
-    updates: list[VariableConfig] = []
-    with variables_provider(capfire, published_value('agent__oversized_code', {})):
-        provider = logfire.DEFAULT_LOGFIRE_INSTANCE.config.get_variable_provider()
-        original_update = provider.update_variable
-
-        def record_update(name: str, updated: VariableConfig) -> VariableConfig:
-            updates.append(updated)
-            return original_update(name, updated)
-
-        monkeypatch.setattr(provider, 'update_variable', record_update)
+    with variables_provider(capfire, VariablesConfig(variables={})):
         agent = Agent(
             TestModel(),
             instructions=[
@@ -753,36 +481,9 @@ async def test_oversized_code_instructions_do_not_affect_run(
         with pytest.warns(UserWarning, match='leaving it out of the published baseline'):
             result = await agent.run('hello')
     assert result.output.startswith('success')
-    assert json.loads(updates[0].example or '{}')['instructions'] == [
+    assert json.loads(config_hint(capfire)['agent_control.baseline'])['instructions'] == [
         {'id': 'agent:rest', 'instructions': 'AGENT: and something publishable.', 'dynamic': False}
     ]
-
-
-async def test_publish_baseline_opt_out(capfire: CaptureLogfire, monkeypatch: pytest.MonkeyPatch) -> None:
-    def fail_spawn(_variable: Variable[object], _example: str) -> None:
-        # Never reached when the opt-out holds, which is the assertion.
-        raise AssertionError('baseline publishing should be disabled')  # pragma: no cover
-
-    monkeypatch.setattr(_agent_control, '_spawn_baseline_publish', fail_spawn)
-    with variables_provider(capfire, published_value('agent__no_publish', {})):
-        result = await Agent(
-            TestModel(), instructions='code', capabilities=[AgentControl('no_publish', publish_baseline=False)]
-        ).run('hello')
-    assert result.output.startswith('success')
-
-
-async def test_missing_variable_baseline_publish_warns_without_affecting_run(
-    capfire: CaptureLogfire, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(_agent_control, '_spawn_baseline_publish', _agent_control._publish_baseline)
-    with variables_provider(capfire, VariablesConfig(variables={})):
-        with pytest.warns(UserWarning, match="variable 'agent__missing_publish' was not found"):
-            result = await Agent(
-                TestModel(),
-                name='missing_publish',
-                capabilities=[AgentControl(auto_create=False)],
-            ).run('hello')
-    assert result.output.startswith('success')
 
 
 async def test_applied_sections_baggage(publish: Publish) -> None:
@@ -1166,21 +867,22 @@ async def test_callable_targeting_resolution_is_reused_for_run(publish: Publish)
         return f'key-{calls}'
 
     publish('callable_targeting', AgentConfig(model='test'))
-    capability = AgentControl('callable_targeting', label='production', targeting_key=targeting, publish_baseline=False)
+    capability = AgentControl('callable_targeting', label='production', targeting_key=targeting)
     result = await Agent(TestModel(), capabilities=[capability]).run('hello')
     assert result.output.startswith('success')
     assert calls == 1
 
 
-async def test_known_variable_skips_snapshot_build(capfire: CaptureLogfire, monkeypatch: pytest.MonkeyPatch) -> None:
-    config = VariableConfig(name='agent__known', labels={}, rollout=Rollout(labels={}), overrides=[])
+async def test_a_resolved_config_builds_no_snapshot(capfire: CaptureLogfire, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The baseline walks every assembled instruction block and every advertised tool. An agent whose
+    # config is already published pays none of that, on any request: the hint it would feed is the
+    # only thing that wants it.
+    def fail_baseline(*_args: Any, **_kwargs: Any) -> AgentConfig:  # pragma: no cover - failure sentinel
+        raise AssertionError('no snapshot should be built for an agent whose config resolved')
 
-    def fail_to_config(self: Variable[object]) -> VariableConfig:  # pragma: no cover - failure sentinel
-        raise AssertionError('snapshot should not be built')
-
-    monkeypatch.setattr(Variable, 'to_config', fail_to_config)
-    with variables_provider(capfire, VariablesConfig(variables={'agent__known': config})):
-        await Agent(TestModel(), capabilities=[AgentControl('known')]).run('hello')
+    monkeypatch.setattr(_agent_control, 'build_baseline', fail_baseline)
+    with variables_provider(capfire, published_value('agent__known', {'model': 'test'})):
+        await Agent(TestModel(), capabilities=[AgentControl('known', label='production')]).run('hello')
 
 
 async def test_the_hooks_outside_a_run_are_inert() -> None:
@@ -1197,34 +899,19 @@ async def test_the_hooks_outside_a_run_are_inert() -> None:
     assert callable(contributed) and contributed(ctx) == ModelSettings()
 
 
-async def test_only_canonical_settings_reach_the_published_baseline(
-    capfire: CaptureLogfire, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The run's settings carry more than the contract names, and none of it describes the agent to a reader.
+async def test_a_setting_the_baseline_leaves_out_is_still_sent(capfire: CaptureLogfire) -> None:
+    """`extra_headers` and `extra_body` are left out of the baseline, not out of the request.
 
-    `extra_headers` and `extra_body` are forwarded to the provider request and routinely carry
-    authorization; a provider-specific key may not even be JSON. The baseline is published to a
-    variable every project member can read, and it holds the canonical keys only -- because that is
-    all `AgentConfigSettings` has fields for, not because of a list of names to withhold. The run
-    itself still sends everything.
+    Which keys a baseline may hold is the contract's rule and `test_config_hint.py` asserts it there.
+    This is the other half of that promise: the run itself is unchanged by what the snapshot omits.
     """
-    monkeypatch.setattr(_agent_control, '_spawn_baseline_publish', _agent_control._publish_baseline)
     sent: list[ModelSettings | None] = []
 
     def model(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         sent.append(info.model_settings)
         return ModelResponse(parts=[TextPart('done')])
 
-    with variables_provider(capfire, published_value('agent__secretless_baseline', {})):
-        provider = logfire.DEFAULT_LOGFIRE_INSTANCE.config.get_variable_provider()
-        updates: list[VariableConfig] = []
-        original_update = provider.update_variable
-
-        def record_update(name: str, updated: VariableConfig) -> VariableConfig:
-            updates.append(updated)
-            return original_update(name, updated)
-
-        monkeypatch.setattr(provider, 'update_variable', record_update)
+    with variables_provider(capfire, VariablesConfig(variables={})):
         await Agent(
             FunctionModel(model),
             model_settings=cast(
@@ -1232,15 +919,12 @@ async def test_only_canonical_settings_reach_the_published_baseline(
                 {
                     'temperature': 0.1,
                     'extra_headers': {'Authorization': 'Bearer sk-secret'},
-                    'extra_body': {'signature': 'sk-secret'},
                     'openai_custom_option': object(),
                 },
             ),
             capabilities=[AgentControl('secretless_baseline')],
         ).run('hello')
 
-    assert json.loads(updates[0].example or '{}')['settings'] == {'temperature': 0.1}
-    # Left out of the snapshot, not out of the request: the run still sends them.
     assert sent[0] is not None and sent[0]['extra_headers'] == {'Authorization': 'Bearer sk-secret'}  # type: ignore[typeddict-item]
     assert sent[0]['openai_custom_option'] is not None  # type: ignore[typeddict-item]
 
@@ -1300,45 +984,3 @@ async def test_rename_routes_to_the_tool_the_model_was_handed(capfire: CaptureLo
         ).run('hello')
 
     assert authorized == ['first']
-
-
-async def test_a_dynamic_blocks_rendered_text_never_reaches_the_baseline(
-    capfire: CaptureLogfire, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """What a dynamic block rendered to is one request's answer, and the baseline is not private.
-
-    An instruction function reads the run: a tenant, a user, a retrieved document. The `example` it
-    would land in is published to a Logfire variable every project member can read, and it is there to
-    describe the agent, not to record a request. So a dynamic block contributes its `id` and its flag
-    and nothing else -- which is also all an editor needs to show it and to not offer to change it.
-    """
-    monkeypatch.setattr(_agent_control, '_spawn_baseline_publish', _agent_control._publish_baseline)
-    with variables_provider(capfire, published_value('agent__no_request_data', {})):
-        provider = logfire.DEFAULT_LOGFIRE_INSTANCE.config.get_variable_provider()
-        updates: list[VariableConfig] = []
-        original_update = provider.update_variable
-
-        def record_update(name: str, updated: VariableConfig) -> VariableConfig:
-            updates.append(updated)
-            return original_update(name, updated)
-
-        monkeypatch.setattr(provider, 'update_variable', record_update)
-        agent = Agent(
-            FunctionModel(lambda _messages, _info: ModelResponse(parts=[TextPart('done')])),
-            deps_type=str,
-            instructions='You are a support agent.',
-            capabilities=[AgentControl('no_request_data')],
-        )
-
-        @agent.instructions(name='tenant')
-        def tenant(ctx: RunContext[str]) -> str:
-            return f'You are serving tenant {ctx.deps}. Their account token is tok_SECRET_9f2.'
-
-        await agent.run('hello', deps='ACME Health (patient records)')
-
-    example = updates[0].example or ''
-    assert 'tok_SECRET_9f2' not in example and 'ACME Health' not in example
-    assert json.loads(example)['instructions'] == [
-        {'id': 'agent', 'instructions': 'You are a support agent.', 'dynamic': False},
-        {'id': 'agent:tenant', 'dynamic': True},
-    ]
