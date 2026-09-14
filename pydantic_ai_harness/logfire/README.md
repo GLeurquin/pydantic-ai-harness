@@ -75,6 +75,18 @@ The hint is emitted at most once per process per variable and Logfire instance, 
 request that has a baseline to describe, so an agent that never reaches a model reports nothing and a
 restart after a code change reports the new baseline.
 
+It also says **which deployment** reported it -- `agent_control.service_name`,
+`agent_control.environment`, and `agent_control.service_version`, read off the Logfire instance the
+hint is emitted on and left off individually when it does not know them. A variable is derived from
+the agent's name alone, so without them two services that each define a `checkout_assistant`, and one
+service's dev and prod, are indistinguishable in the span: they land on one
+`agent__checkout_assistant`, because a variable holds one value per project and the dev/prod split is
+its labels. `agent_control.baseline_sha256` digests the baseline, over the same canonical JSON the
+contract takes `SCHEMA_SHA256` over, so a consumer can tell "the same baseline again" from "this
+agent's code has moved" -- including across the once-per-process guard, which is what stops a change
+made mid-process from being re-reported at all. The digest is always of the *whole* baseline, so a
+report reduced to fit the span budget carries the same digest as an unreduced one of the same code.
+
 Because a hint travels the span pipeline rather than the variables API, three things follow: a process
 holding only a span-write token can still register an agent, the code baseline can never overwrite a
 value a teammate saved in the UI (which a read-modify-write of `example` could), and an agent that
@@ -549,7 +561,9 @@ reach it.
   whether or not a config resolved. It carries `agent_control.variable_name`,
   `agent_control.agent_name`, `agent_control.framework`, `agent_control.baseline_source`,
   `agent_control.schema_sha256`, `agent_control.baseline`, `agent_control.baseline_reduction`,
-  `agent_control.baseline_bytes`, and `agent_control.resolution_reason`. It is emitted on the Logfire
+  `agent_control.baseline_bytes`, `agent_control.resolution_reason`, `agent_control.baseline_sha256`,
+  and -- when the Logfire instance knows them -- `agent_control.service_name`,
+  `agent_control.environment`, and `agent_control.service_version`. It is emitted on the Logfire
   instance the variable belongs to rather than on the run's tracer, because it is addressed to the
   project that would hold the config
   and has to arrive whether or not core's instrumentation is active -- and as a span rather than a

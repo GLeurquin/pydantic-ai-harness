@@ -18,6 +18,7 @@ from typing import Any
 import logfire
 import pytest
 from logfire.agent_control import SCHEMA_SHA256
+from logfire.agent_control._schema import _canonical_json  # pyright: ignore[reportPrivateUsage]
 from logfire.testing import CaptureLogfire
 from logfire.variables import Rollout, VariableConfig, VariablesConfig
 from logfire.variables.local import LocalVariableProvider
@@ -131,6 +132,77 @@ async def test_an_unconfigured_agent_reports_its_whole_baseline(capfire: Capture
             {'name': 'empty', 'toolset': 'FunctionToolset'},
         ],
     }
+
+
+async def test_the_hint_says_which_deployment_reported_the_baseline(capfire: CaptureLogfire) -> None:
+    """A variable is derived from the agent's name alone, so the span has to say whose code this is.
+
+    Two services that each define a `checkout_assistant`, and the same service's dev and prod
+    deployments, all land on one `agent__checkout_assistant`: a variable is one value per project and
+    the dev/prod split is its labels. The identity comes off the Logfire instance the hint is emitted
+    on, so it is whatever the deployment already told `logfire.configure()` rather than something to
+    configure twice.
+    """
+    instance = logfire.configure(
+        local=True,
+        send_to_logfire=False,
+        console=False,
+        service_name='checkout',
+        service_version='1a2b3c4',
+        environment='prod',
+        variables=logfire.LocalVariablesOptions(config=VariablesConfig(variables={})),
+        additional_span_processors=[SimpleSpanProcessor(capfire.exporter)],
+    )
+    await Agent(TestModel(), name='identified', capabilities=[AgentControl(logfire_instance=instance)]).run('hello')
+
+    attributes = hints(capfire)[0]
+    assert attributes['agent_control.service_name'] == 'checkout'
+    assert attributes['agent_control.service_version'] == '1a2b3c4'
+    assert attributes['agent_control.environment'] == 'prod'
+
+
+async def test_identity_the_sdk_does_not_know_is_left_off(capfire: CaptureLogfire) -> None:
+    # Absent rather than `''`: absent is a state a consumer can act on -- group these hints by
+    # deployment, or say it cannot -- where an empty string is a value it has to learn to disbelieve.
+    # `service_version` is not asserted here: Logfire fills it in from the commit of the checkout the
+    # process runs in, so what it holds depends on where the tests are run rather than on this code.
+    with variables_provider(capfire, VariablesConfig(variables={})):
+        await Agent(TestModel(), name='anonymous_deployment', capabilities=[AgentControl()]).run('hello')
+
+    attributes = hints(capfire)[0]
+    assert 'agent_control.service_name' not in attributes
+    assert 'agent_control.environment' not in attributes
+
+
+async def test_the_baseline_digest_changes_only_when_the_code_does(capfire: CaptureLogfire) -> None:
+    # The guard reports one baseline per process per variable, so a code change that happens while the
+    # process runs is never re-reported. The digest is what makes that detectable at all: a consumer
+    # holding an earlier hint can tell "the same baseline again" from "this agent has moved".
+    with variables_provider(capfire, VariablesConfig(variables={})):
+        for name, instructions in (
+            ('digest_one', 'CODE one.'),
+            ('digest_two', 'CODE two.'),
+            ('digest_one_again', 'CODE one.'),
+        ):
+            await Agent(TestModel(), name=name, instructions=instructions, capabilities=[AgentControl()]).run('hello')
+
+    one, two, again = (attributes['agent_control.baseline_sha256'] for attributes in hints(capfire))
+    assert one != two
+    assert one == again
+
+
+def test_the_baseline_digest_uses_the_contracts_canonical_json() -> None:
+    """One definition of canonical, pinned against the contract's own.
+
+    `SCHEMA_SHA256` is taken over sorted keys, `(',', ':')` separators, and `ensure_ascii=False`, and
+    a baseline digest has to be taken over the same three or the TypeScript core computing one would
+    not agree with this one. The contract's helper is private, so this module states them again and
+    this is what keeps the two from drifting. The probe is non-ASCII on purpose: `ensure_ascii` is
+    the flag an ASCII document cannot tell apart, and it is the one a prompt in any other language
+    would expose first.
+    """
+    document = {'instructions': 'Grüße, ¿cómo estás?', 'model': 'test:test'}
+    assert _agent_control._canonical_json(document) == _canonical_json(document)
 
 
 async def test_the_hint_lists_every_instruction_block(capfire: CaptureLogfire) -> None:
@@ -443,6 +515,38 @@ async def test_a_baseline_too_large_even_reduced_is_omitted_and_says_so(
     assert 'agent_control.baseline' not in attributes
     assert attributes['agent_control.variable_name'] == 'agent__omitted_baseline'
     assert attributes['agent_control.baseline_bytes'] > 10
+
+
+async def test_a_reduced_baseline_still_digests_the_whole_one(
+    capfire: CaptureLogfire, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reduction changes what the span carries, and must not change what the digest says.
+
+    The same code reported twice, once under a budget that leaves no room for a baseline at all. A
+    digest taken after the reduction would make those two look like different agents -- and would
+    leave every omitted report looking like every other one, which is the case with nothing else on
+    the span to tell it apart by.
+    """
+
+    def agent(name: str) -> Agent[None, str]:
+        return Agent(
+            TestModel(),
+            name=name,
+            instructions='CODE instruction.',
+            tools=[get_weather],
+            capabilities=[AgentControl()],
+        )
+
+    with variables_provider(capfire, VariablesConfig(variables={})):
+        await agent('whole_baseline').run('hello')
+        with monkeypatch.context() as clamped:
+            clamped.setattr(_agent_control, '_MAX_BASELINE_BYTES', 10)
+            await agent('clamped_baseline').run('hello')
+
+    whole, clamped_attributes = hints(capfire)
+    assert whole['agent_control.baseline_reduction'] == 'none'
+    assert clamped_attributes['agent_control.baseline_reduction'] == 'omitted'
+    assert clamped_attributes['agent_control.baseline_sha256'] == whole['agent_control.baseline_sha256']
 
 
 def test_the_budget_stays_an_order_of_magnitude_under_the_backends() -> None:

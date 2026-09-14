@@ -15,6 +15,7 @@ never race an edit saved in the UI.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 import warnings
@@ -226,6 +227,63 @@ def _serialize_baseline(baseline: AgentConfig) -> tuple[str | None, BaselineRedu
 def _dump(baseline: AgentConfig) -> str:
     """The baseline as the JSON a hint carries, indented the way a variable's `example` is read."""
     return json.dumps(baseline.model_dump(exclude_none=True), indent=2)
+
+
+def _canonical_json(document: dict[str, Any]) -> bytes:
+    """The bytes a digest is taken over: one document, one spelling, in any language.
+
+    Sorted keys and `(',', ':')` separators make the digest independent of how the document happened
+    to be written out, and `ensure_ascii=False` makes it independent of the language computing it --
+    `json.dumps` escapes non-ASCII by default and `JSON.stringify` does not, so the first block of
+    instructions with an accent in it would otherwise give two identical baselines different digests.
+
+    This is the same canonical form the contract takes `SCHEMA_SHA256` over, stated again here
+    because the contract's own helper is private. `test_config_hint.py` pins the two against each
+    other with a non-ASCII probe, which is the only way this can drift without being caught.
+    """
+    return json.dumps(document, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
+
+
+def _baseline_sha256(baseline: AgentConfig) -> str:
+    """The digest that says whether two reports describe the same code.
+
+    Always over the *whole* baseline, never over the JSON the span ended up carrying. A baseline too
+    large for a span attribute is reported with its tool definitions dropped, or with no baseline at
+    all, and a digest taken after that would change when nothing about the agent had -- and would
+    leave every oversize report looking like every other one, which is the case that has nothing else
+    to tell it apart by. Which makes this the digest of a document the span does not always carry: a
+    consumer compares it with another hint's, and verifies it against `agent_control.baseline` only
+    when `agent_control.baseline_reduction` is `'none'`.
+    """
+    return hashlib.sha256(_canonical_json(baseline.model_dump(exclude_none=True))).hexdigest()
+
+
+def _deployment_attributes(instance: logfire.Logfire) -> dict[str, Any]:
+    """Which deployment reported a baseline, from what the Logfire instance already knows.
+
+    The variable a config lives in is derived from the agent's name alone, so two services that each
+    define a `checkout_assistant` land on one `agent__checkout_assistant` -- and so do the same
+    service's dev and prod deployments, since a variable is one value per project and the dev/prod
+    split is its labels. Without this a consumer cannot tell whose code it is looking at. The
+    resource attributes on the span carry some of it, but a contract the platform indexes has to say
+    what it promises, and OTel resource attributes are not something this span has promised.
+
+    Read off the instance the hint is emitted on rather than configured here: a process serving two
+    Logfire projects configures each separately, and asking the user to restate a service name they
+    already gave `logfire.configure()` is a second place for the two to disagree. `service_version`
+    is whatever Logfire resolved for the running code, which is the current commit when the process
+    runs in a git checkout and has not been told otherwise.
+
+    Anything the SDK does not know is left off rather than sent as an empty string: absent is a state
+    a consumer can act on, where `''` is a value it has to learn to disbelieve.
+    """
+    config = instance.config
+    attributes: dict[str, Any] = {
+        'agent_control.service_name': config.service_name,
+        'agent_control.environment': config.environment,
+        'agent_control.service_version': config.service_version,
+    }
+    return {name: value for name, value in attributes.items() if value}
 
 
 def _toolset_key(toolset: AbstractToolset[Any]) -> str:
@@ -803,6 +861,12 @@ class AgentControl(ManagedVariableCapability[AgentDepsT, AgentConfig]):
           the baseline had to give up to fit `_MAX_BASELINE_BYTES`. Always present, so a partial
           baseline is partial on the record rather than by inference.
         - `agent_control.baseline_bytes` -- the full baseline's UTF-8 size before any reduction.
+        - `agent_control.baseline_sha256` -- the digest of the whole baseline; see `_baseline_sha256`.
+          Present whatever `agent_control.baseline_reduction` says, and taken before any reduction, so
+          two reports of the same code agree and two oversize reports of different code do not.
+        - `agent_control.service_name`, `agent_control.environment`, `agent_control.service_version`
+          -- which deployment reported it; see `_deployment_attributes`. Each is left off when the
+          Logfire instance does not know it.
         - `agent_control.resolution_reason` -- why the run's variable resolved the way it did
           (`'resolved'`, `'code_default'`, ...). Since every agent reports, the span's existence no
           longer says whether one had a config, and this is the fact a consumer needs to tell a
@@ -844,15 +908,18 @@ class AgentControl(ManagedVariableCapability[AgentDepsT, AgentConfig]):
         # Nothing about describing the agent raises: code-side text the contract cannot hold -- a
         # block past the length bound, a setting it has no word for -- is left out of the baseline and
         # warned about, so an agent whose own prompt is too big to describe keeps making requests.
-        baseline, reduction, size = _serialize_baseline(self._code_baseline(request_context))
+        code_baseline = self._code_baseline(request_context)
+        baseline, reduction, size = _serialize_baseline(code_baseline)
         attributes: dict[str, Any] = {
             'agent_control.variable_name': variable.name,
             'agent_control.framework': _FRAMEWORK,
             'agent_control.baseline_source': 'code',
             'agent_control.schema_sha256': SCHEMA_SHA256,
+            'agent_control.baseline_sha256': _baseline_sha256(code_baseline),
             'agent_control.baseline_reduction': reduction,
             'agent_control.baseline_bytes': size,
             'agent_control.resolution_reason': resolution_reason(resolved),
+            **_deployment_attributes(variable.logfire_instance),
         }
         agent = ctx.agent
         if agent is not None and agent.name:

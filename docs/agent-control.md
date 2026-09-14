@@ -242,6 +242,19 @@ The hint is emitted **once per process per agent**, on the first model request t
 describe. So an agent that never reaches a model reports nothing, and a restart after a code change
 reports the new baseline.
 
+**Which deployment reported it.** A variable is derived from the agent's name alone, so two services
+that each define a `checkout_assistant`, and the same service's dev and prod, all land on one
+`agent__checkout_assistant` -- a variable holds one value per project, and the dev/prod split is its
+labels. The span therefore carries `agent_control.service_name`, `agent_control.environment`, and
+`agent_control.service_version`, taken from what you already told `logfire.configure()`. Each is left
+off when Logfire does not know it, rather than sent empty. `service_version` is whatever Logfire
+resolved for the running code, which is the current commit when your process runs in a git checkout.
+
+`agent_control.baseline_sha256` digests the baseline itself, so two reports of the same code agree
+and a code change is visible even across the once-per-process guard. It is always taken over the
+whole baseline, so it is unchanged by a reduction (below) and still there when the baseline itself
+could not be carried.
+
 Reporting rather than writing is what makes three things true: the credential your deployment holds
 stays read-only, a snapshot of your code can never overwrite a value a teammate saved in Logfire, and
 an agent that only ever runs **inside a durable workflow** (Temporal, DBOS, ...) registers like any
