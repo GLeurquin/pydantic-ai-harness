@@ -12,6 +12,7 @@ fixture in `conftest.py`; `test_a_run_writes_nothing_to_the_variable_api` says i
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
@@ -159,6 +160,76 @@ async def test_the_hint_says_which_deployment_reported_the_baseline(capfire: Cap
     assert attributes['agent_control.service_name'] == 'checkout'
     assert attributes['agent_control.service_version'] == '1a2b3c4'
     assert attributes['agent_control.environment'] == 'prod'
+
+
+async def test_the_hint_is_reported_as_written_with_scrubbing_at_its_default(capfire: CaptureLogfire) -> None:
+    """The baseline reaches Logfire as the code wrote it, with scrubbing left at its default.
+
+    Logfire's scrubbing matches substrings, and `auth`, `session` and `token` are ordinary words in a
+    prompt, a tool description, an agent's name and a service's name. Every string here matches one.
+    The baseline is the document the UI promotes into the config's `example`, so a redaction inside it
+    is a corrupted document rather than a hidden secret -- one that no longer matches
+    `agent_control.baseline_sha256` or `agent_control.baseline_bytes`, both taken over the baseline
+    before it is exported, and one that would put `[Scrubbed due to 'auth']` in front of the model if
+    somebody took that block over by id. A redacted `agent_control.variable_name` is worse still: the
+    hint names no variable, so the agent never appears in Logfire and nothing is raised anywhere.
+
+    The exemption is `BaseScrubber.SAFE_KEYS` in the `logfire` package, which is where the six
+    attribute names live; this is the adapter's half of that contract.
+    """
+
+    def refund_order(order_id: str) -> str:
+        """Refund an order the customer has authorization for.
+
+        Args:
+            order_id: The order to refund.
+        """
+        return order_id
+
+    instance = logfire.configure(
+        local=True,
+        send_to_logfire=False,
+        console=False,
+        # A service that serves checkout sessions, a preview environment named after the branch it
+        # was built from, and a version string carrying that branch name.
+        service_name='checkout-session-api',
+        service_version='1.4.0+authz.2',
+        environment='pr-auth-refresh',
+        variables=logfire.LocalVariablesOptions(config=VariablesConfig(variables={})),
+        additional_span_processors=[SimpleSpanProcessor(capfire.exporter)],
+    )
+    instructions = 'Order tools are authoritative for status and refunds.'
+    await Agent(
+        TestModel(),
+        name='auth_router',
+        instructions=instructions,
+        tools=[refund_order],
+        capabilities=[AgentControl(logfire_instance=instance)],
+    ).run('hello')
+
+    attributes = hints(capfire)[0]
+    carried = baseline(attributes)
+    assert carried['instructions'] == [{'id': 'agent', 'instructions': instructions, 'dynamic': False}]
+    assert carried['tool_definitions'][0]['description'] == 'Refund an order the customer has authorization for.'
+    assert attributes['agent_control.variable_name'] == 'agent__auth_router'
+    assert attributes['agent_control.agent_name'] == 'auth_router'
+    assert attributes['agent_control.service_name'] == 'checkout-session-api'
+    assert attributes['agent_control.service_version'] == '1.4.0+authz.2'
+    assert attributes['agent_control.environment'] == 'pr-auth-refresh'
+    # The two promises a reduction of `'none'` makes to a consumer, checked against the document the
+    # span carries rather than the one this process built.
+    assert attributes['agent_control.baseline_reduction'] == 'none'
+    assert (
+        attributes['agent_control.baseline_sha256']
+        == hashlib.sha256(_agent_control._canonical_json(carried)).hexdigest()
+    )
+    assert attributes['agent_control.baseline_bytes'] == len(attributes['agent_control.baseline'].encode())
+    # Scrubbing records what it rewrote, so reading that record covers every attribute of the contract
+    # rather than the ones named above. The run's own `logfire.variables.agent__auth_router` attribute
+    # is still redacted: its key is built from the variable's name, which an exact-match safe key
+    # cannot express, and it belongs to Logfire's variables feature rather than to this contract.
+    rewritten = json.loads(attributes.get('logfire.scrubbed', '[]'))
+    assert [note for note in rewritten if str(note['path'][1]).startswith('agent_control.')] == []
 
 
 async def test_identity_the_sdk_does_not_know_is_left_off(capfire: CaptureLogfire) -> None:

@@ -254,6 +254,13 @@ def _baseline_sha256(baseline: AgentConfig) -> str:
     to tell it apart by. Which makes this the digest of a document the span does not always carry: a
     consumer compares it with another hint's, and verifies it against `agent_control.baseline` only
     when `agent_control.baseline_reduction` is `'none'`.
+
+    What makes that verification hold is that the hint's attributes are exempt from Logfire's
+    scrubbing, which is on by default and matches substrings: an instruction block reading "Order
+    tools are authoritative for status and refunds" would otherwise be carried as
+    `[Scrubbed due to 'auth']`, rewriting the document after this digest and the byte count were taken
+    over it. The exemption is `BaseScrubber.SAFE_KEYS` in the `logfire` package, which is what makes
+    it one list for every Agent Control SDK rather than a thing each adapter arranges for itself.
     """
     return hashlib.sha256(_canonical_json(baseline.model_dump(exclude_none=True))).hexdigest()
 
