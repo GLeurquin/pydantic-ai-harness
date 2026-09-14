@@ -352,10 +352,21 @@ engine:
         const mcpConfig = join(process.env.RUNNER_TEMP || "/tmp", "gh-aw", "mcp-config", "mcp-servers.json");
         if (existsSync(mcpConfig)) cliArgs.push("--mcp-config", mcpConfig);
         cliArgs.push("-m", `${useMessagesAPI ? "anthropic" : "openai-chat"}:${model}`, readFileSync(promptFile, "utf8"));
+        // Log only the origin because endpoint userinfo and query parameters can
+        // contain credentials, and workflow run logs are not private.
+        const otlpEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+        let otlpOrigin = "";
+        if (otlpEndpoint) {
+          try {
+            otlpOrigin = new URL(otlpEndpoint).origin;
+          } catch {
+            otlpOrigin = "(unparsable)";
+          }
+        }
         log(
           `provider=${configuredBaseUrl ? "(PAI_BASE_URL)" : provider} model=${model} baseUrl=${baseUrl}` +
             (configuredAgent ? ` agent=${configuredAgent}` : "") +
-            (process.env.OTEL_EXPORTER_OTLP_ENDPOINT ? ` otlp=${process.env.OTEL_EXPORTER_OTLP_ENDPOINT}` : "")
+            (otlpOrigin ? ` otlp=${otlpOrigin}` : "")
         );
         // The target is passed twice on purpose: once for LAUNCHER, which imports it
         // and hands the CLI a module already in sys.modules, and once as the `-a`

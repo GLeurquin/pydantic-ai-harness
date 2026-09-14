@@ -179,6 +179,7 @@ engine:
 
 ```yaml {title="triage_agent.yml"}
 name: triage
+model: openai:gpt-5
 instructions: |
   You triage one GitHub issue. Read the issue in the prompt, then post exactly one
   comment with the `safeoutputs_add_comment` tool. Suggest a label; do not apply one.
@@ -188,10 +189,18 @@ capabilities:
       effort: medium
 ```
 
-No `model:` in the spec, for the reason a module carries none: the engine always passes
-`-m` from the workflow's `engine.model`, and an explicit `-m` replaces whatever a loaded
-agent declares. The gateway's MCP servers still arrive through `--mcp-config`, so a spec
-agent gets the safe outputs and the GitHub tools on the same terms as a module.
+**The spec needs a `model:` even though it does not decide the model.** A module can leave
+the model out, because an `Agent` may be constructed without one, but `Agent.from_spec()`
+rejects a spec that names none, and it builds that model while loading the file. So the
+line has to be there, and it has to be a model the step can construct: name the same
+provider as the workflow's `engine.model`, since that is the one whose credential the
+engine puts in the environment. The value itself is then replaced, because the engine
+always passes `-m` and an explicit `-m` replaces whatever a loaded agent declares. Writing
+`openai/gpt-5` in the workflow and `openai:gpt-5` in the spec keeps the two readable
+together; only the workflow's copy is live.
+
+The gateway's MCP servers still arrive through `--mcp-config`, so a spec agent gets the
+safe outputs and the GitHub tools on the same terms as a module.
 
 Two things a spec cannot do today, both of which send you back to a module:
 
@@ -593,8 +602,10 @@ what the engine keys on. When it is set, and only then:
   `none`. Set either in the workflow to turn that signal back on for a backend that takes
   it; token counts are on the spans either way.
 
-The configuration line the engine prints gains an `otlp=` segment while this is active, so a
-run log says whether telemetry was on:
+The configuration line the engine prints gains an `otlp=` segment, carrying the endpoint's
+origin and no more, because userinfo and query parameters in an endpoint are credentials and
+a run log is readable by anyone who can read the repository. It is there so that a run log
+says whether telemetry was on, and roughly where it went:
 
 ```text
 [pydantic-ai] provider=openai model=gpt-5 baseUrl=http://api-proxy:10000/v1 agent=my_agent:agent otlp=https://logfire-us.pydantic.dev
@@ -634,8 +645,21 @@ allowlist; the rest of this section is unchanged.
 
 A `PAI_AGENT` module that calls `logfire.configure()` itself runs after the engine's call and
 replaces it, which is how to set a service name, scrubbing rules or extra span processors.
-Two things to know before you do:
+It replaces the whole configuration, not the arguments you restate, so carry over the ones
+above that are load-bearing:
 
+```python
+logfire.configure(send_to_logfire='if-token-present', console=False, distributed_tracing=True)
+logfire.instrument_pydantic_ai()
+```
+
+Four things to know before you do:
+
+- **`console=False` is not optional.** Leaving it out restores logfire's console exporter,
+  which writes every span to stderr, which is the stream the engine's log parser reads.
+- **`distributed_tracing=True` keeps you in the run's trace.** The engine has already
+  attached the context from `TRACEPARENT` by the time your module is imported, and that
+  attachment survives, but without the flag logfire warns about it on every run.
 - **A bare `logfire.configure()` fails here.** Its `send_to_logfire` default requires a
   `LOGFIRE_TOKEN` in the environment, and the token in the frontmatter above is a header
   value rather than an environment variable. Pass `send_to_logfire='if-token-present'`, as

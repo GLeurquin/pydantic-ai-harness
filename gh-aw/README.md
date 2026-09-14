@@ -172,10 +172,14 @@ installing the `researcher` extra. `pydantic_ai_harness.coder:coder_agent` names
 default composition explicitly.
 
 A `.yml`, `.yaml` or `.json` spec covers instructions plus built-in capabilities, and
-the gateway's MCP servers still reach it through `--mcp-config`. It cannot name a
-harness capability: spec capability names resolve through a closed registry that the
-harness is not part of, and the CLI passes no `custom_capability_types`
-(pydantic/pydantic-ai#8334). Nor can it define a function tool. Either need a module.
+the gateway's MCP servers still reach it through `--mcp-config`. Unlike a module it has
+to carry a `model:`, because `Agent.from_spec()` rejects a spec without one and builds
+that model while loading the file, so the value has to name the same provider as
+`engine.model`, whose credential the engine puts in the environment. `-m` then replaces
+it, which makes the spec's copy documentation rather than configuration. A spec cannot
+name a harness capability: spec capability names resolve through a closed registry that
+the harness is not part of, and the CLI passes no `custom_capability_types`
+(pydantic/pydantic-ai#8334). Nor can it define a function tool. Either needs a module.
 
 ## Observability
 
@@ -231,11 +235,15 @@ already carries `gh-aw.engine.id` (`pydantic-ai`), `gh-aw.workflow.name`,
 `gh-aw.repository`, `gh-aw.run.id` and `github.run_id`, and `logfire.configure()` merges
 the variable into the resource, so `gh-aw.engine.id` is the filter that finds runs of this
 engine in a backend. The configuration line the engine logs gains an `otlp=` segment while
-this is active.
+this is active, carrying the endpoint's origin only: userinfo and query parameters are
+credentials, and a run log is not a private place to put one.
 
 A `PAI_AGENT` module that calls `logfire.configure()` itself runs after the engine's call
-and replaces it. Such a module has to pass `send_to_logfire` for the reason above, and to
-install `logfire` through the workflow's own `steps:` if it imports it on runs that
+and replaces it, whole rather than argument by argument, so it has to restate the three
+settings above: `send_to_logfire="if-token-present"` or it raises, `console=False` or the
+`log-parser` reads spans, and `distributed_tracing=True` or it warns on every run. The
+context attached from `TRACEPARENT` survives the reconfiguration. Such a module also has
+to install `logfire` through the workflow's own `steps:` if it imports it on runs that
 configure no endpoint.
 
 ## gh-aw compatibility
