@@ -165,6 +165,18 @@ or is not an `Agent` fails the step with the Python traceback. A spec file, and 
 dotted `module.attribute` form `pai` also accepts, are left to the CLI, which reports
 its own error.
 
+The target does not have to live in the repository. The harness exports assembled
+agents as importable variables, so `PAI_AGENT: pydantic_ai_harness.researcher:researcher_agent`
+runs `Researcher` with no agent code in the repository at all, given a `steps:` block
+installing the `researcher` extra. `pydantic_ai_harness.coder:coder_agent` names the
+default composition explicitly.
+
+A `.yml`, `.yaml` or `.json` spec covers instructions plus built-in capabilities, and
+the gateway's MCP servers still reach it through `--mcp-config`. It cannot name a
+harness capability: spec capability names resolve through a closed registry that the
+harness is not part of, and the CLI passes no `custom_capability_types`
+(pydantic/pydantic-ai#8334). Nor can it define a function tool. Either need a module.
+
 ## Observability
 
 The engine instruments the agent whenever gh-aw supplies an OTLP endpoint. A workflow

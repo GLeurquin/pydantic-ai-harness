@@ -8,10 +8,13 @@ description: Define a pydantic_ai.Agent in your repository and have gh-aw run it
 [GitHub Agentic Workflows](https://github.com/github/gh-aw) (gh-aw) runs an agent from a
 Markdown file in `.github/workflows/`: it triggers on issues, pull requests or a schedule,
 starts the agent in a container behind an egress firewall, hands it MCP tools, and writes
-what the agent produces back to GitHub through safe outputs. This page walks through
-pointing that machinery at an agent your own repository defines, rather than at the coder
-agent the [`pydantic-ai` engine](https://github.com/pydantic/pydantic-ai-harness/tree/main/gh-aw)
-composes by default.
+what the agent produces back to GitHub through safe outputs. The
+[`pydantic-ai` engine](https://github.com/pydantic/pydantic-ai-harness/tree/main/gh-aw)
+points that machinery at a Pydantic AI agent, which can be the
+[`Coder`](/ai/harness/coder/) composition it runs by default, another agent the harness
+ships, or one your own repository defines. The three are laid out in
+[Start from `Coder`, `Researcher`, or your own](#start-from-coder-researcher-or-your-own);
+this page then walks through the last of them end to end.
 
 The finished repository is
 [dsfaccini/gh-aw-pydantic-ai-demo](https://github.com/dsfaccini/gh-aw-pydantic-ai-demo);
@@ -43,6 +46,56 @@ import-based engine like this one, so it is not part of the configuration below.
   when a workflow declares the `create-issue` safe output, and fails compilation if issues
   are off.
 - Actions enabled on the repository (see [Repository settings](#repository-settings)).
+
+## Start from `Coder`, `Researcher`, or your own
+
+Writing an agent module is the last of three options, not the first.
+
+**The default composition.** With no `PAI_AGENT` at all, the engine composes an agent from
+the harness's [`Coder`](/ai/harness/coder/) capability, which brings filesystem access, an
+allowlisted shell, planning, repository orientation and an explorer sub-agent. A workflow
+that wants a coding agent loose on its own repository needs no Python and no agent module:
+
+```yaml
+---
+on:
+  issues:
+    types: [opened]
+permissions:
+  contents: read
+  issues: read
+imports:
+  - pydantic/pydantic-ai-harness/gh-aw/pydantic.md@main
+engine:
+  id: pydantic-ai
+  model: openai/gpt-5
+safe-outputs:
+  add-comment:
+---
+```
+
+**Another ready-made agent.** The harness exports assembled agents as importable variables,
+so `PAI_AGENT` can name one directly and the repository still contains no agent code:
+
+```yaml
+engine:
+  id: pydantic-ai
+  model: openai/gpt-5
+  env:
+    PAI_AGENT: pydantic_ai_harness.researcher:researcher_agent
+steps:
+  - name: Install the researcher extra
+    run: python3 -P -m pip install --quiet --user --disable-pip-version-check "pydantic-ai-harness[researcher]"
+```
+
+[`Researcher`](/ai/harness/researcher/) needs its own extra for the local search and fetch
+fallbacks, which is what the `steps:` block installs, and its searches need the hosts it
+reaches on the workflow's `network:` allowlist. `pydantic_ai_harness.coder:coder_agent` is
+the same shape for the coder agent, and is worth naming explicitly when a workflow wants
+the default composition but also wants `PAI_AGENT` set for clarity.
+
+**Your own agent.** The rest of this page. Reach for it when the agent needs its own tools,
+its own instructions, or a composition the harness does not ship.
 
 ## The agent module
 
@@ -110,9 +163,48 @@ The module is imported once, by the interpreter that then runs the CLI in the sa
 so module-level work runs once. An agent that raises on import fails the step with its
 Python traceback rather than a one-line "could not load agent" message.
 
-`PAI_AGENT` also accepts a `.yml`, `.yaml` or `.json`
-[agent spec](/ai/core-concepts/agent-spec/) instead of an import path. A spec cannot name
-harness capabilities, so a module is the form to use when the agent composes any of them.
+## The agent as a spec instead
+
+`PAI_AGENT` takes a `.yml`, `.yaml` or `.json` [agent spec](/ai/core-concepts/agent-spec/)
+wherever it takes an import path, so a repository that is already configuring one thing in
+YAML can configure the agent the same way, in a file beside the workflow:
+
+```yaml
+engine:
+  id: pydantic-ai
+  model: openai/gpt-5
+  env:
+    PAI_AGENT: triage_agent.yml
+```
+
+```yaml {title="triage_agent.yml"}
+name: triage
+instructions: |
+  You triage one GitHub issue. Read the issue in the prompt, then post exactly one
+  comment with the `safeoutputs_add_comment` tool. Suggest a label; do not apply one.
+  Do not edit files. Do not open issues.
+capabilities:
+  - Thinking:
+      effort: medium
+```
+
+No `model:` in the spec, for the reason a module carries none: the engine always passes
+`-m` from the workflow's `engine.model`, and an explicit `-m` replaces whatever a loaded
+agent declares. The gateway's MCP servers still arrive through `--mcp-config`, so a spec
+agent gets the safe outputs and the GitHub tools on the same terms as a module.
+
+Two things a spec cannot do today, both of which send you back to a module:
+
+- **Name a harness capability.** A spec resolves capability names through a closed registry
+  that the harness capabilities are not part of, and the CLI passes no
+  `custom_capability_types`, so a spec reaches the built-in capabilities and nothing else.
+  `Coder`, `Researcher` and the rest are module-only. See
+  [pydantic-ai#8334](https://github.com/pydantic/pydantic-ai/issues/8334).
+- **Define a function tool.** The `label_catalog` tool above is Python, and there is no
+  spec form for it.
+
+Instructions plus built-in capabilities is the shape a spec handles well. Anything past
+that is a module.
 
 ## The workflow file
 
