@@ -14,6 +14,7 @@ from logfire.agent_control import (
     InstructionBlock,
     ParameterOverride,
     ToolDefinitionOverride,
+    build_baseline,
 )
 from logfire.testing import CaptureLogfire
 from logfire.variables import Variable, VariablesConfig
@@ -983,9 +984,9 @@ async def test_a_resolved_config_builds_one_snapshot_per_process(
     # once-per-process guard, not the config having resolved. Two runs of an agent that calls a tool
     # is four model requests, and one snapshot.
     builds: list[AgentConfig] = []
-    build_baseline = _agent_control.build_baseline
 
     def counting(**kwargs: Any) -> AgentConfig:
+        # The contract's own function, not the name patched onto the module under test.
         baseline = build_baseline(**kwargs)
         builds.append(baseline)
         return baseline
