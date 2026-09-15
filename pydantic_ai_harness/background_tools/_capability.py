@@ -26,7 +26,6 @@ from pydantic_ai.tools import (
     RunContext,
     ToolDefinition,
     ToolSelector,
-    ToolSelectorFunc,
     matches_tool_selector,
 )
 
@@ -67,18 +66,6 @@ def _with_run_in_background(tool_def: ToolDefinition) -> ToolDefinition:
     }
     schema = {**tool_def.parameters_json_schema, 'properties': {**properties, _RUN_IN_BACKGROUND: flag}}
     return replace(tool_def, parameters_json_schema=schema)
-
-
-def _any_of(selectors: Sequence[ToolSelector[AgentDepsT]]) -> ToolSelectorFunc[AgentDepsT]:
-    """A selector that matches a tool if any of `selectors` does."""
-
-    async def matches(ctx: RunContext[AgentDepsT], tool_def: ToolDefinition) -> bool:
-        for selector in selectors:
-            if await matches_tool_selector(selector, ctx, tool_def):
-                return True
-        return False
-
-    return matches
 
 
 def _format_background_error(error: ApprovalRequired | CallDeferred | ToolRetryError | ToolFailedError) -> str:
@@ -145,7 +132,7 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
     Combine with [`SetToolMetadata`][pydantic_ai.capabilities.SetToolMetadata] to mark
     several tools at once, or with `FunctionToolset.with_metadata(...)` to mark a whole
     toolset. Or pass a name list / predicate via `tools=...` to ignore metadata entirely.
-    Use `optional_tools` to let the model choose per call whether a tool runs in the background.
+    Set the key to `'optional'` instead of `True` to let the model choose per call.
 
     Warning:
         Run cleanup cancels live background tasks and waits for them, so async tools must
@@ -165,15 +152,11 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
     - `'all'`: every tool in the agent's toolset (rarely what you want).
     - `Sequence[str]`: tools with matching names.
     - Callable `(ctx, tool_def) -> bool | Awaitable[bool]`: custom predicate.
-    """
 
-    optional_tools: ToolSelector[AgentDepsT] = field(default_factory=lambda: {'background': 'optional'})
-    """Tools the model may run in the background per call.
-
-    Matching tools gain an optional boolean `run_in_background` argument, which the tool function
-    never receives; a call runs in the background only when the model passes `true`. Tools that
-    also match `tools` always run in the background, and tools that cannot run in the background
-    in this run (sequential tools, sequential runs, realtime sessions) are left unchanged.
+    A tool with `metadata={'background': 'optional'}` that this selector does not match gains an
+    optional boolean `run_in_background` argument, which the tool function never receives; a call
+    runs in the background only when the model passes `true`. Tools that cannot run in the
+    background in this run (sequential tools, sequential runs, realtime sessions) are left unchanged.
     """
 
     id: str | None = 'background_tools'
@@ -185,15 +168,14 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
         # Core only groups instances of the same capability class under one id.
         assert isinstance(merged, cls)
 
-        instances: list[BackgroundTools[AgentDepsT]] = []
-        for capability in capabilities:
-            assert isinstance(capability, cls)
-            instances.append(capability)
-        return replace(
-            merged,
-            tools=_any_of([capability.tools for capability in instances]),
-            optional_tools=_any_of([capability.optional_tools for capability in instances]),
-        )
+        async def matches_any(ctx: RunContext[AgentDepsT], tool_def: ToolDefinition) -> bool:
+            for capability in capabilities:
+                assert isinstance(capability, cls)
+                if await matches_tool_selector(capability.tools, ctx, tool_def):
+                    return True
+            return False
+
+        return replace(merged, tools=matches_any)
 
     _tasks: set[asyncio.Task[tuple[UserContent, ...]]] = field(
         default_factory=set[asyncio.Task[tuple[UserContent, ...]]], init=False, repr=False
@@ -215,7 +197,7 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
             return None
         if await matches_tool_selector(self.tools, ctx, tool_def):
             return 'always'
-        if await matches_tool_selector(self.optional_tools, ctx, tool_def):
+        if (tool_def.metadata or {}).get('background') == 'optional':
             return 'optional'
         return None
 

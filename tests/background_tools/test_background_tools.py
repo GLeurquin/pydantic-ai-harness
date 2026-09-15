@@ -1055,7 +1055,7 @@ class TestBackgroundTools:
             for part in message.parts
         )
 
-    async def test_always_background_selector_wins_for_a_tool_matching_both(self) -> None:
+    async def test_always_background_selector_wins_over_optional_metadata(self) -> None:
         seen: list[ToolDefinition] = []
 
         def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -1066,10 +1066,10 @@ class TestBackgroundTools:
 
         agent = Agent(
             FunctionModel(model_fn),
-            capabilities=[BackgroundTools(tools=['research'], optional_tools=['research'])],
+            capabilities=[BackgroundTools(tools=['research'])],
         )
 
-        @agent.tool_plain
+        @agent.tool_plain(metadata={'background': 'optional'})
         async def research() -> str:  # pyright: ignore[reportUnusedFunction]
             return 'researched'
 
@@ -1083,40 +1083,14 @@ class TestBackgroundTools:
         def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
             return ModelResponse(parts=[ToolCallPart(tool_name='research', args='{}')])  # pragma: no cover
 
-        agent = Agent(FunctionModel(model_fn), capabilities=[BackgroundTools(optional_tools=['research'])])
+        agent = Agent(FunctionModel(model_fn), capabilities=[BackgroundTools()])
 
-        @agent.tool_plain
+        @agent.tool_plain(metadata={'background': 'optional'})
         async def research(run_in_background: bool) -> str:  # pyright: ignore[reportUnusedFunction]
             return str(run_in_background)  # pragma: no cover
 
         with pytest.raises(UserError, match='already has a'):
             await agent.run('go')
-
-    async def test_combined_capabilities_merge_optional_selectors(self) -> None:
-        seen: list[ToolDefinition] = []
-
-        def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-            seen.extend(info.function_tools)
-            return ModelResponse(parts=[TextPart(content='done')])
-
-        agent = Agent(
-            FunctionModel(model_fn),
-            capabilities=[BackgroundTools(optional_tools=['first']), BackgroundTools(optional_tools=['second'])],
-        )
-
-        @agent.tool_plain
-        async def first() -> str:  # pyright: ignore[reportUnusedFunction]
-            return 'first'  # pragma: no cover
-
-        @agent.tool_plain
-        async def second() -> str:  # pyright: ignore[reportUnusedFunction]
-            return 'second'  # pragma: no cover
-
-        await agent.run('go')
-
-        properties = {tool.name: tool.parameters_json_schema['properties'] for tool in seen}
-        assert 'run_in_background' in properties['first']
-        assert 'run_in_background' in properties['second']
 
     @pytest.mark.parametrize(
         'args', ['{', '[]', '{"run_in_background": "yes"}'], ids=['not-json', 'not-object', 'flag-not-boolean']
@@ -1135,9 +1109,9 @@ class TestBackgroundTools:
                 return ModelResponse(parts=[ToolCallPart(tool_name='research', args='{}')])
             return ModelResponse(parts=[ToolCallPart(tool_name='research', args=args)])
 
-        agent = Agent(FunctionModel(model_fn), capabilities=[BackgroundTools(optional_tools=['research'])])
+        agent = Agent(FunctionModel(model_fn), capabilities=[BackgroundTools()])
 
-        @agent.tool_plain
+        @agent.tool_plain(metadata={'background': 'optional'})
         async def research() -> str:  # pyright: ignore[reportUnusedFunction]
             return 'researched'
 
@@ -1152,9 +1126,9 @@ class TestBackgroundTools:
             seen.extend(info.function_tools)
             return ModelResponse(parts=[TextPart(content='done')])
 
-        agent = Agent(FunctionModel(model_fn), capabilities=[BackgroundTools(optional_tools=['research'])])
+        agent = Agent(FunctionModel(model_fn), capabilities=[BackgroundTools()])
 
-        @agent.tool_plain
+        @agent.tool_plain(metadata={'background': 'optional'})
         async def research() -> str:  # pyright: ignore[reportUnusedFunction]
             return 'researched'  # pragma: no cover
 

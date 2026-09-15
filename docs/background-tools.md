@@ -56,13 +56,11 @@ BackgroundTools(tools=lambda ctx, td: td.name.startswith('research_'))
 
 ### Letting the model decide
 
-Set the `background` metadata key to `'optional'` instead of `True` and the tool gains a
-`run_in_background` argument; a call runs in the background only when the model passes `true`.
-`BackgroundTools(optional_tools=...)` accepts any
-[`ToolSelector`](/ai/api/pydantic-ai/tools/#pydantic_ai.tools.ToolSelector), like `tools`.
-A tool selected by both always runs in the background. Sequential tools and realtime sessions
-cannot run tools in the background, so they do not get the argument. A tool that already has a
-`run_in_background` parameter is rejected.
+Set the `background` metadata key to `'optional'` instead of `True`. The tool gains a
+`run_in_background` argument, and a call runs in the background only when the model passes
+`true`. A tool that `tools` selects always runs in the background, whatever its metadata.
+Sequential tools and realtime sessions cannot run tools in the background, so they do not
+get the argument. A tool that already has a `run_in_background` parameter is rejected.
 
 ```python
 from pydantic_ai import Agent
@@ -156,10 +154,7 @@ restores the handler's return value, not messages enqueued while the handler ran
 ## API
 
 ```python {test="skip"}
-BackgroundTools(
-    tools: ToolSelector = {'background': True},
-    optional_tools: ToolSelector = {'background': 'optional'},
-)
+BackgroundTools(tools: ToolSelector = {'background': True})
 ```
 
 ## Agent spec (YAML/JSON)
