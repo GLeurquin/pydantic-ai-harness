@@ -82,10 +82,24 @@ _ROUTES_TO_METADATA_KEY = '__agent_control_routes_to__'
 # Drop warnings already emitted in this process, keyed by the message itself. See `_warn_dropped`.
 _warned_drops: set[str] = set()
 
-# Destinations already hinted in this process. The key is the Logfire instance the config would be
-# created in as well as the variable's name, so a process serving two Logfire projects reports the
-# agent to each of them rather than letting the first one it touched stand in for both.
-_config_hint_emitted: set[tuple[logfire.Logfire, str]] = set()
+# Destinations already hinted in this process. The key is the Logfire *config* the variable resolves
+# through as well as the variable's name, so a process serving two Logfire projects reports the agent
+# to each of them rather than letting the first one it touched stand in for both.
+#
+# The config rather than the `Logfire` instance, because `Variable.__init__` stores
+# `logfire_instance.with_settings(...)`, which builds a new `Logfire` per variable, and `Logfire` has
+# no value equality. Keyed on the instance, every `Variable` carried its own key, so the guard only
+# ever deduplicated repeat runs of one long-lived agent: an agent constructed per request reported a
+# hint on every request. `with_settings` passes `config` through by reference, so it is the object
+# that is actually one per process per project -- which is what "once per process" was always meant
+# to mean.
+#
+# Keyed by `id(config)` rather than the config itself because `LogfireConfig` is a mutable dataclass
+# and so unhashable, and the config is held alongside its id so that it cannot be collected and have
+# that id handed to a different config -- which would suppress a hint that was never sent. The type
+# is spelled `object` rather than `LogfireConfig`, which logfire does not export: nothing here does
+# anything with it except keep it alive.
+_config_hint_emitted: dict[int, tuple[object, set[str]]] = {}
 _config_hint_lock = threading.Lock()
 
 _CONFIG_HINT_SPAN_NAME = 'agent_control_config_hint'
@@ -907,11 +921,12 @@ class AgentControl(ManagedVariableCapability[AgentDepsT, AgentConfig]):
         # The agent's own variable, not a shared attribute: a nameless capability backs one variable
         # per agent, so the hint has to name the one this run resolved.
         variable = self._ensure_variable(ctx)
-        key = (variable.logfire_instance, variable.name)
+        config = variable.logfire_instance.config
         with _config_hint_lock:
-            if key in _config_hint_emitted:
+            _, reported = _config_hint_emitted.setdefault(id(config), (config, set()))
+            if variable.name in reported:
                 return
-            _config_hint_emitted.add(key)
+            reported.add(variable.name)
         # Nothing about describing the agent raises: code-side text the contract cannot hold -- a
         # block past the length bound, a setting it has no word for -- is left out of the baseline and
         # warned about, so an agent whose own prompt is too big to describe keeps making requests.

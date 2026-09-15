@@ -433,6 +433,28 @@ async def test_a_configured_agent_reports_once_per_process_too(capfire: CaptureL
     assert len(hints(capfire)) == 1
 
 
+async def test_rebuilding_the_agent_reports_once_per_process_too(capfire: CaptureLogfire) -> None:
+    """Two `Agent` objects for one config in one process report once between them, not once each.
+
+    The tests above reuse one agent across its runs, so they pass whether the guard is per process or
+    merely per capability. This is the case that separates them, and it is the common one: an agent
+    built inside a request handler is a new `Agent`, a new `AgentControl`, and a new `Variable` on
+    every request.
+
+    It caught a real defect. The guard was keyed on `variable.logfire_instance`, and
+    `Variable.__init__` stores `logfire_instance.with_settings(...)` -- a new `Logfire` per variable,
+    with no value equality -- so no two variables ever shared a key and the guard deduplicated
+    nothing beyond repeat runs of one long-lived agent. Per-request construction reported a hint,
+    with a full baseline walk, on every request.
+    """
+    with variables_provider(capfire, VariablesConfig(variables={})):
+        for _ in range(2):
+            agent = Agent(TestModel(), name='rebuilt_each_time', instructions='code', capabilities=[AgentControl()])
+            await agent.run('hello')
+
+    assert len(hints(capfire)) == 1
+
+
 async def test_each_logfire_project_is_reported_to(capfire: CaptureLogfire) -> None:
     # A process can serve several Logfire projects, and a config in the first is not a config in the
     # second, so the guard is keyed by destination as well as by variable name. Each hint also has to
