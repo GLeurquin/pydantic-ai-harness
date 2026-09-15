@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import uuid
 from dataclasses import dataclass
 from typing import NoReturn
@@ -96,18 +97,37 @@ class Platform:
         response.raise_for_status()
         return StoredVariable.model_validate(response.json())
 
-    def delete_variable(self, name: str = VARIABLE_NAME) -> bool:
-        """Delete the variable, reporting whether it was there. Safe to call when it is not."""
-        response = httpx.delete(f'{self.base_url}/v1/variables/{name}/', headers=self._headers, timeout=_TIMEOUT)
-        if response.status_code == 404:
-            return False
-        response.raise_for_status()
-        return True
+    def delete_variable(self, name: str = VARIABLE_NAME, *, attempts: int = 3) -> bool:
+        """Delete the variable, reporting whether it was there. Safe to call when it is not.
 
-    def create_variable(self, *, example: str | None = None, name: str = VARIABLE_NAME) -> StoredVariable:
+        Retried on a transport failure, unlike every other call here, because this is the cleanup
+        path: what it fails to delete is left behind on someone's project, and a dropped connection
+        should not be what leaves it there. A refusal from the server is not retried -- that is an
+        answer, and repeating the request would not change it.
+        """
+        for attempt in range(1, attempts + 1):
+            try:
+                response = httpx.delete(
+                    f'{self.base_url}/v1/variables/{name}/', headers=self._headers, timeout=_TIMEOUT
+                )
+            except httpx.TransportError:
+                if attempt == attempts:
+                    raise
+                time.sleep(attempt)
+                continue
+            if response.status_code == 404:
+                return False
+            response.raise_for_status()
+            return True
+        raise AssertionError('unreachable: the loop returns or raises on every attempt')
+
+    def create_variable(
+        self, *, example: str | None = None, name: str = VARIABLE_NAME, display_name: str = AGENT_NAME
+    ) -> StoredVariable:
         """Create the config the way Logfire's promote-a-hint flow has to.
 
-        `display_name` is required when `kind='agent'`: without it the API answers
+        `display_name` is the agent's name as written, which is what the hint span's
+        `agent_control.agent_name` carries. It is required when `kind='agent'`: without it the API answers
         `400 Agent Control variables require a display name`. `json_schema` is the contract's own
         `AGENT_CONFIG_JSON_SCHEMA` rather than one derived from the Pydantic model, because the UI
         edits against it and the platform validates later versions against it. `example` is the
@@ -117,7 +137,7 @@ class Platform:
         body: dict[str, object] = {
             'name': name,
             'kind': 'agent',
-            'display_name': AGENT_NAME,
+            'display_name': display_name,
             'description': 'Agent Control conformance suite (pydantic-ai-harness integration tests).',
             'json_schema': AGENT_CONFIG_JSON_SCHEMA,
             'rollout': {'labels': {}},

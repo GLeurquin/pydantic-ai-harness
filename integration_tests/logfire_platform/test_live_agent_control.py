@@ -30,12 +30,12 @@ Eighteen claims, one or more tests each:
 17. A config is picked up once per run, so publishing mid-run takes effect on the next one.
 18. A configured agent still reports its code baseline, marked `resolved`.
 
-**This suite creates, publishes over and deletes one variable on the project it is pointed at**,
-before and after every test, because a conformance suite for a feature whose whole surface is stored
-state has to own the state it checks. The variable is `agent__harness_agent_control_live_<8 hex>`,
-generated per run, so the only config it can delete is one this run created -- and it refuses to run
-at all without `LOGFIRE_PLATFORM_ALLOW_WRITES=1`. See `README.md` for the rest, including how to
-bring a platform up and the two traps worth knowing about.
+**This suite creates, publishes over and deletes variables on the project it is pointed at**, before
+and after every test, because a conformance suite for a feature whose whole surface is stored state
+has to own the state it checks. Every name it touches begins with the per-run
+`agent__harness_agent_control_live_<8 hex>`, so the only config it can delete is one this run
+created -- and it refuses to run at all without `LOGFIRE_PLATFORM_ALLOW_WRITES=1`. See `README.md`
+for the rest, including how to bring a platform up and the two traps worth knowing about.
 
 Unlike the three suites beside it, no CI job runs this one: those need one container each, and this
 needs a whole Logfire platform. Run it by hand with `make integration-logfire-platform`.
@@ -61,6 +61,7 @@ from logfire.agent_control import (
     SCHEMA_SHA256,
     AgentConfig,
     InstructionBlock,
+    agent_variable_name,
     canonical_json,
 )
 from logfire.agent_control._reporting import reset_warned_messages
@@ -237,13 +238,15 @@ def code_blocks_intact(live: LiveAgent, *, except_for: str | None = None) -> Non
         assert live.last.block(block_id) == text, f'{block_id} is not the text the code says'
 
 
-def hint_span_from_platform(platform: Platform, spans: SpanCapture) -> dict[str, object]:
-    """This agent's hint span, read back out of the platform rather than off the local pipeline.
+def hint_span_from_platform(platform: Platform, spans: SpanCapture, *, variable_name: str) -> dict[str, object]:
+    """One agent's hint span, read back out of the platform rather than off the local pipeline.
 
     Polls rather than querying once: ingest is asynchronous, so a query issued the instant after the
-    flush can legitimately find nothing yet. Matched on this run's variable name and on the digest
-    and reason this process reported, so neither another agent's hint nor an earlier run of this
-    suite can satisfy it.
+    flush can legitimately find nothing yet. `variable_name` belongs to the read-back test that asks,
+    so the span this returns cannot be one an earlier test in the run emitted -- which matters,
+    because every unconfigured test reports the same baseline under the same reason and matching one
+    of those would let a broken exporter pass. The digest is checked too, so what comes back is this
+    agent's code rather than some other report filed under the same name.
     """
     flush()
     local = spans.hint_attributes()
@@ -256,16 +259,14 @@ def hint_span_from_platform(platform: Platform, spans: SpanCapture) -> dict[str,
     while True:
         for row in platform.query(sql):
             attributes = row.attributes
-            matches = (
-                attributes.get('agent_control.variable_name') == VARIABLE_NAME
-                and attributes.get('agent_control.baseline_sha256') == local.get('agent_control.baseline_sha256')
-                and attributes.get('agent_control.resolution_reason') == local.get('agent_control.resolution_reason')
-            )
+            matches = attributes.get('agent_control.variable_name') == variable_name and attributes.get(
+                'agent_control.baseline_sha256'
+            ) == local.get('agent_control.baseline_sha256')
             if matches:
                 return attributes
         if time.monotonic() >= deadline:
             pytest.fail(
-                f'no {HINT_SPAN} span for {VARIABLE_NAME} arrived within 60s. The span was emitted -- '
+                f'no {HINT_SPAN} span for {variable_name} arrived within 60s. The span was emitted -- '
                 'that half of this evidence has its own test -- so this is the platform not ingesting '
                 'it. See the README on materialized views before believing `show tables`.'
             )
@@ -344,12 +345,17 @@ def test_the_hint_span_arrives_at_the_platform(platform: Platform, spans: SpanCa
     an agent, and the Agent Control page is built from what it sent.
     """
     require_span_read_back(platform)
-    live = build_agent()
+    # An agent name of its own, so the span queried for below is one only this test emitted. It
+    # publishes nothing and no variable is created for it, which is the claim: an agent Logfire holds
+    # no config for still reports itself, and needs no write scope to do it.
+    agent_name = f'{AGENT_NAME}_reporting'
+    live = build_agent(agent_name=agent_name)
     live.run('Hello.')
 
-    attributes = hint_span_from_platform(platform, spans)
+    attributes = hint_span_from_platform(platform, spans, variable_name=agent_variable_name(agent_name))
 
     assert_hint_attributes_complete(attributes)
+    assert attributes['agent_control.agent_name'] == agent_name
     assert attributes['agent_control.resolution_reason'] == 'code_default'
     assert attributes['agent_control.baseline'] == spans.hint_baseline_json(), (
         'the baseline the platform stored is not the one the process sent'
@@ -917,10 +923,25 @@ def test_the_configured_hint_span_arrives_at_the_platform(platform: Platform, sp
     report green on a platform with no query credentials rather than reporting skipped.
     """
     require_span_read_back(platform)
-    publish(platform, {'instructions': [{'id': 'agent', 'instructions': FLAMINGO}], 'model': CODE_MODEL})
-    build_agent().run('Say hello.')
+    # Its own agent name for the same reason as the unconfigured read-back, which means its own
+    # variable: created and deleted here, since `fresh_variable` only owns the suite's own.
+    agent_name = f'{AGENT_NAME}_reporting_configured'
+    variable_name = agent_variable_name(agent_name)
+    try:
+        platform.create_variable(name=variable_name, display_name=agent_name)
+        platform.publish(
+            {PRODUCTION_LABEL: {'instructions': [{'id': 'agent', 'instructions': FLAMINGO}]}},
+            name=variable_name,
+        )
+        refresh_variables()
+        live = build_agent(agent_name=agent_name)
+        live.run('Say hello.')
+        assert live.last.block('agent') == FLAMINGO, 'the published value has to have applied'
 
-    attributes = hint_span_from_platform(platform, spans)
+        attributes = hint_span_from_platform(platform, spans, variable_name=variable_name)
+    finally:
+        platform.delete_variable(variable_name)
+        refresh_variables()
 
     assert_hint_attributes_complete(attributes)
     assert attributes['agent_control.resolution_reason'] == 'resolved'

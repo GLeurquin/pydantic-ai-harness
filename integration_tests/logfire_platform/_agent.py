@@ -278,6 +278,7 @@ def build_agent(
     label: str | None = PRODUCTION_LABEL,
     on_unmatched: OnUnmatched = 'warn',
     model: str = CODE_MODEL,
+    agent_name: str = AGENT_NAME,
 ) -> LiveAgent:
     """Build the agent as written. Every scenario uses this one; only the knobs below differ.
 
@@ -285,6 +286,9 @@ def build_agent(
         label: The Logfire label to resolve. `None` lets the variable's rollout choose.
         on_unmatched: What a published entry that reaches nothing costs.
         model: The code-side model, which a published `model` section overrides.
+        agent_name: The agent's name, and so the `agent__<name>` variable it resolves. A test that
+            reads its hint span back out of the platform passes a name of its own, so the span it
+            queries for is one no other test in the run could have emitted.
     """
     control = AgentControl[SupportDeps](label=label, on_unmatched=on_unmatched)
     tool_calls: list[ToolCall] = []
@@ -310,7 +314,7 @@ def build_agent(
     agent = Agent(
         model,
         # An explicit name is required, and it is what the `agent__<name>` variable is derived from.
-        name=AGENT_NAME,
+        name=agent_name,
         deps_type=SupportDeps,
         model_settings=CODE_SETTINGS,
         instructions=[

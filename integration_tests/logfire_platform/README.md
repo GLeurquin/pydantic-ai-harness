@@ -13,17 +13,19 @@ make integration-logfire-platform
 
 ## Read this first: it publishes and deletes
 
-**This suite creates, publishes over and deletes one variable on the project it is pointed at,
-before and after every test.** A conformance suite for a feature whose entire surface is stored
-state has to own that state, so each test publishes what it is about to check and the variable is
-removed either side of it.
+**This suite creates, publishes over and deletes variables on the project it is pointed at, before
+and after every test.** A conformance suite for a feature whose entire surface is stored state has
+to own that state, so each test publishes what it is about to check and the variable is removed
+either side of it.
 
 Three things keep that from reaching anything you care about:
 
-- **The variable is generated per run**: `agent__harness_agent_control_live_<8 hex>`, from an agent
-  name made at import time. So the only config it can delete is one this run created, and no
-  pre-existing config can be in its way. A run killed outright (rather than failed, where the
-  fixtures still tear down) can leave one of those behind; they are safe to delete.
+- **The names are generated per run**: they all begin `agent__harness_agent_control_live_<8 hex>`,
+  from an agent name made at import time, and the two hint-span read-back tests add a suffix of
+  their own so the span they query for is one no other test emitted. So the only config the suite
+  can delete is one this run created, and no pre-existing config can be in its way. A run killed
+  outright (rather than failed, where the fixtures still tear down) can leave one of those behind;
+  they are safe to delete.
 - It does nothing at all unless `LOGFIRE_PLATFORM_ALLOW_WRITES=1` is set. Unconfigured, every test
   skips with the reason.
 - It reads its own `LOGFIRE_PLATFORM_*` variables, never the SDK's `LOGFIRE_API_KEY`. A credential
