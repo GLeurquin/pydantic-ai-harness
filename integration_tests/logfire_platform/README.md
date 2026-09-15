@@ -48,7 +48,7 @@ pointing it at a project that matters.
 | `ANTHROPIC_API_KEY` | The code-side model (`anthropic:claude-haiku-4-5`). Without it the whole suite skips |
 | `OPENAI_API_KEY` | The published model (`openai:gpt-5.4-nano`), a different provider on purpose. Without it the two model tests skip |
 
-A run makes roughly thirty real model requests and takes a few minutes.
+Twenty-nine tests, around forty real model requests (several tests need a second round trip, and a few publish and re-run), a few minutes end to end.
 
 ## Getting a platform up
 
