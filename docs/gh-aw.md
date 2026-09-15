@@ -592,6 +592,12 @@ what the engine keys on. When it is set, and only then:
   and the console exporter is off: the spans go to the endpoint the workflow configured,
   not to a Logfire project of the engine's choosing, and not into the step log, where they
   would also reach the log parser.
+- **A `LOGFIRE_TOKEN` in the agent's environment adds a destination rather than replacing
+  one.** `'if-token-present'` means spans go to that project as well as to the OTLP endpoint
+  above, prompts and completions included. gh-aw keeps `${{ secrets.* }}` values out of the
+  agent's environment when they come from `engine.env`, so this happens only when a workflow
+  puts a token in its own `env:` or a `steps:` block, which is the explicit way to ask for
+  it. Leave the token out and the workflow's endpoint is the only place anything goes.
 - **The trace context is attached.** gh-aw publishes the run's W3C trace context in
   `TRACEPARENT` so that an engine can nest its spans under the workflow span, but neither
   Logfire nor the OpenTelemetry SDK reads that variable on its own. Attaching it is what

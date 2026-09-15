@@ -213,7 +213,10 @@ Four of those choices are not defaults, and each is load-bearing.
 - **`send_to_logfire="if-token-present"`.** The default requires a `LOGFIRE_TOKEN` in the
   environment and raises without one. The credential here is a header value gh-aw holds,
   not an environment variable, so the export is driven by the endpoint alone and works
-  against any backend.
+  against any backend. A token that does reach the agent's environment adds Logfire as a
+  second destination rather than replacing the endpoint, prompts and completions included;
+  gh-aw strips `${{ secrets.* }}` out of `engine.env`, so that takes a workflow putting one
+  in its own `env:` or a `steps:` block.
 - **`console=False`.** logfire's console exporter writes every span to stderr, which is the
   stream this definition's `log-parser` reads.
 - **The `TRACEPARENT` attach, with `distributed_tracing=True`.** gh-aw sets the variable for
