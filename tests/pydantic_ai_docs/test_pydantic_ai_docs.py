@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -48,9 +47,8 @@ def anyio_backend() -> str:
 
 
 @pytest.fixture
-async def workspace(tmp_path: Path) -> AsyncIterator[Workspace]:
-    async with LocalWorkspace(root=tmp_path) as backend:
-        yield Workspace(backend)
+def workspace(tmp_path: Path) -> Workspace:
+    return Workspace(LocalWorkspace(root=tmp_path))
 
 
 class _FakeClient:
@@ -231,8 +229,8 @@ class TestThroughAgent:
             return ModelResponse(parts=[TextPart('done')])
 
         agent = Agent(FunctionModel(call_then_finish), capabilities=[PydanticAIDocs(local_docs_path=tmp_path)])
-        async with LocalWorkspace(root=tmp_path) as backend:
-            result = await agent.run('go', workspace=backend)
+        backend = LocalWorkspace(root=tmp_path)
+        result = await agent.run('go', workspace=backend)
 
         assert result.output == 'done'
         returns = [
@@ -271,8 +269,8 @@ class TestThroughAgent:
 
         returned: list[str] = []
         for root in (first_root, second_root):
-            async with LocalWorkspace(root=root) as backend:
-                result = await agent.run('go', workspace=backend)
+            backend = LocalWorkspace(root=root)
+            result = await agent.run('go', workspace=backend)
             returned.extend(
                 part.content
                 for message in result.all_messages()

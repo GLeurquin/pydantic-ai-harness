@@ -42,9 +42,8 @@ def anyio_backend() -> str:
 
 
 @pytest.fixture
-async def workspace(tmp_path: Path) -> AsyncIterator[Workspace]:
-    async with LocalWorkspace(root=tmp_path) as backend:
-        yield Workspace(backend)
+def workspace(tmp_path: Path) -> Workspace:
+    return Workspace(LocalWorkspace(root=tmp_path))
 
 
 def _run_context(workspace: Workspace) -> RunContext[object]:
@@ -271,8 +270,8 @@ class TestToolset:
             TestModel(call_tools=['inventory_agent_context']),
             capabilities=[RepoContext[object](workspace_dir=tmp_path)],
         )
-        async with LocalWorkspace(root=tmp_path) as backend:
-            result = await agent.run('go', workspace=backend)
+        backend = LocalWorkspace(root=tmp_path)
+        result = await agent.run('go', workspace=backend)
         assert 'inventory_agent_context' in result.output
 
 
@@ -586,8 +585,8 @@ class TestForRunAndMisc:
 
         instructions: list[str] = []
         for root in (first_root, second_root):
-            async with LocalWorkspace(root=root) as backend:
-                await agent.run('go', workspace=backend)
+            backend = LocalWorkspace(root=root)
+            await agent.run('go', workspace=backend)
             first_request = captured[-1][0]
             assert isinstance(first_request, ModelRequest)
             instructions.append(first_request.instructions or '')
