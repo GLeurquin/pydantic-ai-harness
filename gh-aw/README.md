@@ -208,7 +208,7 @@ engine keys on: with it set, the install step adds `logfire` and the launcher ca
 target, then attaches the W3C context from `TRACEPARENT`. With it unset, neither happens
 and the install costs nothing.
 
-Four of those choices are not defaults, and each is load-bearing.
+These choices are not defaults, and each is load-bearing.
 
 - **`send_to_logfire="if-token-present"`.** The default requires a `LOGFIRE_TOKEN` in the
   environment and raises without one. The credential here is a header value gh-aw holds,
@@ -217,6 +217,13 @@ Four of those choices are not defaults, and each is load-bearing.
   second destination rather than replacing the endpoint, prompts and completions included;
   gh-aw strips `${{ secrets.* }}` out of `engine.env`, so that takes a workflow putting one
   in its own `env:` or a `steps:` block.
+- **Private `config_dir` and `data_dir`.** Both point to a mode-0700 temporary directory
+  under `/tmp`, outside the checkout even if `TMPDIR` points into it. This prevents
+  checkout `pyproject.toml` settings and `.logfire/logfire_credentials.json` from selecting
+  a telemetry destination. Explicit directory arguments also override `LOGFIRE_CONFIG_DIR`
+  and `LOGFIRE_CREDENTIALS_DIR`; `LOGFIRE_TOKEN` in the environment remains supported.
+  The directory stays alive through the process and is removed at interpreter shutdown,
+  after exporter shutdown handlers run.
 - **`console=False`.** logfire's console exporter writes every span to stderr, which is the
   stream this definition's `log-parser` reads.
 - **The `TRACEPARENT` attach, with `distributed_tracing=True`.** gh-aw sets the variable for
@@ -245,7 +252,9 @@ A `PAI_AGENT` module that calls `logfire.configure()` itself runs after the engi
 and replaces it, whole rather than argument by argument, so it has to restate the three
 settings above: `send_to_logfire="if-token-present"` or it raises, `console=False` or the
 `log-parser` reads spans, and `distributed_tracing=True` or it warns on every run. The
-context attached from `TRACEPARENT` survives the reconfiguration. Such a module also has
+context attached from `TRACEPARENT` survives the reconfiguration. Reconfiguration must also
+supply private `config_dir` and `data_dir` values with process-lifetime cleanup; omitting
+these re-enables checkout configuration and credentials. Such a module also has
 to install `logfire` through the workflow's own `steps:` if it imports it on runs that
 configure no endpoint.
 

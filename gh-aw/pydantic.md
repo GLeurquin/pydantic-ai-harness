@@ -140,9 +140,21 @@ engine:
       # so the engine adds no resource attributes. This runs before the agent
       # target import, so a user's own configure() call runs later and overrides it.
       if os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
+          import atexit
+          import tempfile
+
+          # Ignore checkout configuration and credentials, including when TMPDIR
+          # points into the checkout. Register cleanup before Logfire's shutdown
+          # handlers so its exporters finish before the directory is removed.
+          logfire_dir = tempfile.TemporaryDirectory(prefix="gh-aw-logfire-", dir="/tmp")
+          atexit.register(logfire_dir.cleanup)
+
           import logfire
 
-          logfire.configure(send_to_logfire="if-token-present", console=False, distributed_tracing=True)
+          logfire.configure(
+              send_to_logfire="if-token-present", console=False, distributed_tracing=True,
+              config_dir=logfire_dir.name, data_dir=logfire_dir.name,
+          )
           logfire.instrument_pydantic_ai()
 
           # gh-aw supplies TRACEPARENT for exactly this purpose: it lets engines

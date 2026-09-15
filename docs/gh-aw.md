@@ -598,6 +598,13 @@ what the engine keys on. When it is set, and only then:
   agent's environment when they come from `engine.env`, so this happens only when a workflow
   puts a token in its own `env:` or a `steps:` block, which is the explicit way to ask for
   it. Leave the token out and the workflow's endpoint is the only place anything goes.
+- **Configuration and credentials stay outside the checkout.** The launcher passes explicit
+  `config_dir` and `data_dir` values pointing to a mode-0700 temporary directory under `/tmp`,
+  even if `TMPDIR` points into the checkout. Checkout `pyproject.toml` settings and
+  `.logfire/logfire_credentials.json` cannot select a telemetry destination. These arguments
+  also override `LOGFIRE_CONFIG_DIR` and `LOGFIRE_CREDENTIALS_DIR`, without disabling an
+  environment `LOGFIRE_TOKEN`. The directory lives through the process and is removed at
+  interpreter shutdown, after exporter shutdown handlers run.
 - **The trace context is attached.** gh-aw publishes the run's W3C trace context in
   `TRACEPARENT` so that an engine can nest its spans under the workflow span, but neither
   Logfire nor the OpenTelemetry SDK reads that variable on its own. Attaching it is what
@@ -655,13 +662,29 @@ It replaces the whole configuration, not the arguments you restate, so carry ove
 above that are load-bearing:
 
 ```python
+import atexit
+import tempfile
+
+logfire_dir = tempfile.TemporaryDirectory(prefix='gh-aw-logfire-', dir='/tmp')
+atexit.register(logfire_dir.cleanup)
+
 import logfire
 
-logfire.configure(send_to_logfire='if-token-present', console=False, distributed_tracing=True)
+logfire.configure(
+    send_to_logfire='if-token-present',
+    console=False,
+    distributed_tracing=True,
+    config_dir=logfire_dir.name,
+    data_dir=logfire_dir.name,
+)
 logfire.instrument_pydantic_ai()
 ```
 
-Four things to know before you do:
+Things to know before you do:
+
+- **Keep both directories private for the process lifetime.** Omitting `config_dir` or
+  `data_dir` re-enables checkout configuration or credentials. Register cleanup before
+  configuring Logfire so exporter shutdown handlers run first.
 
 - **`console=False` is not optional.** Leaving it out restores logfire's console exporter,
   which writes every span to stderr, which is the stream the engine's log parser reads.
