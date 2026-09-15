@@ -11,9 +11,10 @@ the `pydantic-ai` id to this path, but only to suggest it: naming the engine
 without the import fails to compile with a tip carrying the line to add.
 
 The engine runs the [Pydantic AI](https://ai.pydantic.dev) CLI (`pai`) over an agent
-composed from this package's `Coder` capability: filesystem, shell, planning,
-repository context and an explorer sub-agent, plus one toolset per MCP server the
-gh-aw gateway exposes.
+composed from this package's `Coder` capability: six tools (`read_file`, `write_file`,
+`edit_file`, `list_files`, `grep` and `shell`), repository context and context management,
+plus one toolset per MCP server the gh-aw gateway exposes. Shell commands are unrestricted
+inside the sandbox; the default composition has no planning tool or explorer sub-agent.
 
 ## Quick start
 
@@ -63,7 +64,7 @@ private directory it creates inside the sandbox, puts that directory on
 `PYTHONPATH`, and passes `-a gh_aw_agent:agent`. The CLI and its
 dependencies are installed before the agent starts, with
 `pip install --user "pydantic-ai-harness[cli]==<engine version>"
-"pydantic-ai-slim[anthropic,openai,mcp]>=2.36.0"`. The pinned harness version is
+"pydantic-ai-slim[anthropic,openai,mcp,spec]>=2.36.0"`. The pinned harness version is
 `engine.version` in `pydantic.md`, and it always names a published release: lint
 refuses a pull request whose pin is not on PyPI. The `2.36.0` floor is the first
 pydantic-ai release carrying `pai --mcp-config`, and the `anthropic` extra is what
@@ -171,7 +172,8 @@ runs `Researcher` with no agent code in the repository at all, given a `steps:` 
 installing the `researcher` extra. `pydantic_ai_harness.coder:coder_agent` names the
 default composition explicitly.
 
-A `.yml`, `.yaml` or `.json` spec covers instructions plus built-in capabilities, and
+The engine installs the `spec` extra for YAML parsing. A `.yml`, `.yaml` or `.json` spec
+covers instructions plus built-in capabilities, and
 the gateway's MCP servers still reach it through `--mcp-config`. Unlike a module it has
 to carry a `model:`, because `Agent.from_spec()` rejects a spec without one and builds
 that model while loading the file, before the CLI's `-m` override. Use the client prefix

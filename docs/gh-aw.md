@@ -52,9 +52,11 @@ import-based engine like this one, so it is not part of the configuration below.
 Writing an agent module is the last of three options, not the first.
 
 **The default composition.** With no `PAI_AGENT` at all, the engine composes an agent from
-the harness's [`Coder`](/ai/harness/coder/) capability, which brings filesystem access, an
-allowlisted shell, planning, repository orientation and an explorer sub-agent. A workflow
-that wants a coding agent loose on its own repository needs no Python and no agent module:
+the harness's [`Coder`](/ai/harness/coder/) capability: six tools (`read_file`, `write_file`,
+`edit_file`, `list_files`, `grep` and `shell`), repository context and context management.
+Shell commands are unrestricted inside the sandbox; the default composition has no
+planning tool or explorer sub-agent. A workflow that wants a coding agent loose on its
+own repository needs no Python and no agent module:
 
 ```yaml
 ---
@@ -155,7 +157,7 @@ Four things about that module.
   here to show that repository code is importable and that the agent's own tools work
   alongside the MCP tools gh-aw supplies.
 - **No third-party imports.** The engine installs `pydantic-ai-harness[cli]` and
-  `pydantic-ai-slim[anthropic,openai,mcp]`, so `pydantic_ai` is importable without any
+  `pydantic-ai-slim[anthropic,openai,mcp,spec]`, so `pydantic_ai` is importable without any
   setup of your own. Anything else your agent imports is installed by a workflow-level
   `steps:` block (see [Dependencies](#dependencies)).
 
@@ -188,6 +190,8 @@ capabilities:
   - Thinking:
       effort: medium
 ```
+
+The engine installs the `spec` extra for YAML parsing.
 
 **The spec needs a `model:` even though it does not decide the model.** A module can leave
 the model out, because an `Agent` may be constructed without one, but `Agent.from_spec()`

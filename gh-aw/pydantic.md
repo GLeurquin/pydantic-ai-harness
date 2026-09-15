@@ -15,7 +15,8 @@ pre-agent-steps:
       #
       # The anthropic extra is what an `anthropic/` model runs on: that backend of
       # the api-proxy serves the Messages API, not Chat Completions.
-      python3 -P -m pip install --quiet --user --disable-pip-version-check "pydantic-ai-harness[cli]==$GH_AW_ENGINE_VERSION" "pydantic-ai-slim[anthropic,openai,mcp]>=2.36.0"
+      # The spec extra supplies YAML parsing for PAI_AGENT spec files.
+      python3 -P -m pip install --quiet --user --disable-pip-version-check "pydantic-ai-harness[cli]==$GH_AW_ENGINE_VERSION" "pydantic-ai-slim[anthropic,openai,mcp,spec]>=2.36.0"
       # Logfire 4.39.0 is pydantic-ai-slim's compatibility floor. Install it only
       # when gh-aw supplies an OTLP endpoint, so other runs pay no installation cost.
       if [ -n "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" ]; then
@@ -81,8 +82,8 @@ engine:
       // spec, and the spec format resolves capability names through a closed
       // registry that the harness capabilities are not part of, so the coder
       // composition cannot be expressed as a spec. It is written as a Python
-      // module instead: `Coder()` supplies the filesystem, shell, planning and
-      // sub-agent tools.
+      // module instead: `Coder()` supplies six filesystem and shell tools,
+      // repository context and context management.
       //
       // The gateway's MCP servers are deliberately not part of the module.
       // `pai --mcp-config` reads the same Claude-shaped config file through the
@@ -550,8 +551,8 @@ engine:
 ```
 
 The agent is a `pydantic_ai.Agent` composed from the harness `Coder`
-capability — filesystem, shell, planning, repository context and an explorer
-sub-agent, with the harness's own context-management guardrails. `pai -a` accepts
+capability: six filesystem and shell tools, repository context and context
+management. Shell commands are unrestricted inside the sandbox. `pai -a` accepts
 a single target and its JSON agent-spec format cannot name harness capabilities,
 so the harness script writes that composition as `gh_aw_agent.py` in a private
 directory it creates inside the sandbox, puts that directory on `PYTHONPATH`, and
@@ -632,6 +633,6 @@ counts only from any JSON lines the run happens to emit.
 
 The CLI and the coder capabilities are installed before the agent runs with
 `pip install --user "pydantic-ai-harness[cli]==<engine version>"
-"pydantic-ai-slim[anthropic,openai,mcp]>=2.36.0"`, into `~/.local` because the
+"pydantic-ai-slim[anthropic,openai,mcp,spec]>=2.36.0"`, into `~/.local` because the
 runner tool cache holding `uv` is not writable from inside the sandbox.
 -->
