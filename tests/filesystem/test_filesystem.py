@@ -5,7 +5,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import re
-from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 import pytest
@@ -40,9 +40,8 @@ def anyio_backend() -> str:
 
 
 @pytest.fixture
-async def workspace(tmp_path: Path) -> AsyncIterator[Workspace]:
-    async with LocalWorkspace(root=tmp_path) as backend:
-        yield Workspace(backend)
+def workspace(tmp_path: Path) -> Workspace:
+    return Workspace(LocalWorkspace(root=tmp_path))
 
 
 def _hash(content: str) -> str:
@@ -255,21 +254,21 @@ async def test_error_backend_implements_the_complete_flat_filesystem() -> None:
 
 
 async def test_local_test_backend_delegates_the_complete_flat_filesystem(tmp_path: Path) -> None:
-    async with LocalWorkspace(root=tmp_path) as local:
-        backend = _LocalFilesystemBackend(local)
-        directory = str(tmp_path / 'nested')
-        path = f'{directory}/file.txt'
+    local = LocalWorkspace(root=tmp_path)
+    backend = _LocalFilesystemBackend(local)
+    directory = str(tmp_path / 'nested')
+    path = f'{directory}/file.txt'
 
-        await backend.make_dir(directory)
-        await backend.write_bytes(path, b'data')
+    await backend.make_dir(directory)
+    await backend.write_bytes(path, b'data')
 
-        assert await backend.read_bytes(path) == b'data'
-        assert (await backend.stat(path)).size == 4
-        assert [entry.name for entry in await backend.list_dir(directory)] == ['file.txt']
-        assert await backend.exists(path) is True
+    assert await backend.read_bytes(path) == b'data'
+    assert (await backend.stat(path)).size == 4
+    assert [entry.name for entry in await backend.list_dir(directory)] == ['file.txt']
+    assert await backend.exists(path) is True
 
-        await backend.remove(path)
-        assert await backend.exists(path) is False
+    await backend.remove(path)
+    assert await backend.exists(path) is False
 
 
 # --- the root directory ---
@@ -459,10 +458,10 @@ async def test_read_file_names_remaining_lines_when_the_workspace_knows_the_tota
     tmp_path: Path, body: str, footer: str
 ) -> None:
     (tmp_path / 'a.txt').write_text(body)
-    async with LocalWorkspace(root=tmp_path) as backend:
-        # WrapperWorkspace skips the sed fast path, so the window includes `total_lines`.
-        workspace = WrapperWorkspace(Workspace(backend))
-        result = await _call(_toolset(tmp_path, max_read_lines=2), _ctx(workspace), 'read_file', {'path': 'a.txt'})
+    backend = LocalWorkspace(root=tmp_path)
+    # WrapperWorkspace skips the sed fast path, so the window includes `total_lines`.
+    workspace = WrapperWorkspace(Workspace(backend))
+    result = await _call(_toolset(tmp_path, max_read_lines=2), _ctx(workspace), 'read_file', {'path': 'a.txt'})
 
     assert result.endswith(footer)
 
@@ -747,9 +746,9 @@ async def test_search_files_at_the_result_cap_is_not_marked_truncated(tmp_path: 
 
 
 async def test_search_files_ignores_output_lines_it_cannot_parse(tmp_path: Path) -> None:
-    async with LocalWorkspace(root=tmp_path) as local:
-        workspace = Workspace(_ResultBackend(local, CommandResult(exit_code=1, stdout='malformed\n', stderr='')))
-        result = await _call(_toolset(Path('.')), _ctx(workspace), 'search_files', {'pattern': 'needle'})
+    local = LocalWorkspace(root=tmp_path)
+    workspace = Workspace(_ResultBackend(local, CommandResult(exit_code=1, stdout='malformed\n', stderr='')))
+    result = await _call(_toolset(Path('.')), _ctx(workspace), 'search_files', {'pattern': 'needle'})
 
     assert result == 'No matches found.'
 
@@ -835,10 +834,10 @@ async def test_find_files_at_the_result_cap_is_not_marked_truncated(tmp_path: Pa
 
 async def test_find_files_skips_entries_deleted_mid_walk(tmp_path: Path) -> None:
     (tmp_path / 'real.py').write_text('')
-    async with LocalWorkspace(root=tmp_path) as local:
-        listing = CommandResult(exit_code=0, stdout=f'{tmp_path}/ghost.py\n{tmp_path}/real.py\n', stderr='')
-        workspace = Workspace(_ResultBackend(local, listing))
-        result = await _call(_toolset(Path('.')), _ctx(workspace), 'find_files', {'pattern': '*.py'})
+    local = LocalWorkspace(root=tmp_path)
+    listing = CommandResult(exit_code=0, stdout=f'{tmp_path}/ghost.py\n{tmp_path}/real.py\n', stderr='')
+    workspace = Workspace(_ResultBackend(local, listing))
+    result = await _call(_toolset(Path('.')), _ctx(workspace), 'find_files', {'pattern': '*.py'})
 
     assert result == 'real.py'
 
@@ -1129,23 +1128,23 @@ async def test_a_failing_command_is_reported_to_the_model(
     stderr: str,
     message: str,
 ) -> None:
-    async with LocalWorkspace(root=tmp_path) as local:
-        workspace = Workspace(_ResultBackend(local, CommandResult(exit_code=exit_code, stdout='', stderr=stderr)))
-        with pytest.raises(ModelRetry, match=re.escape(message)):
-            await _call(_toolset(Path('.')), _ctx(workspace), name, args)
+    local = LocalWorkspace(root=tmp_path)
+    workspace = Workspace(_ResultBackend(local, CommandResult(exit_code=exit_code, stdout='', stderr=stderr)))
+    with pytest.raises(ModelRetry, match=re.escape(message)):
+        await _call(_toolset(Path('.')), _ctx(workspace), name, args)
 
 
 @pytest.mark.parametrize(
     ('name', 'args'),
     [('search_files', {'pattern': 'x'}), ('find_files', {'pattern': '*'})],
 )
-async def test_command_backed_search_timeout_is_recoverable(name: str, args: dict[str, object]) -> None:
+async def test_command_backed_search_timeout_is_recoverable(tmp_path: Path, name: str, args: dict[str, object]) -> None:
     error = WorkspaceTimeoutError('command timed out at /outside/root')
 
-    async with LocalWorkspace() as local:
-        workspace = Workspace(_TimeoutBackend(local, error))
-        with pytest.raises(ModelRetry, match=f'{name} timed out') as exc_info:
-            await _call(_toolset(Path('.')), _ctx(workspace), name, args)
+    local = LocalWorkspace(root=tmp_path)
+    workspace = Workspace(_TimeoutBackend(local, error))
+    with pytest.raises(ModelRetry, match=f'{name} timed out') as exc_info:
+        await _call(_toolset(Path('.')), _ctx(workspace), name, args)
 
     assert '/outside/root' not in str(exc_info.value)
 
@@ -1280,8 +1279,8 @@ async def test_filesystem_capability_runs_through_an_agent_with_a_sandbox(tmp_pa
     def model(_: list[ModelMessage], __: AgentInfo) -> ModelResponse:
         return responses.pop(0)
 
-    async with LocalWorkspace(root=tmp_path) as workspace:
-        result = await Agent(FunctionModel(model), capabilities=[FileSystem()]).run('read', workspace=workspace)
+    workspace = LocalWorkspace(root=tmp_path)
+    result = await Agent(FunctionModel(model), capabilities=[FileSystem()]).run('read', workspace=workspace)
 
     assert result.output == 'done'
 

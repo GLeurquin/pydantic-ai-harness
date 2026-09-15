@@ -60,11 +60,9 @@ async def test_bundled_coder_agent_supplies_current_workspace(monkeypatch: pytes
 
 
 async def test_bundled_coder_agent_preserves_explicit_workspace_identity(tmp_path: Path) -> None:
-    async with LocalWorkspace(root=tmp_path) as backend:
-        workspace = ReadOnlyWorkspace(Workspace(backend))
-        result = await coder_agent.run(
-            'go', model=TestModel(call_tools=[], custom_output_text='done'), workspace=workspace
-        )
+    backend = LocalWorkspace(root=tmp_path)
+    workspace = ReadOnlyWorkspace(Workspace(backend))
+    result = await coder_agent.run('go', model=TestModel(call_tools=[], custom_output_text='done'), workspace=workspace)
 
     assert result.workspace is workspace
 

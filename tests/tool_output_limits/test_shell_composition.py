@@ -55,8 +55,8 @@ async def test_shell_stacking_recipe(tmp_path: Path, output_chars: int):
             ),
         ],
     )
-    async with LocalWorkspace(root=tmp_path) as workspace:
-        result = await agent.run('run the command', workspace=workspace)
+    workspace = LocalWorkspace(root=tmp_path)
+    result = await agent.run('run the command', workspace=workspace)
     returns = [part for message in result.all_messages() for part in message.parts if isinstance(part, ToolReturnPart)]
     assert len(returns) == 1
     part = returns[0]

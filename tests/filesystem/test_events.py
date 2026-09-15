@@ -54,10 +54,10 @@ async def _run_and_collect(
     # Named explicitly: an anonymous capability gets a run-local synthetic id
     # on newer pydantic-ai, which the event assertions could not pin down.
     capability = FileSystem(root_dir=root, denied_patterns=denied_patterns or [], id='file_system')
-    async with LocalWorkspace(root=root) as workspace:
-        await Agent(_tool_model(tool_name, json_args), capabilities=[capability]).run(
-            'go', event_stream_handler=handler, workspace=workspace
-        )
+    workspace = LocalWorkspace(root=root)
+    await Agent(_tool_model(tool_name, json_args), capabilities=[capability]).run(
+        'go', event_stream_handler=handler, workspace=workspace
+    )
     return events
 
 

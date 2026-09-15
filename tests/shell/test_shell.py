@@ -211,23 +211,19 @@ class TestTimeouts:
             shell_toolset(default_timeout=2.0, max_timeout=1.0)
 
     async def test_model_timeout_above_maximum_recommends_start_command(self, tmp_path: Path) -> None:
-        async with LocalWorkspace(root=tmp_path) as local:
-            backend = _RecordingLocalBackend(local)
-            toolset = shell_toolset(default_timeout=1.0, max_timeout=1.0)
-            with pytest.raises(ModelRetry, match='at most 1.0.*start_command'):
-                await call_tool(
-                    toolset, run_context(Workspace(backend)), 'run_command', command='true', timeout_seconds=2
-                )
-            assert backend.timeouts == []
+        local = LocalWorkspace(root=tmp_path)
+        backend = _RecordingLocalBackend(local)
+        toolset = shell_toolset(default_timeout=1.0, max_timeout=1.0)
+        with pytest.raises(ModelRetry, match='at most 1.0.*start_command'):
+            await call_tool(toolset, run_context(Workspace(backend)), 'run_command', command='true', timeout_seconds=2)
+        assert backend.timeouts == []
 
     async def test_model_timeout_at_maximum_is_forwarded(self, tmp_path: Path) -> None:
-        async with LocalWorkspace(root=tmp_path) as local:
-            backend = _RecordingLocalBackend(local)
-            toolset = shell_toolset(default_timeout=1.0, max_timeout=1.0)
-            await call_tool(
-                toolset, run_context(Workspace(backend)), 'run_command', command='true', timeout_seconds=1.0
-            )
-            assert backend.timeouts == [1.0]
+        local = LocalWorkspace(root=tmp_path)
+        backend = _RecordingLocalBackend(local)
+        toolset = shell_toolset(default_timeout=1.0, max_timeout=1.0)
+        await call_tool(toolset, run_context(Workspace(backend)), 'run_command', command='true', timeout_seconds=1.0)
+        assert backend.timeouts == [1.0]
 
     async def test_tool_description_uses_the_configured_default(self, workspace: Workspace) -> None:
         toolset = shell_toolset(default_timeout=12.5)
@@ -520,21 +516,21 @@ class _RecordingLocalBackend:
 
 
 async def test_recording_backend_delegates_the_complete_flat_filesystem(tmp_path: Path) -> None:
-    async with LocalWorkspace(root=tmp_path) as local:
-        backend = _RecordingLocalBackend(local)
-        directory = str(tmp_path / 'nested')
-        path = f'{directory}/file.txt'
+    local = LocalWorkspace(root=tmp_path)
+    backend = _RecordingLocalBackend(local)
+    directory = str(tmp_path / 'nested')
+    path = f'{directory}/file.txt'
 
-        await backend.make_dir(directory)
-        await backend.write_bytes(path, b'data')
+    await backend.make_dir(directory)
+    await backend.write_bytes(path, b'data')
 
-        assert await backend.read_bytes(path) == b'data'
-        assert (await backend.stat(path)).size == 4
-        assert [entry.name for entry in await backend.list_dir(directory)] == ['file.txt']
-        assert await backend.exists(path) is True
+    assert await backend.read_bytes(path) == b'data'
+    assert (await backend.stat(path)).size == 4
+    assert [entry.name for entry in await backend.list_dir(directory)] == ['file.txt']
+    assert await backend.exists(path) is True
 
-        await backend.remove(path)
-        assert await backend.exists(path) is False
+    await backend.remove(path)
+    assert await backend.exists(path) is False
 
 
 class _FailingBackend:
@@ -613,9 +609,9 @@ class TestRunCommand:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv('HARNESS_HOST_ONLY', 'secret')
-        async with LocalWorkspace(root=tmp_path) as local:
-            backend = _RecordingLocalBackend(local)
-            await call_tool(shell_toolset(), run_context(Workspace(backend)), 'run_command', command='true')
+        local = LocalWorkspace(root=tmp_path)
+        backend = _RecordingLocalBackend(local)
+        await call_tool(shell_toolset(), run_context(Workspace(backend)), 'run_command', command='true')
         assert backend.environments == [None]
 
     async def test_explicit_environment_is_filtered(self, workspace: Workspace) -> None:
@@ -768,112 +764,112 @@ class TestBackgroundCommands:
         )
 
     async def test_exit_surfaces_sandbox_cleanup_failure_and_keeps_record(self, tmp_path: Path) -> None:
-        async with LocalWorkspace(root=tmp_path) as local:
-            backend = _RecordingLocalBackend(local)
-            workspace = Workspace(backend)
-            toolset = background_toolset(tmp_path)
-            ctx = run_context(workspace)
-            started_id = command_id(await call_tool(toolset, ctx, 'start_command', command='sleep 30'))
-            backend.remove_error = RuntimeError('cleanup failed')
-            # The protocol members the shell tools never consult still work through the facade.
-            assert workspace.ref == local.ref
-            assert await workspace.working_dir() == str(tmp_path)
+        local = LocalWorkspace(root=tmp_path)
+        backend = _RecordingLocalBackend(local)
+        workspace = Workspace(backend)
+        toolset = background_toolset(tmp_path)
+        ctx = run_context(workspace)
+        started_id = command_id(await call_tool(toolset, ctx, 'start_command', command='sleep 30'))
+        backend.remove_error = RuntimeError('cleanup failed')
+        # The protocol members the shell tools never consult still work through the facade.
+        assert workspace.ref == local.ref
+        assert await workspace.working_dir() == str(tmp_path)
 
-            with pytest.raises(RuntimeError, match='cleanup failed'):
-                await toolset.__aexit__(None, None, None)
-
-            assert await call_tool(toolset, ctx, 'check_command', command_id=started_id) == (
-                '(no output yet)\n[status: running]'
-            )
-            backend.remove_error = None
+        with pytest.raises(RuntimeError, match='cleanup failed'):
             await toolset.__aexit__(None, None, None)
 
-            started_id = command_id(await call_tool(toolset, ctx, 'start_command', command='sleep 30'))
-            backend.run_error = RuntimeError('kill cleanup failed')
-            with pytest.raises(RuntimeError, match='kill cleanup failed'):
-                await toolset.__aexit__(None, None, None)
-            backend.run_error = None
+        assert await call_tool(toolset, ctx, 'check_command', command_id=started_id) == (
+            '(no output yet)\n[status: running]'
+        )
+        backend.remove_error = None
+        await toolset.__aexit__(None, None, None)
+
+        started_id = command_id(await call_tool(toolset, ctx, 'start_command', command='sleep 30'))
+        backend.run_error = RuntimeError('kill cleanup failed')
+        with pytest.raises(RuntimeError, match='kill cleanup failed'):
             await toolset.__aexit__(None, None, None)
+        backend.run_error = None
+        await toolset.__aexit__(None, None, None)
 
     async def test_background_output_read_failure_is_reported(self, tmp_path: Path) -> None:
-        async with LocalWorkspace(root=tmp_path) as local:
-            backend = _RecordingLocalBackend(local)
-            toolset = background_toolset(tmp_path)
-            ctx = run_context(Workspace(backend))
-            started_id = command_id(await call_tool(toolset, ctx, 'start_command', command='sleep 30'))
-            backend.tail_failure = True
+        local = LocalWorkspace(root=tmp_path)
+        backend = _RecordingLocalBackend(local)
+        toolset = background_toolset(tmp_path)
+        ctx = run_context(Workspace(backend))
+        started_id = command_id(await call_tool(toolset, ctx, 'start_command', command='sleep 30'))
+        backend.tail_failure = True
 
-            with pytest.raises(RuntimeError, match='tail failed'):
-                await call_tool(toolset, ctx, 'check_command', command_id=started_id)
-            backend.tail_failure = False
-            await call_tool(toolset, ctx, 'stop_command', command_id=started_id)
+        with pytest.raises(RuntimeError, match='tail failed'):
+            await call_tool(toolset, ctx, 'check_command', command_id=started_id)
+        backend.tail_failure = False
+        await call_tool(toolset, ctx, 'stop_command', command_id=started_id)
 
     async def test_exit_surfaces_kill_failure_and_keeps_record(self, tmp_path: Path) -> None:
-        async with LocalWorkspace(root=tmp_path) as local:
-            backend = _RecordingLocalBackend(local)
-            toolset = background_toolset(tmp_path)
-            ctx = run_context(Workspace(backend))
-            started_id = command_id(await call_tool(toolset, ctx, 'start_command', command='sleep 30'))
-            backend.raise_after_kill = True
+        local = LocalWorkspace(root=tmp_path)
+        backend = _RecordingLocalBackend(local)
+        toolset = background_toolset(tmp_path)
+        ctx = run_context(Workspace(backend))
+        started_id = command_id(await call_tool(toolset, ctx, 'start_command', command='sleep 30'))
+        backend.raise_after_kill = True
 
-            with pytest.raises(RuntimeError, match='cleanup failed'):
-                await call_tool(toolset, ctx, 'stop_command', command_id=started_id)
-            assert '[status: running]' in await call_tool(toolset, ctx, 'check_command', command_id=started_id)
-            backend.raise_after_kill = False
+        with pytest.raises(RuntimeError, match='cleanup failed'):
             await call_tool(toolset, ctx, 'stop_command', command_id=started_id)
+        assert '[status: running]' in await call_tool(toolset, ctx, 'check_command', command_id=started_id)
+        backend.raise_after_kill = False
+        await call_tool(toolset, ctx, 'stop_command', command_id=started_id)
 
     async def test_missing_background_output_file_is_empty(self, tmp_path: Path) -> None:
-        async with LocalWorkspace(root=tmp_path) as local:
-            backend = _RecordingLocalBackend(local)
-            toolset = background_toolset(tmp_path)
-            ctx = run_context(Workspace(backend))
-            started_id = command_id(await call_tool(toolset, ctx, 'start_command', command='sleep 30'))
-            backend.run_error = FileNotFoundError('missing')
+        local = LocalWorkspace(root=tmp_path)
+        backend = _RecordingLocalBackend(local)
+        toolset = background_toolset(tmp_path)
+        ctx = run_context(Workspace(backend))
+        started_id = command_id(await call_tool(toolset, ctx, 'start_command', command='sleep 30'))
+        backend.run_error = FileNotFoundError('missing')
 
-            assert await call_tool(toolset, ctx, 'check_command', command_id=started_id) == (
-                '(no output yet)\n[status: running]'
-            )
-            backend.run_error = None
-            await call_tool(toolset, ctx, 'stop_command', command_id=started_id)
+        assert await call_tool(toolset, ctx, 'check_command', command_id=started_id) == (
+            '(no output yet)\n[status: running]'
+        )
+        backend.run_error = None
+        await call_tool(toolset, ctx, 'stop_command', command_id=started_id)
 
     @pytest.mark.parametrize('signal', ['-TERM', '-KILL'])
     async def test_stop_surfaces_kill_failure_and_keeps_record(self, tmp_path: Path, signal: str) -> None:
-        async with LocalWorkspace(root=tmp_path) as local:
-            backend = _RecordingLocalBackend(local)
-            toolset = background_toolset(tmp_path)
-            ctx = run_context(Workspace(backend))
-            started_id = command_id(await call_tool(toolset, ctx, 'start_command', command='sleep 30'))
-            backend.kill_failure = signal
-            backend.hold_on_term = signal == '-KILL'
+        local = LocalWorkspace(root=tmp_path)
+        backend = _RecordingLocalBackend(local)
+        toolset = background_toolset(tmp_path)
+        ctx = run_context(Workspace(backend))
+        started_id = command_id(await call_tool(toolset, ctx, 'start_command', command='sleep 30'))
+        backend.kill_failure = signal
+        backend.hold_on_term = signal == '-KILL'
 
-            with pytest.raises(RuntimeError, match='kill failed'):
-                await call_tool(toolset, ctx, 'stop_command', command_id=started_id)
-            assert '[status: running]' in await call_tool(toolset, ctx, 'check_command', command_id=started_id)
-            backend.kill_failure = None
+        with pytest.raises(RuntimeError, match='kill failed'):
             await call_tool(toolset, ctx, 'stop_command', command_id=started_id)
+        assert '[status: running]' in await call_tool(toolset, ctx, 'check_command', command_id=started_id)
+        backend.kill_failure = None
+        await call_tool(toolset, ctx, 'stop_command', command_id=started_id)
 
     @pytest.mark.parametrize('signal', ['-TERM', '-KILL'])
     async def test_stop_accepts_a_kill_that_failed_because_the_group_is_gone(self, tmp_path: Path, signal: str) -> None:
-        async with LocalWorkspace(root=tmp_path) as local:
-            backend = _RecordingLocalBackend(local)
-            toolset = background_toolset(tmp_path)
-            ctx = run_context(Workspace(backend))
-            started_id = command_id(await call_tool(toolset, ctx, 'start_command', command='sleep 30'))
-            backend.kill_failure = signal
-            backend.kill_failure_stderr = 'kill: No such process'
-            backend.hold_on_term = signal == '-KILL'
+        local = LocalWorkspace(root=tmp_path)
+        backend = _RecordingLocalBackend(local)
+        toolset = background_toolset(tmp_path)
+        ctx = run_context(Workspace(backend))
+        started_id = command_id(await call_tool(toolset, ctx, 'start_command', command='sleep 30'))
+        backend.kill_failure = signal
+        backend.kill_failure_stderr = 'kill: No such process'
+        backend.hold_on_term = signal == '-KILL'
 
-            assert await call_tool(toolset, ctx, 'stop_command', command_id=started_id) == '(no output)\n[stopped]'
+        assert await call_tool(toolset, ctx, 'stop_command', command_id=started_id) == '(no output)\n[stopped]'
 
     async def test_stop_accepts_successful_kill(self, tmp_path: Path) -> None:
-        async with LocalWorkspace(root=tmp_path) as local:
-            backend = _RecordingLocalBackend(local)
-            toolset = background_toolset(tmp_path)
-            ctx = run_context(Workspace(backend))
-            started_id = command_id(await call_tool(toolset, ctx, 'start_command', command='sleep 30'))
-            backend.hold_on_term = True
+        local = LocalWorkspace(root=tmp_path)
+        backend = _RecordingLocalBackend(local)
+        toolset = background_toolset(tmp_path)
+        ctx = run_context(Workspace(backend))
+        started_id = command_id(await call_tool(toolset, ctx, 'start_command', command='sleep 30'))
+        backend.hold_on_term = True
 
-            await call_tool(toolset, ctx, 'stop_command', command_id=started_id)
+        await call_tool(toolset, ctx, 'stop_command', command_id=started_id)
 
     async def test_unknown_id_messages_are_unchanged(self, workspace: Workspace) -> None:
         toolset = shell_toolset()
@@ -915,16 +911,16 @@ class TestBackgroundCommands:
         error: RuntimeError,
         expected: type[RuntimeError],
     ) -> None:
-        async with LocalWorkspace(root=tmp_path) as local:
-            backend = _RecordingLocalBackend(local)
-            toolset = background_toolset(tmp_path)
-            ctx = run_context(Workspace(backend))
-            started_id = command_id(await call_tool(toolset, ctx, 'start_command', command='sleep 30'))
-            backend.run_error = error
-            with pytest.raises(expected, match=str(error)):
-                await call_tool(toolset, ctx, 'check_command', command_id=started_id)
-            backend.run_error = None
-            await call_tool(toolset, ctx, 'stop_command', command_id=started_id)
+        local = LocalWorkspace(root=tmp_path)
+        backend = _RecordingLocalBackend(local)
+        toolset = background_toolset(tmp_path)
+        ctx = run_context(Workspace(backend))
+        started_id = command_id(await call_tool(toolset, ctx, 'start_command', command='sleep 30'))
+        backend.run_error = error
+        with pytest.raises(expected, match=str(error)):
+            await call_tool(toolset, ctx, 'check_command', command_id=started_id)
+        backend.run_error = None
+        await call_tool(toolset, ctx, 'stop_command', command_id=started_id)
 
     @pytest.mark.parametrize(
         ('error', 'expected'),
@@ -940,16 +936,16 @@ class TestBackgroundCommands:
         error: RuntimeError,
         expected: type[RuntimeError],
     ) -> None:
-        async with LocalWorkspace(root=tmp_path) as local:
-            backend = _RecordingLocalBackend(local)
-            toolset = background_toolset(tmp_path)
-            ctx = run_context(Workspace(backend))
-            started_id = command_id(await call_tool(toolset, ctx, 'start_command', command='sleep 30'))
-            backend.run_error = error
-            with pytest.raises(expected, match=str(error)):
-                await call_tool(toolset, ctx, 'stop_command', command_id=started_id)
-            backend.run_error = None
+        local = LocalWorkspace(root=tmp_path)
+        backend = _RecordingLocalBackend(local)
+        toolset = background_toolset(tmp_path)
+        ctx = run_context(Workspace(backend))
+        started_id = command_id(await call_tool(toolset, ctx, 'start_command', command='sleep 30'))
+        backend.run_error = error
+        with pytest.raises(expected, match=str(error)):
             await call_tool(toolset, ctx, 'stop_command', command_id=started_id)
+        backend.run_error = None
+        await call_tool(toolset, ctx, 'stop_command', command_id=started_id)
 
 
 async def test_shell_capability_runs_through_an_agent_with_a_sandbox(tmp_path: Path) -> None:
@@ -961,8 +957,8 @@ async def test_shell_capability_runs_through_an_agent_with_a_sandbox(tmp_path: P
     def model(_: list[ModelMessage], __: AgentInfo) -> ModelResponse:
         return responses.pop(0)
 
-    async with LocalWorkspace(root=tmp_path) as workspace:
-        result = await Agent(FunctionModel(model), capabilities=[Shell()]).run('run', workspace=workspace)
+    workspace = LocalWorkspace(root=tmp_path)
+    result = await Agent(FunctionModel(model), capabilities=[Shell()]).run('run', workspace=workspace)
 
     assert result.output == 'done'
 

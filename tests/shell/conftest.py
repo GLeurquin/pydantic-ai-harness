@@ -8,7 +8,7 @@ really run, in a directory the test owns.
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
@@ -33,9 +33,8 @@ def short_kill_grace_period(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-async def workspace(tmp_path: Path) -> AsyncIterator[Workspace]:
-    async with LocalWorkspace(root=tmp_path) as backend:
-        yield Workspace(backend)
+def workspace(tmp_path: Path) -> Workspace:
+    return Workspace(LocalWorkspace(root=tmp_path))
 
 
 def run_context(workspace: Workspace | None = None) -> RunContext[None]:
