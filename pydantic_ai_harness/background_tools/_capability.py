@@ -44,6 +44,12 @@ and get its result later.\
 
 _RUN_IN_BACKGROUND = 'run_in_background'
 
+
+def _instructions(ctx: RunContext[Any]) -> str | None:
+    # Realtime sessions run tools concurrently already; see `_background_mode`.
+    return None if ctx.realtime else _INSTRUCTIONS
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -189,27 +195,23 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
             optional_tools=_any_of([capability.optional_tools for capability in instances]),
         )
 
-    _tasks: set[asyncio.Task[None]] = field(default_factory=set[asyncio.Task[None]], init=False, repr=False)
-    _realtime: bool = field(default=False, init=False, repr=False)
-    _completed: list[tuple[UserContent, ...]] = field(
-        default_factory=list[tuple[UserContent, ...]], init=False, repr=False
+    _tasks: set[asyncio.Task[tuple[UserContent, ...]]] = field(
+        default_factory=set[asyncio.Task[tuple[UserContent, ...]]], init=False, repr=False
     )
-    _task_errors: list[BaseException] = field(default_factory=list[BaseException], init=False, repr=False)
+    """Live and finished background tasks; `after_node_run` sweeps the finished ones into the queue."""
 
     def get_instructions(self) -> AgentInstructions[AgentDepsT] | None:
-        return None if self._realtime else _INSTRUCTIONS
+        return _instructions
 
     async def for_run(self, ctx: RunContext[AgentDepsT]) -> BackgroundTools[AgentDepsT]:
-        run_capability = replace(self)
-        run_capability._realtime = ctx.realtime
-        return run_capability
+        return replace(self)
 
     async def _background_mode(
         self, ctx: RunContext[AgentDepsT], tool_def: ToolDefinition
     ) -> Literal['always', 'optional'] | None:
         """Whether `tool_def` always runs in the background, may on request, or cannot in this run."""
         run_sequential = ctx.tool_manager is not None and ctx.tool_manager.get_parallel_execution_mode() == 'sequential'
-        if self._realtime or run_sequential or tool_def.sequential:
+        if ctx.realtime or run_sequential or tool_def.sequential:
             return None
         if await matches_tool_selector(self.tools, ctx, tool_def):
             return 'always'
@@ -264,35 +266,23 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
         task_id = call.tool_call_id
         tool_name = call.tool_name
 
-        async def _run() -> None:
+        async def _run() -> tuple[UserContent, ...]:
             try:
                 result = await handler(args)
-            except UnexpectedModelBehavior as e:
-                # Core raises this when the tool's retry budget runs out; end the run as a sequential tool would.
-                self._task_errors.append(e)
-                raise
             except (ApprovalRequired, CallDeferred, ToolRetryError, ToolFailedError) as e:
-                message = (f"Background tool '{tool_name}' (task {task_id}) failed: {_format_background_error(e)}",)
+                return (f"Background tool '{tool_name}' (task {task_id}) failed: {_format_background_error(e)}",)
+            except UnexpectedModelBehavior:
+                # Core raises this when the tool's retry budget runs out; end the run as a sequential tool would.
+                raise
             except Exception as e:
                 # Unexpected errors are logged in full; the model only learns the type.
                 logger.exception('Background tool %s failed', tool_name)
-                message = (f"Background tool '{tool_name}' (task {task_id}) failed: {type(e).__name__}",)
-            except asyncio.CancelledError:
-                raise
-            except BaseException as e:
-                self._task_errors.append(e)
-                raise
-            else:
-                message = _format_background_result(tool_name, task_id, result)
-            self._completed.append(message)
+                return (f"Background tool '{tool_name}' (task {task_id}) failed: {type(e).__name__}",)
+            return _format_background_result(tool_name, task_id, result)
 
-        def task_done(task: asyncio.Task[None]) -> None:
-            self._tasks.discard(task)
+        def task_done(task: asyncio.Task[tuple[UserContent, ...]]) -> None:
             # Core counts a tool call when its handler returns, so hold the slot while the task runs.
             ctx.usage.tool_calls -= 1
-            # Errors reach the run through `_task_errors`; mark them retrieved so asyncio does not log them.
-            if not task.cancelled():
-                task.exception()
 
         ctx.usage.tool_calls += 1
         task = asyncio.create_task(_run(), name=f'background tool {tool_name} ({task_id})')
@@ -314,27 +304,20 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
         from pydantic_graph import End
 
         if isinstance(result, End) and isinstance(result.data.output, DeferredToolRequests):
-            # Results are held here rather than enqueued directly so that a deferred-tool pause
-            # is not turned into another model request by the end-of-run drain.
+            # Finished tasks are left unswept so that a deferred-tool pause is not turned into
+            # another model request by the end-of-run drain.
             return result
 
-        # At the end of the run, wait for the first live task unless something is already
-        # waiting to be delivered; the end-of-run drain then redirects the run to a new request.
-        while (
-            isinstance(result, End)
-            and self._tasks
-            and not self._completed
-            and not self._task_errors
-            and not ctx.pending_messages
-        ):
+        while True:
+            for task in [task for task in self._tasks if task.done()]:
+                self._tasks.discard(task)
+                if not task.cancelled():
+                    ctx.enqueue(*task.result())
+            # At the end of the run, wait for the first live task unless something is already
+            # waiting to be delivered; the end-of-run drain then redirects the run to a new request.
+            if not isinstance(result, End) or not self._tasks or ctx.pending_messages:
+                return result
             await asyncio.wait(tuple(self._tasks), return_when=asyncio.FIRST_COMPLETED)
-
-        if self._task_errors:
-            raise self._task_errors.pop(0)
-        for message in self._completed:
-            ctx.enqueue(*message)
-        self._completed.clear()
-        return result
 
     async def wrap_run(
         self,
@@ -350,6 +333,7 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
                 task.cancel()
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
-        if self._task_errors:
-            raise self._task_errors.pop(0)
+        for task in tasks:
+            if not task.cancelled() and (error := task.exception()) is not None:
+                raise error
         return result
