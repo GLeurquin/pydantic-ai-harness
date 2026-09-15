@@ -655,6 +655,8 @@ It replaces the whole configuration, not the arguments you restate, so carry ove
 above that are load-bearing:
 
 ```python
+import logfire
+
 logfire.configure(send_to_logfire='if-token-present', console=False, distributed_tracing=True)
 logfire.instrument_pydantic_ai()
 ```
