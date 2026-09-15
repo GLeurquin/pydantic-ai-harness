@@ -338,6 +338,27 @@ def test_one_hint_span_per_process_carries_every_promised_attribute(spans: SpanC
     assert attributes.get('agent_control.baseline_bytes') == len(spans.hint_baseline_json().encode())
 
 
+@pytest.mark.xfail(
+    reason=(
+        'The once-per-process guard is keyed on `variable.logfire_instance`, and `Variable.__init__` '
+        'stores `logfire_instance.with_settings(custom_scope_suffix="variables")` -- a new object per '
+        '`Variable`. So a second `AgentControl` for the same agent misses the guard and reports '
+        'again, which for an agent built per request is one hint span per request. Passing again is '
+        'the signal that it is fixed and this marker should go.'
+    )
+)
+def test_two_controls_for_one_agent_report_it_once(spans: SpanCapture) -> None:
+    """Once per process *per agent*, which is what the docs promise and what a consumer dedupes on.
+
+    Two agents rather than two runs of one, because an agent constructed per request is an ordinary
+    shape and each one brings its own `AgentControl`.
+    """
+    build_agent().run('Hello.')
+    build_agent().run('Hello again.')
+
+    assert len(spans.named(HINT_SPAN)) == 1
+
+
 def test_the_hint_span_arrives_at_the_platform(platform: Platform, spans: SpanCapture) -> None:
     """A span that was emitted is not the same claim as a span that arrived.
 

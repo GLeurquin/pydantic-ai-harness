@@ -265,7 +265,11 @@ def platform_target() -> Platform:
     )
     try:
         platform.get_variable()
-    except (httpx.HTTPError, OSError) as error:
+    except (httpx.HTTPError, OSError, ValueError) as error:
+        # `ValueError` covers the reachable-but-not-a-Logfire case: something answering `200` with a
+        # body that is not JSON, or JSON that is not a variable, raises `JSONDecodeError` or
+        # pydantic's `ValidationError`, both of which are `ValueError`s. Pointing this suite at the
+        # wrong port should skip with the reason, like every other way of not having a platform.
         unavailable(f'no usable Logfire platform at {base_url}: {type(error).__name__}: {error}')
     return platform
 

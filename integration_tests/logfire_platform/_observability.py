@@ -56,7 +56,17 @@ class SpanCapture:
 
     def __init__(self) -> None:
         self._recorder = _Recorder()
-        self.processor = SimpleSpanProcessor(self._recorder)
+
+    def new_processor(self) -> SimpleSpanProcessor:
+        """A processor that records into this capture, for one `logfire.configure()` call.
+
+        A fresh one each time rather than a single processor re-registered, because `configure()`
+        replaces the tracer provider and shuts down the processors the old one held. Nothing here
+        stops recording when that happens today -- the exporter's `shutdown` is a no-op and
+        `SimpleSpanProcessor.on_end` has no shutdown guard -- but that is two implementation details
+        to depend on for a suite whose evidence is the spans it collected.
+        """
+        return SimpleSpanProcessor(self._recorder)
 
     def clear(self) -> None:
         """Forget the spans recorded so far, so a test sees only its own."""
@@ -104,7 +114,7 @@ def configure(platform: Platform, capture: SpanCapture, *, base_url: str | None 
         send_to_logfire='if-token-present',
         console=False,
         metrics=False,
-        additional_span_processors=[capture.processor],
+        additional_span_processors=[capture.new_processor()],
         advanced=AdvancedOptions(base_url=base_url or platform.base_url),
         # Polling is the fallback; the platform pushes updates over SSE. 10s is the floor, and a
         # test that has just published calls `refresh_variables` rather than waiting for either.
