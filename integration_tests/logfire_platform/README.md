@@ -1,9 +1,11 @@
 # Live Agent Control tests
 
 Eighteen claims about [Agent Control](../../docs/agent-control.md), checked against a running
-Logfire platform with real model requests. Nothing here is mocked: every test publishes through the
-platform's own variables API, resolves it through the Logfire SDK, sends a real request to a real
-provider, and reads its evidence back out of the running system.
+Logfire platform with real model requests. Nothing here is mocked: the tests that need a published
+config put one there through the platform's own variables API, every test resolves through the real
+Logfire SDK and sends a real request to a real provider, and the evidence comes back out of what
+ran -- the request the model was handed, the spans the process exported, and, for the hint span, the
+platform's own copy read back with the query API.
 
 ```bash
 make integration-logfire-platform
@@ -90,8 +92,8 @@ evidence is what matters here:
   `[Scrubbed due to 'auth']` and `baseline_sha256` stops verifying. This suite runs with scrubbing
   at its default, so it is the regression test for that.
 
-The agent under test lives in [`_agent.py`](_agent.py): five instruction sources, four tools in two
-toolsets, real `deps`, and code-side settings. [`examples/agent_control.py`](../../examples/agent_control.py)
+The agent under test lives in [`_agent.py`](_agent.py): six addressable prompt blocks written in
+five different ways, four tools in two toolsets, real `deps`, and code-side settings. [`examples/agent_control.py`](../../examples/agent_control.py)
 is the readable version of the same agent, and runs with no Logfire at all.
 
 ## Why CI does not run it

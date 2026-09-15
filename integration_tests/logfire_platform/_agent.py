@@ -360,6 +360,10 @@ def _orders_toolset(record: Callable[[ToolCall], None]) -> FunctionToolset[Suppo
         order = ORDERS.get(order_id.strip().upper())
         if order is None or order['customer'] != ctx.deps.customer_id:
             return f'No order {order_id} for this customer.'
+        # `capability:store_policy` puts the refund window after delivery, so the tool refuses an
+        # order still in transit rather than contradicting the block it is told to follow.
+        if order['status'] != 'delivered':
+            return f'Order {order_id} is {order["status"]}, so it is not refundable yet.'
         return f'Refund opened for {order_id} (${order["total"]}), reason: {reason}.'
 
     return FunctionToolset[SupportDeps](

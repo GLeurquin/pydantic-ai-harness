@@ -2,8 +2,8 @@
 
 `AgentControl` makes an agent's instructions, model, model settings, and tool descriptions editable
 from Logfire, one addressable piece at a time. So this agent is deliberately assembled from many
-pieces: its prompt comes from five separate places and its four tools from two toolsets, and every
-one of them is a block Logfire can change on its own.
+pieces: its prompt is six separately addressable blocks, written in five different ways, and its
+four tools live in two toolsets.
 
 | Where it is written                                    | Block id                  |
 | ------------------------------------------------------ | ------------------------- |
@@ -133,6 +133,11 @@ def build_orders_toolset() -> FunctionToolset[SupportDeps]:
         order = ORDERS.get(order_id.strip().upper())
         if order is None or order['customer'] != ctx.deps.customer_id:
             return f'No order {order_id} for this customer.'
+        # The refund window in `StorePolicy` runs from delivery, so an order still on its way has
+        # nothing to refund yet. A tool enforcing the half of the policy it owns keeps the prompt
+        # and the code from disagreeing when Logfire reworks the policy text.
+        if order['status'] != 'delivered':
+            return f'Order {order_id} is {order["status"]}, so it is not refundable yet.'
         return f'Refund opened for {order_id} (${order["total"]}), reason: {reason}.'
 
     return FunctionToolset[SupportDeps](

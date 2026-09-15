@@ -2,9 +2,11 @@
 
 The unit suite in `tests/logfire_variables` drives `AgentControl` through a local variable provider
 and test models. It answers whether the capability applies a config correctly. What it cannot answer
-is whether the *feature* works, and that is what this file is for: every test here publishes through
-the platform's own variables API, resolves it through the real Logfire SDK, makes a real model
-request, and reads its evidence back out of the running system.
+is whether the *feature* works, and that is what this file is for: a test that needs a published
+config puts one in the project through the platform's own variables API, every test resolves through
+the real Logfire SDK and makes a real model request, and each assertion reads what actually
+happened -- the request the model was handed, the spans the process exported, or the platform's own
+copy of one of them.
 
 Eighteen claims, one or more tests each:
 
@@ -904,7 +906,19 @@ def test_a_configured_agent_still_reports_its_code_baseline(platform: Platform, 
     assert blocks['agent'].instructions == CODE_BLOCKS['agent'], 'the baseline describes the code'
     assert live.last.block('agent') == FLAMINGO, 'and the run itself used the published value'
 
+
+def test_the_configured_hint_span_arrives_at_the_platform(platform: Platform, spans: SpanCapture) -> None:
+    """The read-back for a configured agent, so `resolution_reason` reaches Logfire as `'resolved'`.
+
+    Its own test rather than the tail of the one above: gating a skip on the read tokens has to
+    happen before anything publishes or makes a model request, and the local half of this claim must
+    report green on a platform with no query credentials rather than reporting skipped.
+    """
     require_span_read_back(platform)
+    publish(platform, {'instructions': [{'id': 'agent', 'instructions': FLAMINGO}], 'model': CODE_MODEL})
+    build_agent().run('Say hello.')
+
     attributes = hint_span_from_platform(platform, spans)
+
     assert_hint_attributes_complete(attributes)
     assert attributes['agent_control.resolution_reason'] == 'resolved'
