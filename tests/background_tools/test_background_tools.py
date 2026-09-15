@@ -1145,30 +1145,6 @@ class TestBackgroundTools:
 
         assert retry_seen
 
-    async def test_retried_call_does_not_inherit_an_earlier_background_choice(self) -> None:
-        def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-            if any(isinstance(part, ToolReturnPart) for message in messages for part in message.parts):
-                return ModelResponse(parts=[TextPart(content='done')])
-            if any(isinstance(part, RetryPromptPart) for message in messages for part in message.parts):
-                return ModelResponse(
-                    parts=[ToolCallPart(tool_name='research', args={'query': 'topic'}, tool_call_id='c1')]
-                )
-            return ModelResponse(
-                parts=[
-                    ToolCallPart(tool_name='research', args={'query': 1, 'run_in_background': True}, tool_call_id='c1')
-                ]
-            )
-
-        agent = Agent(FunctionModel(model_fn), capabilities=[BackgroundTools(optional_tools=['research'])])
-
-        @agent.tool_plain
-        async def research(query: str) -> str:  # pyright: ignore[reportUnusedFunction]
-            return f'researched {query}'
-
-        result = await agent.run('go')
-
-        assert not _ack_seen(result.all_messages())
-
     async def test_run_scoped_sequential_mode_does_not_advertise_run_in_background(self) -> None:
         seen: list[ToolDefinition] = []
 

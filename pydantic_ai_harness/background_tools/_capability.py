@@ -7,7 +7,7 @@ import json
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic_ai.capabilities import AbstractCapability, AgentNode, NodeResult, RawToolArgs
 from pydantic_ai.exceptions import (
@@ -45,6 +45,22 @@ and get its result later.\
 _RUN_IN_BACKGROUND = 'run_in_background'
 
 logger = logging.getLogger(__name__)
+
+
+def _with_run_in_background(tool_def: ToolDefinition) -> ToolDefinition:
+    """Add the optional `run_in_background` argument to a tool's schema."""
+    properties = tool_def.parameters_json_schema.get('properties', {})
+    if _RUN_IN_BACKGROUND in properties:
+        raise UserError(
+            f"Tool '{tool_def.name}' already has a '{_RUN_IN_BACKGROUND}' parameter, "
+            'so it cannot be an optional background tool.'
+        )
+    flag = {
+        'type': 'boolean',
+        'description': 'Set to true to keep working and get the result later as a follow-up message.',
+    }
+    schema = {**tool_def.parameters_json_schema, 'properties': {**properties, _RUN_IN_BACKGROUND: flag}}
+    return replace(tool_def, parameters_json_schema=schema)
 
 
 def _any_of(selectors: Sequence[ToolSelector[AgentDepsT]]) -> ToolSelectorFunc[AgentDepsT]:
@@ -148,10 +164,10 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
     optional_tools: ToolSelector[AgentDepsT] = field(default_factory=lambda: {'background': 'optional'})
     """Tools the model may run in the background per call.
 
-    Matching tools gain an optional boolean `run_in_background` argument; the tool function never
-    receives it, and the call runs normally unless it is `true`. Tools that also match `tools`
-    always run in the background and keep their schema, as do tools that cannot run in the
-    background at all (sequential tools, sequential runs, realtime sessions).
+    Matching tools gain an optional boolean `run_in_background` argument, which the tool function
+    never receives; a call runs in the background only when the model passes `true`. Tools that
+    also match `tools` always run in the background, and tools that cannot run in the background
+    in this run (sequential tools, sequential runs, realtime sessions) are left unchanged.
     """
 
     id: str | None = 'background_tools'
@@ -174,8 +190,6 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
         )
 
     _tasks: set[asyncio.Task[None]] = field(default_factory=set[asyncio.Task[None]], init=False, repr=False)
-    _optional_tool_names: set[str] = field(default_factory=set[str], init=False, repr=False)
-    _background_calls: set[str] = field(default_factory=set[str], init=False, repr=False)
     _realtime: bool = field(default=False, init=False, repr=False)
     _completed: list[tuple[UserContent, ...]] = field(
         default_factory=list[tuple[UserContent, ...]], init=False, repr=False
@@ -190,40 +204,24 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
         run_capability._realtime = ctx.realtime
         return run_capability
 
-    def _can_run_in_background(self, ctx: RunContext[AgentDepsT], tool_def: ToolDefinition) -> bool:
+    async def _background_mode(
+        self, ctx: RunContext[AgentDepsT], tool_def: ToolDefinition
+    ) -> Literal['always', 'optional'] | None:
+        """Whether `tool_def` always runs in the background, may on request, or cannot in this run."""
         run_sequential = ctx.tool_manager is not None and ctx.tool_manager.get_parallel_execution_mode() == 'sequential'
-        return not (self._realtime or run_sequential or tool_def.sequential)
+        if self._realtime or run_sequential or tool_def.sequential:
+            return None
+        if await matches_tool_selector(self.tools, ctx, tool_def):
+            return 'always'
+        if await matches_tool_selector(self.optional_tools, ctx, tool_def):
+            return 'optional'
+        return None
 
     async def prepare_tools(self, ctx: RunContext[AgentDepsT], tool_defs: list[ToolDefinition]) -> list[ToolDefinition]:
-        self._optional_tool_names = set()
-        prepared: list[ToolDefinition] = []
-        for tool_def in tool_defs:
-            if (
-                not self._can_run_in_background(ctx, tool_def)
-                or await matches_tool_selector(self.tools, ctx, tool_def)
-                or not await matches_tool_selector(self.optional_tools, ctx, tool_def)
-            ):
-                prepared.append(tool_def)
-                continue
-            properties: dict[str, object] = {**tool_def.parameters_json_schema.get('properties', {})}
-            if _RUN_IN_BACKGROUND in properties:
-                raise UserError(
-                    f"Tool '{tool_def.name}' already has a '{_RUN_IN_BACKGROUND}' parameter, "
-                    'so it cannot be an optional background tool.'
-                )
-            schema = {
-                **tool_def.parameters_json_schema,
-                'properties': {
-                    **properties,
-                    _RUN_IN_BACKGROUND: {
-                        'type': 'boolean',
-                        'description': 'Set to true to keep working and get the result later as a follow-up message.',
-                    },
-                },
-            }
-            self._optional_tool_names.add(tool_def.name)
-            prepared.append(replace(tool_def, parameters_json_schema=schema))
-        return prepared
+        return [
+            _with_run_in_background(tool_def) if await self._background_mode(ctx, tool_def) == 'optional' else tool_def
+            for tool_def in tool_defs
+        ]
 
     async def before_tool_validate(
         self,
@@ -233,7 +231,7 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
         tool_def: ToolDefinition,
         args: RawToolArgs,
     ) -> RawToolArgs:
-        if tool_def.name not in self._optional_tool_names:
+        if await self._background_mode(ctx, tool_def) != 'optional':
             return args
         parsed: Any = args
         if isinstance(args, str):
@@ -243,15 +241,10 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
                 return args  # Core turns malformed JSON into a retry.
         if not isinstance(parsed, dict):
             return args
+        # The tool's validator rejects unknown arguments, so the flag is removed and checked here.
         stripped: dict[str, Any] = {**parsed}
-        flag = stripped.pop(_RUN_IN_BACKGROUND, False)
-        # Validation has not run yet, so the flag's type is checked here; a retried call must not
-        # inherit the choice from an earlier attempt with the same call id.
-        self._background_calls.discard(call.tool_call_id)
-        if not isinstance(flag, bool):
+        if not isinstance(stripped.pop(_RUN_IN_BACKGROUND, False), bool):
             raise ModelRetry(f'`{_RUN_IN_BACKGROUND}` must be true or false.')
-        if flag:
-            self._background_calls.add(call.tool_call_id)
         return stripped
 
     async def wrap_tool_execute(
@@ -263,9 +256,9 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
         args: dict[str, Any],
         handler: WrapToolExecuteHandler,
     ) -> Any:
-        if not self._can_run_in_background(ctx, tool_def) or not (
-            await matches_tool_selector(self.tools, ctx, tool_def) or call.tool_call_id in self._background_calls
-        ):
+        mode = await self._background_mode(ctx, tool_def)
+        # The flag was removed before validation, so it is read from the call as the model sent it.
+        if mode is None or (mode == 'optional' and call.args_as_dict().get(_RUN_IN_BACKGROUND) is not True):
             return await handler(args)
 
         task_id = call.tool_call_id

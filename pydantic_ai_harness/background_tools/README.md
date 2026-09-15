@@ -58,13 +58,13 @@ BackgroundTools(tools=lambda ctx, td: td.name.startswith('research_'))
 
 ### Letting the model decide
 
-The `background` metadata key can be `True` to always run a tool in the background, or
-`'optional'` to give the model a `run_in_background` argument for each call; the call runs
-normally unless the model passes `true`. You can also pass
-any [`ToolSelector`](https://ai.pydantic.dev/api/tools/#pydantic_ai.tools.ToolSelector) to
-`BackgroundTools(optional_tools=...)`. A tool matching both selectors always runs in the
-background and keeps its schema. A tool that already has a `run_in_background` parameter is
-rejected.
+Set the `background` metadata key to `'optional'` instead of `True` and the tool gains a
+`run_in_background` argument; a call runs in the background only when the model passes `true`.
+`BackgroundTools(optional_tools=...)` accepts any
+[`ToolSelector`](https://ai.pydantic.dev/api/tools/#pydantic_ai.tools.ToolSelector), like `tools`.
+A tool selected by both always runs in the background. Sequential tools and realtime sessions
+cannot run tools in the background, so they do not get the argument. A tool that already has a
+`run_in_background` parameter is rejected.
 
 ```python
 from pydantic_ai import Agent
