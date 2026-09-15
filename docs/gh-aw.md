@@ -179,7 +179,7 @@ engine:
 
 ```yaml {title="triage_agent.yml"}
 name: triage
-model: openai:gpt-5
+model: openai-chat:gpt-5
 instructions: |
   You triage one GitHub issue. Read the issue in the prompt, then post exactly one
   comment with the `safeoutputs_add_comment` tool. Suggest a label; do not apply one.
@@ -191,13 +191,13 @@ capabilities:
 
 **The spec needs a `model:` even though it does not decide the model.** A module can leave
 the model out, because an `Agent` may be constructed without one, but `Agent.from_spec()`
-rejects a spec that names none, and it builds that model while loading the file. So the
-line has to be there, and it has to be a model the step can construct: name the same
-provider as the workflow's `engine.model`, since that is the one whose credential the
-engine puts in the environment. The value itself is then replaced, because the engine
-always passes `-m` and an explicit `-m` replaces whatever a loaded agent declares. Writing
-`openai/gpt-5` in the workflow and `openai:gpt-5` in the spec keeps the two readable
-together; only the workflow's copy is live.
+rejects a spec that names none, and it builds that model while loading the file, before
+the CLI's `-m` override. Use the client prefix that the engine configures, not the
+workflow's provider prefix: `openai-chat:<model>` for `copilot/`, `codex/` and `openai/`,
+or `anthropic:<model>` for `anthropic/`. With `PAI_BASE_URL`, use `openai-chat:<model>`
+regardless of the workflow provider. The engine then passes `-m` to replace the model.
+For example, pair `openai/gpt-5` in the workflow with `openai-chat:gpt-5` in the spec;
+only the workflow's copy selects the model used for the run.
 
 The gateway's MCP servers still arrive through `--mcp-config`, so a spec agent gets the
 safe outputs and the GitHub tools on the same terms as a module.

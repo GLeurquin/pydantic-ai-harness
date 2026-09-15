@@ -13,7 +13,8 @@ from .test_engine_definition import launch, proxy_env, requires_safe_path
 
 # Configure is real; only outbound HTTP is replaced. The CLI boundary records the
 # resulting public configuration instead of making a model request.
-PROBE = """import os
+PROBE = """import atexit
+import os
 import runpy
 import socket
 import sys
@@ -49,11 +50,21 @@ def cli(*args, **kwargs):
     raise SystemExit(int(os.environ['PROBE_EXIT']))
 
 
-with patch.object(socket.socket, 'connect', no_network), \\
-     patch.object(requests.Session, 'request', response), \\
-     patch.object(requests.Session, 'send', no_network), \\
-     patch.object(runpy, 'run_module', cli):
-    exec(compile(sys.argv.pop(1), '<launcher>', 'exec'))
+def verify_shutdown_guards():
+    assert socket.socket.connect is no_network
+    assert requests.Session.request is response
+    assert requests.Session.send is no_network
+    Path(os.environ['PROBE_RESULT'] + '.shutdown').touch()
+
+
+atexit.register(verify_shutdown_guards)
+# These patches belong to the isolated subprocess, including its shutdown.
+# SystemExit must not restore networking while Logfire's token thread is running.
+patch.object(socket.socket, 'connect', no_network).start()
+patch.object(requests.Session, 'request', response).start()
+patch.object(requests.Session, 'send', no_network).start()
+patch.object(runpy, 'run_module', cli).start()
+exec(compile(sys.argv.pop(1), '<launcher>', 'exec'))
 """
 
 
@@ -105,3 +116,4 @@ def test_launcher_ignores_checkout_logfire_configuration(tmp_path: Path, token: 
     assert completed.returncode == exit_code, completed.stderr
     assert result.exists(), completed.stderr
     assert not Path(result.read_text()).exists()
+    assert result.with_suffix('.shutdown').exists(), completed.stderr

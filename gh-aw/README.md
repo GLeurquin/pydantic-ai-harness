@@ -174,9 +174,11 @@ default composition explicitly.
 A `.yml`, `.yaml` or `.json` spec covers instructions plus built-in capabilities, and
 the gateway's MCP servers still reach it through `--mcp-config`. Unlike a module it has
 to carry a `model:`, because `Agent.from_spec()` rejects a spec without one and builds
-that model while loading the file, so the value has to name the same provider as
-`engine.model`, whose credential the engine puts in the environment. `-m` then replaces
-it, which makes the spec's copy documentation rather than configuration. A spec cannot
+that model while loading the file, before the CLI's `-m` override. Use the client prefix
+that the engine configures, not the workflow's provider prefix: `openai-chat:<model>` for
+`copilot/`, `codex/` and `openai/`, or `anthropic:<model>` for `anthropic/`. With
+`PAI_BASE_URL`, use `openai-chat:<model>` regardless of the workflow provider. `-m` then
+replaces the model, so only the workflow's copy selects the model used for the run. A spec cannot
 name a harness capability: spec capability names resolve through a closed registry that
 the harness is not part of, and the CLI passes no `custom_capability_types`
 (pydantic/pydantic-ai#8334). Nor can it define a function tool. Either needs a module.
