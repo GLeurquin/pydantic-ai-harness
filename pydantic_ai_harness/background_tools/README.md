@@ -6,6 +6,14 @@
 
 Install the OpenAI provider before running this example:
 
+uv:
+
+```bash
+uv add "pydantic-ai-slim[openai]" pydantic-ai-harness
+```
+
+pip:
+
 ```bash
 pip install "pydantic-ai-slim[openai]" pydantic-ai-harness
 ```
@@ -135,6 +143,14 @@ BackgroundTools(
 ## Agent spec (YAML/JSON)
 
 Install Agent spec support before using this example:
+
+uv:
+
+```bash
+uv add "pydantic-ai-slim[spec]" pydantic-ai-harness
+```
+
+pip:
 
 ```bash
 pip install "pydantic-ai-slim[spec]" pydantic-ai-harness

@@ -13,7 +13,7 @@ waiting. Use it when the model can work on something else until the result is re
 Install the OpenAI provider before running this example:
 
 ```bash
-pip install "pydantic-ai-slim[openai]" pydantic-ai-harness
+pip/uv-add "pydantic-ai-slim[openai]" pydantic-ai-harness
 ```
 
 ```python
@@ -143,7 +143,7 @@ BackgroundTools(
 Install Agent spec support before using this example:
 
 ```bash
-pip install "pydantic-ai-slim[spec]" pydantic-ai-harness
+pip/uv-add "pydantic-ai-slim[spec]" pydantic-ai-harness
 ```
 
 ```yaml
