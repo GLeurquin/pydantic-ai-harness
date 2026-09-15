@@ -9,7 +9,7 @@ Run agent tools against files and processes in a persistent [Fly.io Sprite](http
 ## Install
 
 ```bash
-uv add "pydantic-ai-harness[sprites]"
+uv add "pydantic-ai-harness[sprites,anthropic]"
 ```
 
 Set `SPRITE_TOKEN` for authentication. The integration uses sprites-py 0.7.x.
@@ -17,25 +17,33 @@ Set `SPRITE_TOKEN` for authentication. The integration uses sprites-py 0.7.x.
 ## Use a workspace
 
 ```python
+import asyncio
+import os
+
 from pydantic_ai import Agent, RunContext
 from pydantic_ai_harness.sprites import SpriteWorkspace
-
-agent = Agent('anthropic:claude-sonnet-4-6', capabilities=[SpriteWorkspace()])
-
-
-@agent.tool
-async def run_python(ctx: RunContext[None], code: str) -> str:
-    result = await ctx.workspace.run(['python3', '-c', code], timeout=10)
-    return result.stdout + result.stderr
+from sprites import AsyncSpritesClient
 
 
 async def main() -> None:
-    first = await agent.run('Write the numbers 1 to 5 to /tmp/numbers.txt.')
-    second = await agent.run(
-        'Read /tmp/numbers.txt and calculate their sum.',
-        message_history=first.all_messages(),
-    )
-    print(second.output)
+    async with AsyncSpritesClient(token=os.environ['SPRITE_TOKEN']) as client:
+        agent = Agent('anthropic:claude-sonnet-4-6', capabilities=[SpriteWorkspace(client=client)])
+
+        @agent.tool
+        async def run_python(ctx: RunContext[None], code: str) -> str:
+            result = await ctx.workspace.run(['python3', '-c', code], timeout=10)
+            return result.stdout + result.stderr
+
+        first = await agent.run('Write the numbers 1 to 5 to /tmp/numbers.txt.')
+        second = await agent.run(
+            'Read /tmp/numbers.txt and calculate their sum.',
+            message_history=first.all_messages(),
+        )
+        print(second.output)
+
+
+if __name__ == '__main__':
+    asyncio.run(main())
 ```
 
 Constructing the capability or backend makes no Sprites requests. First use creates a Sprite and records its reference; later operations on that backend reuse the SDK handle. A run that does not use its workspace creates no Sprite.
@@ -71,6 +79,8 @@ Retain a `SpriteWorkspaceBackend` and await its `workspace` property to obtain t
 Without `client=`, the backend creates and owns its local `AsyncSpritesClient` on first acquisition from `token=` (or `SPRITE_TOKEN`). Retain that backend and call `disconnect()` in `finally`. This example also deletes the remote Sprite using the native SDK:
 
 ```python
+import asyncio
+
 from pydantic_ai import Agent, RunContext
 from pydantic_ai_harness.sprites import SpriteWorkspaceBackend
 
@@ -93,6 +103,10 @@ async def run_with_cleanup() -> str:
             await native.delete()
     finally:
         await backend.disconnect()
+
+
+if __name__ == '__main__':
+    print(asyncio.run(run_with_cleanup()))
 ```
 
 To keep the remote Sprite, omit `await native.delete()` and retain the outer `finally` that disconnects the backend. `disconnect()` closes only a backend-owned SDK client; it does not delete a Sprite or close a caller-supplied client. Finish in-flight commands before disconnecting.
@@ -101,7 +115,7 @@ To keep the remote Sprite, omit `await native.delete()` and retain the outer `fi
 
 A Sprite persists after a run ends. It auto-suspends when idle and resumes on the next command; nothing deletes it automatically, so delete it explicitly with the native SDK when finished. Attaching by reference does not change its retention.
 
-`runtime` and `workdir` configure a newly created Sprite; they do not reconfigure a Sprite attached by reference. Each command runs through its own asyncio control connection that the backend closes before returning. A control-connection disconnect does not stop the remote command, so the backend supervises the remote process group and cancels it on timeout or cancellation. Complete output is buffered, and timeout errors include output received so far.
+`runtime` configures a newly created Sprite; it does not reconfigure a Sprite attached by reference. `workdir` sets the command working directory for both new and attached Sprites. Each command runs through its own asyncio control connection that the backend closes before returning. A control-connection disconnect does not stop the remote command, so the backend supervises the remote process group and cancels it on timeout or cancellation. Complete output is buffered, and timeout errors include output received so far.
 
 A cancelled creation may leave a Sprite whose remote outcome is unknown to the caller. A command whose process detaches from its session group can outlive cancellation. Durable applications own creation coordination, reference persistence, and workspace restoration inside their activities. The capability does not make remote operations replay-safe or restore application wrappers automatically. Apply workspace policies when restoring the backend, then use `ctx.workspace` in tools.
 
