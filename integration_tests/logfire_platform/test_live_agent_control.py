@@ -378,10 +378,14 @@ def test_the_baseline_describes_every_block_and_the_dynamic_one_without_its_text
     dynamic = blocks[DYNAMIC_BLOCK_ID]
     assert dynamic.dynamic is True
     assert dynamic.instructions is None
-    # The tenant, the customer id and today's date are all in the prompt this run sent. None of them
-    # may be in the document the editor shows, or the snapshot would carry one run's data forever.
+    # The tenant, the customer id and the date are all in the prompt this run sent. None of them may
+    # be in the document the editor shows, or the snapshot would carry one run's data forever. The
+    # rendered block is searched for as a whole, so the date looked for is the one the run used.
     serialized = spans.hint_baseline_json()
-    assert [token for token in (*DYNAMIC_DEPS_TOKENS, todays_date()) if token in serialized] == []
+    leaked = [
+        token for token in (*DYNAMIC_DEPS_TOKENS, todays_date(), live.rendered_dynamic[-1]) if token in serialized
+    ]
+    assert leaked == []
 
 
 def test_the_baseline_describes_the_model_the_settings_and_every_tool(spans: SpanCapture) -> None:
@@ -477,7 +481,7 @@ def test_overriding_one_named_block_leaves_the_agent_s_own_text_alone(platform: 
 
     assert live.last.block('agent:escalation') == escalation
     code_blocks_intact(live, except_for='agent:escalation')
-    assert todays_date() in (live.last.block(DYNAMIC_BLOCK_ID) or ''), 'the dynamic block still recomputes'
+    assert live.last.block(DYNAMIC_BLOCK_ID) == live.rendered_dynamic[-1], 'the dynamic block still recomputes'
 
 
 def test_a_dynamic_block_is_shown_but_never_overridable(platform: Platform) -> None:
@@ -496,8 +500,8 @@ def test_a_dynamic_block_is_shown_but_never_overridable(platform: Platform) -> N
     live.run('Say hello.')
     text = live.last.block(DYNAMIC_BLOCK_ID) or ''
     assert text != frozen
-    assert todays_date() in text
-    assert all(token in text for token in DYNAMIC_DEPS_TOKENS), 'it still reads this run'
+    assert text == live.rendered_dynamic[-1], 'the block is what the code produced, not what was published'
+    assert all(token in text for token in DYNAMIC_DEPS_TOKENS), 'and it still reads this run'
 
 
 # --- 6. Adding a block -------------------------------------------------------

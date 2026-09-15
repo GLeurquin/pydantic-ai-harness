@@ -90,7 +90,12 @@ CATALOG: list[dict[str, str]] = [
 
 
 def todays_date() -> str:
-    """What the dynamic block renders today, so a test can look for it in the prompt."""
+    """Today, as the dynamic block writes it.
+
+    Read once per render and kept in `LiveAgent.rendered_dynamic`, because a test that recomputes it
+    to compare against a block rendered moments earlier fails whenever the two fall either side of
+    midnight -- a real flake, on a suite someone runs by hand at whatever hour they are debugging.
+    """
     return date.today().isoformat()
 
 
@@ -256,6 +261,14 @@ class LiveAgent:
     tool_hooks: list[Callable[[ToolCall], None]]
     """Called on every tool call. The once-per-run scenario publishes from inside one."""
 
+    rendered_dynamic: list[str]
+    """What the dynamic block returned, per render.
+
+    A test asserts the block in the request against this rather than against a string it builds
+    itself: that the block is what the code produced -- and not what someone published over it -- is
+    the claim, and it is one no clock can turn over halfway through.
+    """
+
     def run(self, prompt: str, *, model: str | None = None) -> AgentRunResult[str]:
         """Run the agent on this suite's deps, optionally overriding the model at the call site."""
         if model is None:
@@ -293,6 +306,7 @@ def build_agent(
     control = AgentControl[SupportDeps](label=label, on_unmatched=on_unmatched)
     tool_calls: list[ToolCall] = []
     tool_hooks: list[Callable[[ToolCall], None]] = []
+    rendered_dynamic: list[str] = []
 
     def record(call: ToolCall) -> None:
         tool_calls.append(call)
@@ -328,12 +342,21 @@ def build_agent(
     @agent.instructions(name='tenant')
     def tenant_context(ctx: RunContext[SupportDeps]) -> str:  # pyright: ignore[reportUnusedFunction]
         """-> id `agent:tenant`: dynamic, because it reads the run."""
-        return (
+        rendered = (
             f'Today is {todays_date()}. '
             f'You are serving the {ctx.deps.tenant} storefront for customer {ctx.deps.customer_id}.'
         )
+        rendered_dynamic.append(rendered)
+        return rendered
 
-    return LiveAgent(agent=agent, control=control, probe=probe, tool_calls=tool_calls, tool_hooks=tool_hooks)
+    return LiveAgent(
+        agent=agent,
+        control=control,
+        probe=probe,
+        tool_calls=tool_calls,
+        tool_hooks=tool_hooks,
+        rendered_dynamic=rendered_dynamic,
+    )
 
 
 def _orders_toolset(record: Callable[[ToolCall], None]) -> FunctionToolset[SupportDeps]:
@@ -391,7 +414,10 @@ def _catalog_toolset(record: Callable[[ToolCall], None]) -> FunctionToolset[Supp
         matches = [item for item in CATALOG if all(word in item['name'].lower() for word in words)]
         if not matches:
             return f'No catalog matches for {query!r}.'
-        return '; '.join(f'{item["sku"]} {item["name"]} ${item["price"]}' for item in matches[:limit])
+        # `max(limit, 0)`: a negative limit would otherwise slice from the end of the list and
+        # return more matches the lower it went.
+        shown = matches[: max(limit, 0)]
+        return '; '.join(f'{item["sku"]} {item["name"]} ${item["price"]}' for item in shown)
 
     def lookup_stock(ctx: RunContext[SupportDeps], sku: str) -> str:
         """Report how many units of one SKU are on hand.

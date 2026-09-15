@@ -162,7 +162,10 @@ def build_catalog_toolset() -> FunctionToolset[SupportDeps]:
         matches = [item for item in CATALOG if all(word in item['name'].lower() for word in words)]
         if not matches:
             return f'No catalog matches for {query!r}.'
-        return '; '.join(f'{item["sku"]} {item["name"]} ${item["price"]}' for item in matches[:limit])
+        # `max(limit, 0)`: a negative limit would otherwise slice from the end of the list and
+        # return more matches the lower it went.
+        shown = matches[: max(limit, 0)]
+        return '; '.join(f'{item["sku"]} {item["name"]} ${item["price"]}' for item in shown)
 
     def lookup_stock(ctx: RunContext[SupportDeps], sku: str) -> str:
         """Report how many units of one SKU are on hand.
