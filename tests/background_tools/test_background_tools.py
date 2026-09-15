@@ -19,12 +19,14 @@ from pydantic_ai.exceptions import (
     ToolFailed,
     UnexpectedModelBehavior,
     UsageLimitExceeded,
+    UserError,
 )
 from pydantic_ai.messages import (
     BinaryContent,
     ModelMessage,
     ModelRequest,
     ModelResponse,
+    RetryPromptPart,
     TextPart,
     ToolCallPart,
     ToolReturn,
@@ -988,3 +990,199 @@ class TestBackgroundTools:
         result = await agent.run('go')
 
         assert _ack_seen(result.all_messages())
+
+    async def test_only_optional_tools_advertise_run_in_background(self) -> None:
+        seen: list[ToolDefinition] = []
+
+        def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            seen.extend(info.function_tools)
+            return ModelResponse(parts=[TextPart(content='done')])
+
+        agent = Agent(FunctionModel(model_fn), capabilities=[BackgroundTools()])
+
+        @agent.tool_plain(metadata={'background': True})
+        async def always() -> str:  # pyright: ignore[reportUnusedFunction]
+            return 'always'  # pragma: no cover
+
+        @agent.tool_plain(metadata={'background': 'optional'})
+        async def optional() -> str:  # pyright: ignore[reportUnusedFunction]
+            return 'optional'  # pragma: no cover
+
+        @agent.tool_plain
+        async def normal() -> str:  # pyright: ignore[reportUnusedFunction]
+            return 'normal'  # pragma: no cover
+
+        await agent.run('go')
+
+        properties = {tool.name: tool.parameters_json_schema['properties'] for tool in seen}
+        assert 'run_in_background' in properties['optional']
+        assert 'run_in_background' not in properties['always']
+        assert 'run_in_background' not in properties['normal']
+
+    async def test_model_opting_in_runs_tool_in_background(self) -> None:
+        agent = Agent(
+            _model_calling('slow_research', '{"query": "topic", "run_in_background": true}'),
+            capabilities=[BackgroundTools()],
+        )
+
+        @agent.tool_plain(metadata={'background': 'optional'})
+        async def slow_research(query: str) -> str:  # pyright: ignore[reportUnusedFunction]
+            return f'researched {query}'
+
+        result = await agent.run('go')
+
+        assert _ack_seen(result.all_messages())
+        assert _follow_up_seen(result.all_messages(), 'completed.\nResult: researched topic')
+
+    async def test_model_omitting_flag_runs_tool_inline(self) -> None:
+        def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            if any(isinstance(part, ToolReturnPart) for message in messages for part in message.parts):
+                return ModelResponse(parts=[TextPart(content='done')])
+            return ModelResponse(parts=[ToolCallPart(tool_name='research', args={'query': 'topic'})])
+
+        agent = Agent(FunctionModel(model_fn), capabilities=[BackgroundTools()])
+
+        @agent.tool_plain(metadata={'background': 'optional'})
+        async def research(query: str) -> str:  # pyright: ignore[reportUnusedFunction]
+            return f'researched {query}'
+
+        result = await agent.run('go')
+
+        assert not _ack_seen(result.all_messages())
+        assert any(
+            isinstance(part, ToolReturnPart) and part.content == 'researched topic'
+            for message in result.all_messages()
+            for part in message.parts
+        )
+
+    async def test_always_background_selector_wins_for_a_tool_matching_both(self) -> None:
+        seen: list[ToolDefinition] = []
+
+        def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            seen.extend(info.function_tools)
+            if _ack_seen(messages):
+                return ModelResponse(parts=[TextPart(content='done')])
+            return ModelResponse(parts=[ToolCallPart(tool_name='research', args='{}')])
+
+        agent = Agent(
+            FunctionModel(model_fn),
+            capabilities=[BackgroundTools(tools=['research'], optional_tools=['research'])],
+        )
+
+        @agent.tool_plain
+        async def research() -> str:  # pyright: ignore[reportUnusedFunction]
+            return 'researched'
+
+        result = await agent.run('go')
+
+        research_tool = next(tool for tool in seen if tool.name == 'research')
+        assert 'run_in_background' not in research_tool.parameters_json_schema['properties']
+        assert _ack_seen(result.all_messages())
+
+    async def test_optional_tool_with_existing_run_in_background_parameter_is_rejected(self) -> None:
+        def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            return ModelResponse(parts=[ToolCallPart(tool_name='research', args='{}')])  # pragma: no cover
+
+        agent = Agent(FunctionModel(model_fn), capabilities=[BackgroundTools(optional_tools=['research'])])
+
+        @agent.tool_plain
+        async def research(run_in_background: bool) -> str:  # pyright: ignore[reportUnusedFunction]
+            return str(run_in_background)  # pragma: no cover
+
+        with pytest.raises(UserError, match='already has a'):
+            await agent.run('go')
+
+    async def test_combined_capabilities_merge_optional_selectors(self) -> None:
+        seen: list[ToolDefinition] = []
+
+        def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            seen.extend(info.function_tools)
+            return ModelResponse(parts=[TextPart(content='done')])
+
+        agent = Agent(
+            FunctionModel(model_fn),
+            capabilities=[BackgroundTools(optional_tools=['first']), BackgroundTools(optional_tools=['second'])],
+        )
+
+        @agent.tool_plain
+        async def first() -> str:  # pyright: ignore[reportUnusedFunction]
+            return 'first'  # pragma: no cover
+
+        @agent.tool_plain
+        async def second() -> str:  # pyright: ignore[reportUnusedFunction]
+            return 'second'  # pragma: no cover
+
+        await agent.run('go')
+
+        properties = {tool.name: tool.parameters_json_schema['properties'] for tool in seen}
+        assert 'run_in_background' in properties['first']
+        assert 'run_in_background' in properties['second']
+
+    @pytest.mark.parametrize(
+        'args', ['{', '[]', '{"run_in_background": "yes"}'], ids=['not-json', 'not-object', 'flag-not-boolean']
+    )
+    async def test_invalid_args_for_optional_tool_are_retried(self, args: str) -> None:
+        retry_seen = False
+
+        def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            nonlocal retry_seen
+            retry_seen = retry_seen or any(
+                isinstance(part, RetryPromptPart) for message in messages for part in message.parts
+            )
+            if any(isinstance(part, ToolReturnPart) for message in messages for part in message.parts):
+                return ModelResponse(parts=[TextPart(content='researched')])
+            if retry_seen:
+                return ModelResponse(parts=[ToolCallPart(tool_name='research', args='{}')])
+            return ModelResponse(parts=[ToolCallPart(tool_name='research', args=args)])
+
+        agent = Agent(FunctionModel(model_fn), capabilities=[BackgroundTools(optional_tools=['research'])])
+
+        @agent.tool_plain
+        async def research() -> str:  # pyright: ignore[reportUnusedFunction]
+            return 'researched'
+
+        await agent.run('go')
+
+        assert retry_seen
+
+    async def test_retried_call_does_not_inherit_an_earlier_background_choice(self) -> None:
+        def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            if any(isinstance(part, ToolReturnPart) for message in messages for part in message.parts):
+                return ModelResponse(parts=[TextPart(content='done')])
+            if any(isinstance(part, RetryPromptPart) for message in messages for part in message.parts):
+                return ModelResponse(
+                    parts=[ToolCallPart(tool_name='research', args={'query': 'topic'}, tool_call_id='c1')]
+                )
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(tool_name='research', args={'query': 1, 'run_in_background': True}, tool_call_id='c1')
+                ]
+            )
+
+        agent = Agent(FunctionModel(model_fn), capabilities=[BackgroundTools(optional_tools=['research'])])
+
+        @agent.tool_plain
+        async def research(query: str) -> str:  # pyright: ignore[reportUnusedFunction]
+            return f'researched {query}'
+
+        result = await agent.run('go')
+
+        assert not _ack_seen(result.all_messages())
+
+    async def test_run_scoped_sequential_mode_does_not_advertise_run_in_background(self) -> None:
+        seen: list[ToolDefinition] = []
+
+        def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            seen.extend(info.function_tools)
+            return ModelResponse(parts=[TextPart(content='done')])
+
+        agent = Agent(FunctionModel(model_fn), capabilities=[BackgroundTools(optional_tools=['research'])])
+
+        @agent.tool_plain
+        async def research() -> str:  # pyright: ignore[reportUnusedFunction]
+            return 'researched'  # pragma: no cover
+
+        with ToolManager.parallel_execution_mode('sequential'):
+            await agent.run('go')
+
+        assert 'run_in_background' not in seen[0].parameters_json_schema['properties']

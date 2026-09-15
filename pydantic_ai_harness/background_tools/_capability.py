@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
-from pydantic_ai.capabilities import AbstractCapability, AgentNode, NodeResult
+from pydantic_ai.capabilities import AbstractCapability, AgentNode, NodeResult, RawToolArgs
 from pydantic_ai.exceptions import (
     ApprovalRequired,
     CallDeferred,
+    ModelRetry,
     ToolFailedError,
     ToolRetryError,
     UnexpectedModelBehavior,
+    UserError,
 )
 from pydantic_ai.messages import ToolCallPart, ToolReturn, ToolReturnPart, UserContent
 from pydantic_ai.tools import (
@@ -23,6 +26,7 @@ from pydantic_ai.tools import (
     RunContext,
     ToolDefinition,
     ToolSelector,
+    ToolSelectorFunc,
     matches_tool_selector,
 )
 
@@ -36,10 +40,26 @@ _INSTRUCTIONS = """\
 Some tools run in the background: when you call them you'll get an immediate \
 acknowledgment. If the run remains active, the result will be delivered \
 automatically as a follow-up message when the task completes. Continue working on other \
-things in the meantime; do not block waiting for the result.\
+things in the meantime; do not block waiting for the result. Some tools accept a \
+`run_in_background` argument: pass `true` to run that call in the background when you have \
+other useful work to do while waiting; otherwise omit it and the call runs normally.\
 """
 
+_RUN_IN_BACKGROUND = 'run_in_background'
+
 logger = logging.getLogger(__name__)
+
+
+def _any_of(selectors: Sequence[ToolSelector[AgentDepsT]]) -> ToolSelectorFunc[AgentDepsT]:
+    """A selector that matches a tool if any of `selectors` does."""
+
+    async def matches(ctx: RunContext[AgentDepsT], tool_def: ToolDefinition) -> bool:
+        for selector in selectors:
+            if await matches_tool_selector(selector, ctx, tool_def):
+                return True
+        return False
+
+    return matches
 
 
 def _format_background_error(error: ApprovalRequired | CallDeferred | ToolRetryError | ToolFailedError) -> str:
@@ -106,6 +126,7 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
     Combine with [`SetToolMetadata`][pydantic_ai.capabilities.SetToolMetadata] to mark
     several tools at once, or with `FunctionToolset.with_metadata(...)` to mark a whole
     toolset. Or pass a name list / predicate via `tools=...` to ignore metadata entirely.
+    Use `optional_tools` to let the model choose per call whether a tool runs in the background.
 
     Warning:
         Run cleanup cancels live background tasks and waits for them, so async tools must
@@ -127,6 +148,15 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
     - Callable `(ctx, tool_def) -> bool | Awaitable[bool]`: custom predicate.
     """
 
+    optional_tools: ToolSelector[AgentDepsT] = field(default_factory=lambda: {'background': 'optional'})
+    """Tools the model may run in the background per call.
+
+    Matching tools gain an optional boolean `run_in_background` argument; the tool function never
+    receives it, and the call runs normally unless it is `true`. Tools that also match `tools`
+    always run in the background and keep their schema, as do tools that cannot run in the
+    background at all (sequential tools, sequential runs, realtime sessions).
+    """
+
     id: str | None = 'background_tools'
 
     @classmethod
@@ -136,16 +166,19 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
         # Core only groups instances of the same capability class under one id.
         assert isinstance(merged, cls)
 
-        async def matches_any(ctx: RunContext[AgentDepsT], tool_def: ToolDefinition) -> bool:
-            for capability in capabilities:
-                assert isinstance(capability, cls)
-                if await matches_tool_selector(capability.tools, ctx, tool_def):
-                    return True
-            return False
-
-        return replace(merged, tools=matches_any)
+        instances: list[BackgroundTools[AgentDepsT]] = []
+        for capability in capabilities:
+            assert isinstance(capability, cls)
+            instances.append(capability)
+        return replace(
+            merged,
+            tools=_any_of([capability.tools for capability in instances]),
+            optional_tools=_any_of([capability.optional_tools for capability in instances]),
+        )
 
     _tasks: set[asyncio.Task[None]] = field(default_factory=set[asyncio.Task[None]], init=False, repr=False)
+    _optional_tool_names: set[str] = field(default_factory=set[str], init=False, repr=False)
+    _background_calls: set[str] = field(default_factory=set[str], init=False, repr=False)
     _realtime: bool = field(default=False, init=False, repr=False)
     _completed: list[tuple[UserContent, ...]] = field(
         default_factory=list[tuple[UserContent, ...]], init=False, repr=False
@@ -160,6 +193,70 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
         run_capability._realtime = ctx.realtime
         return run_capability
 
+    def _can_run_in_background(self, ctx: RunContext[AgentDepsT], tool_def: ToolDefinition) -> bool:
+        run_sequential = ctx.tool_manager is not None and ctx.tool_manager.get_parallel_execution_mode() == 'sequential'
+        return not (self._realtime or run_sequential or tool_def.sequential)
+
+    async def prepare_tools(self, ctx: RunContext[AgentDepsT], tool_defs: list[ToolDefinition]) -> list[ToolDefinition]:
+        self._optional_tool_names = set()
+        prepared: list[ToolDefinition] = []
+        for tool_def in tool_defs:
+            if (
+                not self._can_run_in_background(ctx, tool_def)
+                or await matches_tool_selector(self.tools, ctx, tool_def)
+                or not await matches_tool_selector(self.optional_tools, ctx, tool_def)
+            ):
+                prepared.append(tool_def)
+                continue
+            properties: dict[str, object] = {**tool_def.parameters_json_schema.get('properties', {})}
+            if _RUN_IN_BACKGROUND in properties:
+                raise UserError(
+                    f"Tool '{tool_def.name}' already has a '{_RUN_IN_BACKGROUND}' parameter, "
+                    'so it cannot be an optional background tool.'
+                )
+            schema = {
+                **tool_def.parameters_json_schema,
+                'properties': {
+                    **properties,
+                    _RUN_IN_BACKGROUND: {
+                        'type': 'boolean',
+                        'description': 'Set to true to run this call in the background and receive the result as a follow-up message. Omit it to wait for the result.',
+                    },
+                },
+            }
+            self._optional_tool_names.add(tool_def.name)
+            prepared.append(replace(tool_def, parameters_json_schema=schema))
+        return prepared
+
+    async def before_tool_validate(
+        self,
+        ctx: RunContext[AgentDepsT],
+        *,
+        call: ToolCallPart,
+        tool_def: ToolDefinition,
+        args: RawToolArgs,
+    ) -> RawToolArgs:
+        if tool_def.name not in self._optional_tool_names:
+            return args
+        parsed: Any = args
+        if isinstance(args, str):
+            try:
+                parsed = json.loads(args)
+            except ValueError:
+                return args  # Core turns malformed JSON into a retry.
+        if not isinstance(parsed, dict):
+            return args
+        stripped: dict[str, Any] = {**parsed}
+        flag = stripped.pop(_RUN_IN_BACKGROUND, False)
+        # Validation has not run yet, so the flag's type is checked here; a retried call must not
+        # inherit the choice from an earlier attempt with the same call id.
+        self._background_calls.discard(call.tool_call_id)
+        if not isinstance(flag, bool):
+            raise ModelRetry(f'`{_RUN_IN_BACKGROUND}` must be true or false.')
+        if flag:
+            self._background_calls.add(call.tool_call_id)
+        return stripped
+
     async def wrap_tool_execute(
         self,
         ctx: RunContext[AgentDepsT],
@@ -169,12 +266,8 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
         args: dict[str, Any],
         handler: WrapToolExecuteHandler,
     ) -> Any:
-        run_sequential = ctx.tool_manager is not None and ctx.tool_manager.get_parallel_execution_mode() == 'sequential'
-        if (
-            self._realtime
-            or run_sequential
-            or tool_def.sequential
-            or not await matches_tool_selector(self.tools, ctx, tool_def)
+        if not self._can_run_in_background(ctx, tool_def) or not (
+            await matches_tool_selector(self.tools, ctx, tool_def) or call.tool_call_id in self._background_calls
         ):
             return await handler(args)
 

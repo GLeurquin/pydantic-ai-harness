@@ -54,6 +54,27 @@ BackgroundTools(tools=['slow_research', 'deep_dig'])
 BackgroundTools(tools=lambda ctx, td: td.name.startswith('research_'))
 ```
 
+### Letting the model decide
+
+The `background` metadata key can be `True` to always run a tool in the background, or
+`'optional'` to give the model a `run_in_background` argument for each call; the call runs
+normally unless the model passes `true`. You can also pass
+any [`ToolSelector`](/ai/api/pydantic-ai/tools/#pydantic_ai.tools.ToolSelector) to
+`BackgroundTools(optional_tools=...)`. A tool matching both selectors always runs in the
+background and keeps its schema. A tool that already has a `run_in_background` parameter is
+rejected.
+
+```python
+from pydantic_ai import Agent
+from pydantic_ai_harness import BackgroundTools
+
+agent = Agent('openai:gpt-5.6-sol', capabilities=[BackgroundTools()])
+
+@agent.tool_plain(metadata={'background': 'optional'})
+async def slow_research(query: str) -> str:
+    return f'Research findings for {query!r}'
+```
+
 ### Marking tools in bulk
 
 Combine with [`SetToolMetadata`](/ai/capabilities/set-tool-metadata/) or `FunctionToolset.with_metadata(...)` to mark several tools as background without touching individual definitions:
@@ -135,6 +156,7 @@ restores the handler's return value, not messages enqueued while the handler ran
 ```python {test="skip"}
 BackgroundTools(
     tools: ToolSelector = {'background': True},
+    optional_tools: ToolSelector = {'background': 'optional'},
 )
 ```
 
