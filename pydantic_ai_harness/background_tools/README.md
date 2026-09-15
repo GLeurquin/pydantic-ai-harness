@@ -83,7 +83,7 @@ content. Application-only `ToolReturn.metadata` and deferred tool names from `To
 not carried into the follow-up. Retries and deferred calls are reported as text failures. Expected
 tool errors include
 their message. Unexpected exceptions are logged for the application, while the model sees only
-their type. Raised exceptions become failure results. Cancelling one background tool does not
+their type. Running out of retries ends the run, as it would for a sequential tool. Cancelling one background tool does not
 cancel its siblings; call `ctx.cancel()` when a background tool needs to stop the run and all live
 background tasks.
 
@@ -97,7 +97,7 @@ cancellation. Suppressing cancellation can keep cleanup open.
 
 > [!WARNING]
 > Python cannot stop a synchronous tool's worker thread, so it may continue after the cancelled
-> run returns.
+> run returns. If it then calls `ctx.enqueue()`, that call raises `UserError`.
 >
 > A synchronous background tool runs concurrently with the agent. Make mutable dependencies and
 > other shared state it uses thread-safe.

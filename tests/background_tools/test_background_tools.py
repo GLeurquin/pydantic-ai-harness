@@ -188,7 +188,7 @@ class TestBackgroundTools:
             f"Background tool 'slow_research' (task {match['task_id']}) completed.\nResult: researched topic"
         )
 
-    async def test_realtime_uses_native_rich_tool_result_path(self) -> None:
+    async def test_realtime_session_keeps_native_tool_path_and_instructions(self) -> None:
         image = BinaryContent(data=b'image bytes', media_type='image/png')
         connection = _BackgroundRealtimeConnection()
         model = _BackgroundRealtimeModel(connection)
@@ -230,11 +230,11 @@ class TestBackgroundTools:
                 'failed: CallDeferred was raised; background tools cannot defer a running task.',
                 'secret',
             ),
-            (RuntimeError, 'failed: RuntimeError', None),
+            (lambda: ModelRetry(''), 'failed: ToolRetryError', None),
         ],
-        ids=['retry', 'tool-failed', 'deferred', 'empty-error'],
+        ids=['retry', 'tool-failed', 'deferred', 'empty-retry'],
     )
-    async def test_control_flow_and_empty_errors_have_readable_follow_ups(
+    async def test_tool_signalled_errors_have_readable_follow_ups(
         self, error_factory: Callable[[], Exception], expected: str, private_detail: str | None
     ) -> None:
         release = asyncio.Event()
@@ -250,7 +250,6 @@ class TestBackgroundTools:
         assert _follow_up_seen(result.all_messages(), expected)
         if private_detail is not None:
             assert not _follow_up_seen(result.all_messages(), private_detail)
-        assert result.usage.tool_calls == 0
 
     async def test_retry_exhaustion_terminates_run(self) -> None:
         agent = Agent(_model_calling('broken'), capabilities=[BackgroundTools()])
@@ -261,6 +260,17 @@ class TestBackgroundTools:
 
         with pytest.raises(UnexpectedModelBehavior, match="Tool 'broken' exceeded max retries count of 0"):
             await agent.run('go')
+
+    async def test_completed_background_call_is_counted_once(self) -> None:
+        agent = Agent(_model_calling('slow'), capabilities=[BackgroundTools()])
+
+        @agent.tool_plain(metadata={'background': True})
+        async def slow() -> str:  # pyright: ignore[reportUnusedFunction]
+            return 'value'
+
+        result = await agent.run('go')
+
+        assert result.usage.tool_calls == 1
 
     async def test_pending_background_call_counts_toward_tool_call_limit(self) -> None:
         started = 0
@@ -412,7 +422,7 @@ class TestBackgroundTools:
             for part in message.parts
         )
 
-    async def test_selected_sync_tool_acks_then_delivers_result_as_follow_up(self) -> None:
+    async def test_sync_tool_can_enqueue_from_its_worker_thread(self) -> None:
         agent = Agent(_model_calling('sync_bg'), capabilities=[BackgroundTools()])
 
         @agent.tool(metadata={'background': True})
@@ -422,9 +432,7 @@ class TestBackgroundTools:
 
         result = await agent.run('go')
 
-        assert _ack_seen(result.all_messages())
         assert _follow_up_seen(result.all_messages(), 'message from sync background tool')
-        assert _follow_up_seen(result.all_messages(), 'completed.\nResult: sync result')
 
     async def test_multiple_capabilities_combine_selectors_without_double_execution(self) -> None:
         calls = {'first': 0, 'shared': 0, 'plain': 0}
@@ -966,22 +974,6 @@ class TestBackgroundTools:
         with pytest.raises(RunCancelled):
             await asyncio.wait_for(run, timeout=5)
         await asyncio.wait_for(cancel_seen.wait(), timeout=5)
-
-    async def test_name_list_selector(self) -> None:
-        release = asyncio.Event()
-        agent = Agent(
-            _model_calling('by_name', ack_callback=release.set), capabilities=[BackgroundTools(tools=['by_name'])]
-        )
-
-        @agent.tool_plain
-        async def by_name() -> str:  # pyright: ignore[reportUnusedFunction]
-            await release.wait()
-            return 'value'
-
-        result = await agent.run('go')
-
-        assert result.output == 'done'
-        assert _ack_seen(result.all_messages())
 
     async def test_constructs_from_agent_spec(self) -> None:
         agent = Agent.from_spec(

@@ -42,17 +42,12 @@ things in the meantime; do not block waiting for the result.\
 logger = logging.getLogger(__name__)
 
 
-def _format_background_error(error: Exception) -> str:
-    """Format a background-tool error without exposing unexpected exception details."""
+def _format_background_error(error: ApprovalRequired | CallDeferred | ToolRetryError | ToolFailedError) -> str:
+    """Describe a tool-signalled failure to the model."""
     if isinstance(error, (ApprovalRequired, CallDeferred)):
         return f'{type(error).__name__} was raised; background tools cannot defer a running task.'
-    if isinstance(error, ToolRetryError):
-        content = error.tool_retry.content
-        return content if isinstance(content, str) and content else type(error).__name__
-    if isinstance(error, ToolFailedError):
-        content = error.tool_failed.content
-        return content if isinstance(content, str) and content else type(error).__name__
-    return type(error).__name__
+    content = error.tool_retry.content if isinstance(error, ToolRetryError) else error.tool_failed.content
+    return content if isinstance(content, str) and content else type(error).__name__
 
 
 def _format_background_result(tool_name: str, task_id: str, result: Any) -> tuple[UserContent, ...]:
@@ -113,33 +108,13 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
     toolset. Or pass a name list / predicate via `tools=...` to ignore metadata entirely.
 
     Warning:
-        Run cleanup cancels and drains background tasks before it completes. Async tools
-        must propagate cancellation; suppressing cancellation can keep cleanup open.
-        Python cannot stop a synchronous tool's worker thread, so it may continue after
-        the cancelled run returns.
+        Run cleanup cancels live background tasks and waits for them, so async tools must
+        propagate cancellation. A synchronous tool's worker thread cannot be stopped and
+        runs concurrently with the agent: keep the state it touches thread-safe.
 
-        A synchronous background tool runs concurrently with the agent. Make mutable
-        dependencies and other shared state it uses thread-safe.
-
-    `ToolReturn.return_value` and `ToolReturn.content` remain model-visible, including
-    multimodal content. Application-only `ToolReturn.metadata` and deferred tool names from
-    `ToolReturn.tools` are not carried into the follow-up message. Raised exceptions become
-    failure results. Cancelling one background tool does not cancel its siblings; call
-    `ctx.cancel()` when a background tool needs to stop the run and all live background tasks.
-
-    `run_stream()` waits for live background tasks before it returns, but does not take
-    the extra model turn that delivers their results. Use `agent.run()` or a driven
-    `agent.iter()` loop when result delivery is required.
-
-    Realtime sessions already execute tools concurrently. `BackgroundTools` leaves
-    them on the realtime session's native tool-result path instead of replacing their
-    result with an acknowledgment and follow-up message.
-
-    `BackgroundTools` composes with Temporal durable execution. With DBOS, ordinary
-    function tools are not automatically durable steps, so a background tool must
-    delegate durable work to an explicit DBOS step. A tool handler running inside a
-    durable activity or task must not call `ctx.enqueue()` because replay restores only
-    its return value.
+    Exceptions raised by the tool become failure messages; running out of retries ends the
+    run, as it would for a sequential tool. Cancelling one background tool does not cancel
+    its siblings. See the docs page for streaming, realtime and durable-execution limits.
     """
 
     tools: ToolSelector[AgentDepsT] = field(default_factory=lambda: {'background': True})
@@ -209,25 +184,30 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
         async def _run() -> None:
             try:
                 result = await handler(args)
-                message = _format_background_result(tool_name, task_id, result)
             except UnexpectedModelBehavior as e:
+                # Core raises this when the tool's retry budget runs out; end the run as a sequential tool would.
                 self._task_errors.append(e)
                 raise
+            except (ApprovalRequired, CallDeferred, ToolRetryError, ToolFailedError) as e:
+                message = (f"Background tool '{tool_name}' (task {task_id}) failed: {_format_background_error(e)}",)
             except Exception as e:
-                if not isinstance(e, (ApprovalRequired, CallDeferred, ToolRetryError, ToolFailedError)):
-                    logger.exception('Background tool %s failed', tool_name)
-                error = _format_background_error(e)
-                message = (f"Background tool '{tool_name}' (task {task_id}) failed: {error}",)
+                # Unexpected errors are logged in full; the model only learns the type.
+                logger.exception('Background tool %s failed', tool_name)
+                message = (f"Background tool '{tool_name}' (task {task_id}) failed: {type(e).__name__}",)
             except asyncio.CancelledError:
                 raise
             except BaseException as e:
                 self._task_errors.append(e)
                 raise
+            else:
+                message = _format_background_result(tool_name, task_id, result)
             self._completed.append(message)
 
         def task_done(task: asyncio.Task[None]) -> None:
             self._tasks.discard(task)
+            # Core counts a tool call when its handler returns, so hold the slot while the task runs.
             ctx.usage.tool_calls -= 1
+            # Errors reach the run through `_task_errors`; mark them retrieved so asyncio does not log them.
             if not task.cancelled():
                 task.exception()
 
@@ -251,11 +231,12 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
         from pydantic_graph import End
 
         if isinstance(result, End) and isinstance(result.data.output, DeferredToolRequests):
-            # Background results are dropped when the run pauses.
+            # Results are held here rather than enqueued directly so that a deferred-tool pause
+            # is not turned into another model request by the end-of-run drain.
             return result
 
-        # Let the outer drain deliver anything already queued before waiting for
-        # another completion.
+        # At the end of the run, wait for the first live task unless something is already
+        # waiting to be delivered; the end-of-run drain then redirects the run to a new request.
         while (
             isinstance(result, End)
             and self._tasks
@@ -263,8 +244,7 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
             and not self._task_errors
             and not ctx.pending_messages
         ):
-            done, _ = await asyncio.wait(tuple(self._tasks), return_when=asyncio.FIRST_COMPLETED)
-            self._tasks.difference_update(done)
+            await asyncio.wait(tuple(self._tasks), return_when=asyncio.FIRST_COMPLETED)
 
         if self._task_errors:
             raise self._task_errors.pop(0)
@@ -279,9 +259,6 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
         *,
         handler: WrapRunHandler,
     ) -> AgentRunResult[Any]:
-        if self._realtime:
-            return await handler()
-
         try:
             result = await handler()
         finally:
