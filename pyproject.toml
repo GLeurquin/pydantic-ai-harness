@@ -115,7 +115,7 @@ daytona = [
     "daytona>=0.198.0,<0.199.0",
 ]
 sprites = [
-    "sprites-py>=0.6.0,<0.7",
+    "sprites-py>=0.7.0,<0.8",
 ]
 
 [project.urls]

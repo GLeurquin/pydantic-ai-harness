@@ -5,7 +5,7 @@ import shutil
 import subprocess
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import BinaryIO
 
@@ -22,7 +22,7 @@ from pydantic_ai.workspaces import (
     WorkspaceTimeoutError,
     WorkspaceUnavailableError,
 )
-from sprites import Sprite, SpritesClient
+from sprites import AsyncSprite, AsyncSpritesClient
 from sprites.exceptions import AuthenticationError, NotFoundError, SpriteError
 from websockets.datastructures import Headers
 from websockets.exceptions import InvalidStatus
@@ -95,7 +95,7 @@ class FakeOperation:
 class FakeControlConnection:
     transport: SpriteTransport
 
-    def __init__(self, sprite: Sprite) -> None:
+    def __init__(self, sprite: AsyncSprite) -> None:
         self.sprite = sprite
         self.close_error = self.transport.control_close_error
         self.closed = False
@@ -124,7 +124,9 @@ class SpriteTransport:
         self.root = root
         self.names: set[str] = set()
         self.created: list[str] = []
-        self.clients: list[SpritesClient] = []
+        self.create_started = asyncio.Event()
+        self.release_create: asyncio.Event | None = None
+        self.clients: list[AsyncSpritesClient] = []
         self.controls: set[str] = set()
         self.commands: list[list[str]] = []
         self.creation_error: SpriteError | None = None
@@ -140,26 +142,29 @@ class SpriteTransport:
         self.started = threading.Event()
         self.release_start: threading.Event | None = None
 
-    def client(self, token: str, base_url: str, timeout: float) -> SpritesClient:
-        client = SpritesClient(token=token, base_url=base_url, timeout=timeout)
+    def client(self, token: str, base_url: str, timeout: float) -> AsyncSpritesClient:
+        client = AsyncSpritesClient(token=token, base_url=base_url, timeout=timeout)
         self.clients.append(client)
         return client
 
-    def get(self, client: SpritesClient, name: str) -> Sprite:
+    async def get(self, client: AsyncSpritesClient, name: str) -> AsyncSprite:
         if self.get_error is not None:
             raise self.get_error
         if name not in self.names:
             raise NotFoundError(name)
-        return Sprite(name, client)
+        return AsyncSprite(name, client)
 
-    def create(self, client: SpritesClient, name: str, *, runtime: str | None) -> Sprite:
+    async def create(self, client: AsyncSpritesClient, name: str, *, runtime: str | None) -> AsyncSprite:
         if self.creation_error is not None:
             raise self.creation_error
         self.names.add(name)
         self.created.append(name)
-        return Sprite(name, client)
+        self.create_started.set()
+        if self.release_create is not None:
+            await self.release_create.wait()
+        return AsyncSprite(name, client)
 
-    def close(self, client: SpritesClient) -> None:
+    async def close(self, client: AsyncSpritesClient) -> None:
         self.close_calls += 1
         if self.close_error is not None:
             error = self.close_error
@@ -168,29 +173,29 @@ class SpriteTransport:
 
 
 @pytest.fixture
-def transport(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[SpriteTransport]:
+async def transport(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncIterator[SpriteTransport]:
     transport = SpriteTransport(tmp_path)
     monkeypatch.setenv('SPRITE_TOKEN', 'test-token')
-    monkeypatch.setattr('pydantic_ai_harness.sprites._backend.SpritesClient', transport.client)
+    monkeypatch.setattr('pydantic_ai_harness.sprites._backend.AsyncSpritesClient', transport.client)
     FakeControlConnection.transport = transport
     monkeypatch.setattr('pydantic_ai_harness.sprites._backend.ControlConnection', FakeControlConnection)
 
-    def get(client: SpritesClient, name: str) -> Sprite:
-        return transport.get(client, name)
+    async def get(client: AsyncSpritesClient, name: str) -> AsyncSprite:
+        return await transport.get(client, name)
 
-    def create(client: SpritesClient, name: str, *, runtime: str | None) -> Sprite:
-        return transport.create(client, name, runtime=runtime)
+    async def create(client: AsyncSpritesClient, name: str, *, runtime: str | None) -> AsyncSprite:
+        return await transport.create(client, name, runtime=runtime)
 
-    monkeypatch.setattr(SpritesClient, 'get_sprite', get)
-    monkeypatch.setattr(SpritesClient, 'create_sprite', create)
+    monkeypatch.setattr(AsyncSpritesClient, 'get_sprite', get)
+    monkeypatch.setattr(AsyncSpritesClient, 'create_sprite', create)
 
-    def close(client: SpritesClient) -> None:
-        transport.close(client)
+    async def close(client: AsyncSpritesClient) -> None:
+        await transport.close(client)
 
-    monkeypatch.setattr(SpritesClient, 'close', close)
+    monkeypatch.setattr(AsyncSpritesClient, 'aclose', close)
     yield transport
     for client in transport.clients:
-        client.close()
+        await client.aclose()
     for control in transport.controls:
         shutil.rmtree(control, ignore_errors=True)
 
@@ -209,7 +214,22 @@ class TestSpriteWorkspace:
         assert transport.created == [first.name]
         assert backend.ref == WorkspaceRef(provider='sprites', id=first.name)
 
-    def test_foreign_reference_is_declined_and_backend_rejects_it(self, transport: SpriteTransport) -> None:
+    async def test_creation_is_cancellable(self, transport: SpriteTransport) -> None:
+        backend = SpriteWorkspaceBackend()
+        transport.release_create = asyncio.Event()
+
+        async def acquire() -> AsyncSprite:
+            return await backend.workspace
+
+        task = asyncio.create_task(acquire())
+        await transport.create_started.wait()
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert backend.ref is None
+
+    def test_foreign_reference_is_declined_and_backend_rejects_it(self) -> None:
         assert SpriteWorkspace[None]().get_workspace(context(), ref=WorkspaceRef(provider='other', id='x')) is None
         with pytest.raises(ValueError, match="expected 'sprites'"):
             SpriteWorkspaceBackend(ref=WorkspaceRef(provider='other', id='x'))

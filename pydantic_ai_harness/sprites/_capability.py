@@ -12,7 +12,7 @@ from pydantic_ai.workspaces import WorkspaceBackend, WorkspaceRef
 from pydantic_ai_harness.sprites._backend import SpriteWorkspaceBackend
 
 if TYPE_CHECKING:
-    from sprites import SpritesClient
+    from sprites import AsyncSpritesClient
 
 
 @dataclass(kw_only=True)
@@ -28,10 +28,10 @@ class SpriteWorkspace(AbstractCapability[AgentDepsT]):
     [`RunContext.workspace`][pydantic_ai.tools.RunContext.workspace].
     """
 
-    client: SpritesClient | None = None
-    """A caller-owned `sprites.SpritesClient`. When omitted, the backend creates one on first use
+    client: AsyncSpritesClient | None = None
+    """A caller-owned `sprites.AsyncSpritesClient`. When omitted, the backend creates one on first use
     from `token` (or `SPRITE_TOKEN`) and closes it again on `disconnect`; supply one to own its
-    lifecycle, and the backend never closes it."""
+    lifecycle on one event loop, and the backend never closes it."""
 
     token: str | None = None
     """API token for a backend-owned client; defaults to `SPRITE_TOKEN` on first use."""

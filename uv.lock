@@ -4483,7 +4483,7 @@ requires-dist = [
     { name = "pydantic-monty", marker = "extra == 'dynamic-workflow'", specifier = ">=0.0.23" },
     { name = "pymongo", marker = "extra == 'mongodb'", specifier = ">=4.17.0" },
     { name = "pyyaml", marker = "extra == 'skills'", specifier = ">=6.0.2" },
-    { name = "sprites-py", marker = "extra == 'sprites'", specifier = ">=0.6.0,<0.7" },
+    { name = "sprites-py", marker = "extra == 'sprites'", specifier = ">=0.7.0,<0.8" },
     { name = "stackone-defender", marker = "python_full_version >= '3.11' and extra == 'prompt-injection-defender'", specifier = ">=0.7.3,<0.8" },
     { name = "stackone-defender", extras = ["onnx"], marker = "python_full_version >= '3.11' and extra == 'prompt-injection-defender-ml'", specifier = ">=0.7.3,<0.8" },
     { name = "youdotcom", marker = "extra == 'youdotcom'", specifier = ">=3.1.2,<4" },
@@ -9001,7 +9001,7 @@ wheels = [
 
 [[package]]
 name = "sprites-py"
-version = "0.6.0"
+version = "0.7.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "client-signals" },
@@ -9009,9 +9009,9 @@ dependencies = [
     { name = "websockets", version = "15.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "websockets", version = "16.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/75/11/63fac634575f187541d2a4aba02a6996ea934672569de6ab44c214817775/sprites_py-0.6.0.tar.gz", hash = "sha256:a48682faeaa39b8f635c1c18ac3d5a3709859050206c2977efdc5dd3fa886fc6", size = 54091, upload-time = "2026-09-01T15:53:30.365Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ff/a7/e79d3aa40919023b0be9d4ab9f4925bf3814a9d03583bae05a319f6f8e05/sprites_py-0.7.0.tar.gz", hash = "sha256:79a2c9b276b8427e7c3ed93ba0a04cceb2c1d705cf611d2290a84cedbf9effc1", size = 67899, upload-time = "2026-09-14T12:43:24.572Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c3/62/bf5fb2465921556c2739b1daeee290b5f7920993cc6b0c102b25497b8393/sprites_py-0.6.0-py3-none-any.whl", hash = "sha256:26c8f038fd9c8e3cae39e254c04214ff7e4d6edaf46c9bb2806e2bc0d3752064", size = 46659, upload-time = "2026-09-01T15:53:29.019Z" },
+    { url = "https://files.pythonhosted.org/packages/eb/e2/5bea56a45f8d48a05703f81b6ea1da9d0e528a0bc6ea0daaccac38e2f522/sprites_py-0.7.0-py3-none-any.whl", hash = "sha256:e118c5c5453a348b60f6020319723354f8d077d1313b65a44a36cbd3a7cfa6be", size = 61762, upload-time = "2026-09-14T12:43:23.133Z" },
 ]
 
 [[package]]

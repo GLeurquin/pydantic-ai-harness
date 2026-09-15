@@ -12,7 +12,7 @@ Run agent tools against files and processes in a persistent [Fly.io Sprite](http
 uv add "pydantic-ai-harness[sprites]"
 ```
 
-Set `SPRITE_TOKEN` for authentication. The integration uses sprites-py 0.6.x.
+Set `SPRITE_TOKEN` for authentication. The integration uses sprites-py 0.7.x.
 
 ## Use a workspace
 
@@ -66,9 +66,9 @@ async def resume(ref: WorkspaceRef) -> str:
     return result.output
 ```
 
-Retain a `SpriteWorkspaceBackend` and await its `workspace` property to obtain the typed `sprites.Sprite`. An existing native handle can be supplied with `SpriteWorkspaceBackend(workspace=native)`. Supply either a native handle or `ref=`, not both; the caller retains ownership of an injected handle and its SDK client.
+Retain a `SpriteWorkspaceBackend` and await its `workspace` property to obtain the typed `sprites.AsyncSprite`. An existing native handle can be supplied with `SpriteWorkspaceBackend(workspace=native)`. Supply either a native handle or `ref=`, not both; the caller retains ownership of an injected handle and its SDK client. Use and close an injected async client on one event loop.
 
-Without `client=`, the backend creates and owns its local `SpritesClient` on first acquisition from `token=` (or `SPRITE_TOKEN`). Retain that backend and call `disconnect()` in `finally`. This example also deletes the remote Sprite using the native SDK:
+Without `client=`, the backend creates and owns its local `AsyncSpritesClient` on first acquisition from `token=` (or `SPRITE_TOKEN`). Retain that backend and call `disconnect()` in `finally`. This example also deletes the remote Sprite using the native SDK:
 
 ```python
 from pydantic_ai import Agent, RunContext
@@ -90,12 +90,12 @@ async def run_with_cleanup() -> str:
             result = await agent.run('What is the working directory?', workspace=backend)
             return result.output
         finally:
-            native.delete()
+            await native.delete()
     finally:
         await backend.disconnect()
 ```
 
-To keep the remote Sprite, omit `native.delete()` and retain the outer `finally` that disconnects the backend. `disconnect()` closes only a backend-owned SDK client; it does not delete a Sprite or close a caller-supplied client. Finish in-flight commands before disconnecting.
+To keep the remote Sprite, omit `await native.delete()` and retain the outer `finally` that disconnects the backend. `disconnect()` closes only a backend-owned SDK client; it does not delete a Sprite or close a caller-supplied client. Finish in-flight commands before disconnecting.
 
 ## Lifetimes and durable execution
 
@@ -103,7 +103,7 @@ A Sprite persists after a run ends. It auto-suspends when idle and resumes on th
 
 `runtime` and `workdir` configure a newly created Sprite; they do not reconfigure a Sprite attached by reference. Each command runs through its own asyncio control connection that the backend closes before returning. A control-connection disconnect does not stop the remote command, so the backend supervises the remote process group and cancels it on timeout or cancellation. Complete output is buffered, and timeout errors include output received so far.
 
-The synchronous SDK acquires Sprites in a worker thread that a cancelled caller cannot abort, so a cancelled creation may leave a Sprite whose remote outcome is unknown to the caller. A command whose process detaches from its session group can outlive cancellation. Durable applications own creation coordination, reference persistence, and workspace restoration inside their activities. The capability does not make remote operations replay-safe or restore application wrappers automatically. Apply workspace policies when restoring the backend, then use `ctx.workspace` in tools.
+A cancelled creation may leave a Sprite whose remote outcome is unknown to the caller. A command whose process detaches from its session group can outlive cancellation. Durable applications own creation coordination, reference persistence, and workspace restoration inside their activities. The capability does not make remote operations replay-safe or restore application wrappers automatically. Apply workspace policies when restoring the backend, then use `ctx.workspace` in tools.
 
 The capability emits no additional telemetry spans. Core agent and tool spans cover calls made through tools; the Sprites SDK retains its own instrumentation behavior.
 

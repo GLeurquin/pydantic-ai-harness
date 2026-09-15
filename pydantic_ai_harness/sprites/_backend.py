@@ -1,14 +1,14 @@
 """Fly.io Sprites backend for Pydantic AI's `WorkspaceBackend` protocol.
 
-External assumptions last verified 2026-09-08 against sprites-py 0.6.0 source and a local
+External assumptions last verified 2026-09-15 against sprites-py 0.7.0 source and a local
 WebSocket transport probe, with no live cloud calls:
 
-* `SpritesClient` accepts token, base URL, and HTTP timeout; sprite creation uses the SDK's
-  fixed 120-second request timeout, while `close` only closes the local HTTP client:
-  https://github.com/superfly/sprites-py/blob/v0.6.0/src/sprites/client.py
+* `AsyncSpritesClient` accepts token, base URL, and HTTP timeout; sprite creation uses the SDK's
+  fixed 120-second request timeout, while `aclose` closes the local async HTTP client and control pools:
+  https://github.com/superfly/sprites-py/blob/v0.7.0/src/sprites/async_client.py
 * `ControlConnection` is asyncio-based and exposes `connect`, `start_op`, and `close`; an
   operation provides `wait`, `get_stdout`, and `get_stderr`:
-  https://github.com/superfly/sprites-py/blob/v0.6.0/src/sprites/control.py
+  https://github.com/superfly/sprites-py/blob/v0.7.0/src/sprites/control.py
 * A control WebSocket disconnect does not kill the remote command, so the backend's RUN/CANCEL
   process supervision is required:
   https://sprites.dev/api/sprites/exec
@@ -16,8 +16,7 @@ WebSocket transport probe, with no live cloud calls:
   https://docs.sprites.dev/concepts/lifecycle/
 
 Re-check these sources, the installed signatures, and the local transport probe before changing
-lifecycle or command transport behavior. The integration is asyncio-only, and the synchronous SDK
-calls run in a worker thread that a cancelled caller cannot abort.
+lifecycle or command transport behavior. The integration uses the SDK's native asyncio client.
 """
 
 from __future__ import annotations
@@ -33,7 +32,6 @@ from typing import NoReturn
 
 import anyio
 from anyio.lowlevel import checkpoint
-from pydantic_ai._utils import run_in_executor  # pyright: ignore[reportPrivateUsage]
 from pydantic_ai.workspaces import (
     CommandResult,
     WorkspaceBackend,
@@ -48,7 +46,7 @@ from pydantic_ai_harness._workspace_provider import absolute_path
 from pydantic_ai_harness.sprites._process import CANCEL, RUN
 
 try:
-    from sprites import Sprite, SpritesClient
+    from sprites import AsyncSprite, AsyncSpritesClient
     from sprites.control import ControlConnection
     from sprites.exceptions import AuthenticationError, NotFoundError, SpriteError
     from websockets.exceptions import InvalidStatus
@@ -123,8 +121,8 @@ class SpriteWorkspaceBackend(WorkspaceBackend):
     def __init__(
         self,
         *,
-        workspace: Sprite | None = None,
-        client: SpritesClient | None = None,
+        workspace: AsyncSprite | None = None,
+        client: AsyncSpritesClient | None = None,
         ref: WorkspaceRef | None = None,
         name: str | None = None,
         token: str | None = None,
@@ -151,22 +149,20 @@ class SpriteWorkspaceBackend(WorkspaceBackend):
         self._lock = anyio.Lock()
 
     @property
-    def workspace(self) -> Awaitable[Sprite]:
+    def workspace(self) -> Awaitable[AsyncSprite]:
         return self._create_or_attach()
 
     @property
     def ref(self) -> WorkspaceRef | None:
         return self._ref
 
-    async def _create_or_attach(self) -> Sprite:
+    async def _create_or_attach(self) -> AsyncSprite:
         """Hydrate the client and the Sprite on first use, once.
 
         The only place `_client` and `_workspace` are read, so nothing can reach an
         unhydrated one: both stay optional and every other method goes through here.
         The lock serializes concurrent first uses -- two callers each creating a Sprite
-        would leave the loser billed and unreferenced. The acquisition deliberately runs
-        without `abandon_threads_on_cancel`: an abandoned create finishes in a detached
-        thread and produces a Sprite this backend never recorded.
+        would leave the loser billed and unreferenced.
         """
         async with self._lock:
             if (workspace := self._workspace) is not None:
@@ -177,18 +173,15 @@ class SpriteWorkspaceBackend(WorkspaceBackend):
                 token = self._token or os.getenv('SPRITE_TOKEN')
                 if not token:
                     raise WorkspaceUnavailableError(_AUTH_MESSAGE)
-                client = SpritesClient(token=token, base_url=self._base_url, timeout=self._api_timeout)
+                client = AsyncSpritesClient(token=token, base_url=self._base_url, timeout=self._api_timeout)
                 self._client = client
 
-            ref = self._ref
-
-            def acquire() -> Sprite:
-                if ref is not None:
-                    return client.get_sprite(ref.id)
-                return client.create_sprite(self._name, runtime=self._runtime)
-
             try:
-                workspace = await run_in_executor(acquire)
+                ref = self._ref
+                if ref is not None:
+                    workspace = await client.get_sprite(ref.id)
+                else:
+                    workspace = await client.create_sprite(self._name, runtime=self._runtime)
             except SpriteError as error:
                 raise _operation_error(error, 'Could not acquire Sprite') from error
 
@@ -205,7 +198,7 @@ class SpriteWorkspaceBackend(WorkspaceBackend):
             self._canonical_working_dir = directory
         return self._canonical_working_dir
 
-    async def _cancel_remote(self, sprite: Sprite, control: str) -> Exception | None:
+    async def _cancel_remote(self, sprite: AsyncSprite, control: str) -> Exception | None:
         connection = ControlConnection(sprite)
 
         async def cancel() -> None:
@@ -258,7 +251,7 @@ class SpriteWorkspaceBackend(WorkspaceBackend):
         control = f'/tmp/pydantic-ai-{uuid.uuid4().hex}'
         stdout = b''
         stderr = b''
-        sprite: Sprite | None = None
+        sprite: AsyncSprite | None = None
         connection: ControlConnection | None = None
         operation = None
         command_error: BaseException | None = None
@@ -328,14 +321,9 @@ class SpriteWorkspaceBackend(WorkspaceBackend):
                 self._workspace = None
                 self._canonical_working_dir = None
                 return
-            error: Exception | None = None
             try:
-                # Closing an `httpx.Client` drops a local connection pool: no remote party
-                # can stall it, so this needs no deadline of its own.
-                await run_in_executor(client.close)
-            except Exception as exc:
-                error = exc
-            if error is not None:
+                await client.aclose()
+            except Exception as error:
                 await raise_after_cleanup(
                     _operation_error(error, 'Could not disconnect from Sprite SDK client'), cause=error
                 )
