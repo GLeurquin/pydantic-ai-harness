@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import math
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal
@@ -322,18 +322,19 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
             # another model request by the end-of-run drain.
             return result
 
-        self._deliver_finished(ctx)
+        for outcome in self._arrived():
+            _deliver(ctx, outcome)
         if isinstance(result, End) and self._live and not ctx.pending_messages:
             # The model is ending the run while tasks are still live: wait for the next outcome, so
             # that the end-of-run drain turns its follow-up into another model request.
             _deliver(ctx, await self._outcomes.receive())
         return result
 
-    def _deliver_finished(self, ctx: RunContext[AgentDepsT]) -> None:
-        """Hand every outcome that has arrived to the run, in completion order."""
+    def _arrived(self) -> Iterator[_Outcome]:
+        """Outcomes that have arrived so far, in completion order."""
         with suppress(anyio.WouldBlock):
             while True:
-                _deliver(ctx, self._outcomes.receive_nowait())
+                yield self._outcomes.receive_nowait()
 
     async def wrap_run(
         self,
@@ -349,11 +350,9 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
                 # Tasks still live after a deferred-tool pause or `run_stream()` are dropped.
                 self._task_group.cancel_scope.cancel()
             # An error from a task that finished after the last node boundary still ends the run.
-            with suppress(anyio.WouldBlock):
-                while True:
-                    outcome = self._outcomes.receive_nowait()
-                    if isinstance(outcome, BaseException):
-                        raise outcome
+            for outcome in self._arrived():
+                if isinstance(outcome, BaseException):
+                    raise outcome
         # `result` is bound: the group re-raises the run's own exception, and no task cancels the group.
         assert result is not None
         return result
