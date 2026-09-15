@@ -219,7 +219,7 @@ class TestBackgroundTools:
                 ]
                 assert model.messages is not None
                 initial = next(message for message in model.messages if isinstance(message, ModelRequest))
-                assert 'do not block waiting for the result' not in (initial.instructions or '')
+                assert 'follow-up message' not in (initial.instructions or '')
                 task_group.cancel_scope.cancel()
 
     @pytest.mark.parametrize(
@@ -586,7 +586,7 @@ class TestBackgroundTools:
 
         assert _follow_up_seen(result.all_messages(), 'completed.\nResult: [1,2]')
 
-    async def test_instructions_tell_model_not_to_block(self) -> None:
+    async def test_instructions_mention_follow_up_delivery(self) -> None:
         seen: list[str | None] = []
 
         def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -596,7 +596,7 @@ class TestBackgroundTools:
         agent = Agent(FunctionModel(model_fn), capabilities=[BackgroundTools()])
         await agent.run('go')
 
-        assert 'do not block waiting for the result' in (seen[0] or '')
+        assert 'follow-up message' in (seen[0] or '')
 
     async def test_concurrent_runs_do_not_share_tasks(self) -> None:
         release = {'first': asyncio.Event(), 'second': asyncio.Event()}

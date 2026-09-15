@@ -37,10 +37,9 @@ if TYPE_CHECKING:
 
 
 _INSTRUCTIONS = """\
-Some tools run in the background: the call returns right away and the result arrives later as \
-a follow-up message, so keep working on other things and do not block waiting for the result. \
-Where a tool has a `run_in_background` argument, pass `true` when you expect the call to take \
-a while and you have other work to do meanwhile; otherwise leave it out.\
+Some tools return right away and deliver their result later as a follow-up message. \
+Pass `run_in_background=true` to a tool that accepts it when you want to keep working \
+and get its result later.\
 """
 
 _RUN_IN_BACKGROUND = 'run_in_background'
@@ -218,7 +217,7 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
                     **properties,
                     _RUN_IN_BACKGROUND: {
                         'type': 'boolean',
-                        'description': 'Set to true when this call may take a while and you have other work to do meanwhile; the result arrives later as a follow-up message.',
+                        'description': 'Set to true to keep working and get the result later as a follow-up message.',
                     },
                 },
             }
