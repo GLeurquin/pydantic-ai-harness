@@ -180,10 +180,23 @@ override-dependencies = ['anthropic>=1.3.0', 'openai>=2.45.0']
 
 [tool.uv.sources]
 # Development and CI only, and deliberately not a dependency: PyPI refuses a direct reference in
-# declared dependencies, so the `logfire` extra carries an ordinary version requirement and this
-# resolves it to the branch that has `logfire.agent_control` until it is released. Drop this line
+# declared dependencies, so the `logfire` extra carries an ordinary version requirement and these
+# resolve it to the commit that has `logfire.agent_control` until it is released. Drop both lines
 # and move the floor in the same commit.
-logfire = { git = "https://github.com/pydantic/logfire.git", branch = "agent-control-core" }
+#
+# Two pins, one per subdirectory, because that branch carries logfire's distribution split: the
+# package tree lives in `logfire-sdk/` and `logfire/` is a meta-package over it. A single pin at the
+# repo root cannot build (setuptools finds several top-level packages), and pointing the `logfire`
+# requirement at `logfire-sdk/` fails the name check -- so each requirement points at the
+# subdirectory whose metadata carries its own name. `logfire-sdk==6.0.0b1` is not on PyPI, so the
+# meta-package's own dependency has to resolve through the second pin rather than an index.
+#
+# A rev rather than a branch, deliberately: the restructure above reached this repo as an
+# unexplained build failure in the `lowest-versions` lanes, which re-resolve this source to the
+# branch tip and ignore `uv.lock`. A rev means a push to that PR cannot break this one silently --
+# it has to be bumped here, which is the coupling made visible.
+logfire = { git = "https://github.com/pydantic/logfire.git", rev = "bd531426bd9ee45ab720c30019c5e974d0a51aac", subdirectory = "logfire" }
+logfire-sdk = { git = "https://github.com/pydantic/logfire.git", rev = "bd531426bd9ee45ab720c30019c5e974d0a51aac", subdirectory = "logfire-sdk" }
 
 
 [tool.hatch.build.targets.wheel]
