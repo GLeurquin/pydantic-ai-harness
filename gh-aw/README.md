@@ -10,11 +10,9 @@ A workflow has to write the `imports:` line itself. gh-aw's engine catalog maps
 the `pydantic-ai` id to this path, but only to suggest it: naming the engine
 without the import fails to compile with a tip carrying the line to add.
 
-The engine runs the [Pydantic AI](https://ai.pydantic.dev) CLI (`pai`) over an agent
-composed from this package's `Coder` capability: six tools (`read_file`, `write_file`,
-`edit_file`, `list_files`, `grep` and `shell`), repository context and context management,
-plus one toolset per MCP server the gh-aw gateway exposes. Shell commands are unrestricted
-inside the sandbox; the default composition has no planning tool or explorer sub-agent.
+The engine runs the [Pydantic AI](https://ai.pydantic.dev) CLI (`pai`) with `Coder`
+by default, providing filesystem access and unrestricted shell commands inside the sandbox,
+plus the gh-aw gateway's MCP tools.
 
 ## Quick start
 

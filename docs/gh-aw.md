@@ -49,14 +49,9 @@ import-based engine like this one, so it is not part of the configuration below.
 
 ## Start from `Coder`, `Researcher`, or your own
 
-Writing an agent module is the last of three options, not the first.
-
-**The default composition.** With no `PAI_AGENT` at all, the engine composes an agent from
-the harness's [`Coder`](/ai/harness/coder/) capability: six tools (`read_file`, `write_file`,
-`edit_file`, `list_files`, `grep` and `shell`), repository context and context management.
-Shell commands are unrestricted inside the sandbox; the default composition has no
-planning tool or explorer sub-agent. A workflow that wants a coding agent loose on its
-own repository needs no Python and no agent module:
+**Use `Coder` by default.** Omit `PAI_AGENT` to use [`Coder`](/ai/harness/coder/),
+with filesystem access and unrestricted shell commands inside the sandbox.
+No agent module is needed:
 
 ```yaml
 ---
