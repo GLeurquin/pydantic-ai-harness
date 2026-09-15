@@ -777,13 +777,11 @@ class TestBackgroundTools:
         assert _follow_up_seen(result.all_messages(), 'failed: RuntimeError')
         assert _follow_up_seen(result.all_messages(), 'completed.\nResult: slow value')
 
-    async def test_cancelled_background_tool_does_not_cancel_its_sibling(self) -> None:
+    async def test_background_tool_ending_in_cancelled_error_cancels_the_run(self) -> None:
         release = asyncio.Event()
-        cancelled_raised = asyncio.Event()
+        sibling_cancelled = asyncio.Event()
 
         def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-            if _follow_up_seen(messages, 'slow value'):
-                return ModelResponse(parts=[TextPart(content='done')])
             if _ack_seen(messages):
                 release.set()
                 return ModelResponse(parts=[TextPart(content='waiting')])
@@ -796,18 +794,20 @@ class TestBackgroundTools:
         @agent.tool_plain(metadata={'background': True})
         async def cancelled() -> str:  # pyright: ignore[reportUnusedFunction]
             await release.wait()
-            cancelled_raised.set()
             raise asyncio.CancelledError
 
         @agent.tool_plain(metadata={'background': True})
         async def slow() -> str:  # pyright: ignore[reportUnusedFunction]
-            await release.wait()
-            await cancelled_raised.wait()
-            return 'slow value'
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                sibling_cancelled.set()
+                raise
+            return 'unreachable'  # pragma: no cover
 
-        result = await asyncio.wait_for(agent.run('go'), timeout=5)
-
-        assert _follow_up_seen(result.all_messages(), 'completed.\nResult: slow value')
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(agent.run('go'), timeout=5)
+        assert sibling_cancelled.is_set()
 
     async def test_background_base_exception_stops_the_run(self) -> None:
         class FatalBackgroundError(BaseException):
@@ -874,8 +874,10 @@ class TestBackgroundTools:
 
         ctx = RunContext(deps=None, model=TestModel(), usage=RunUsage(), pending_messages=[])
         capability = await BackgroundTools().for_run(ctx)
+        raised = asyncio.Event()
 
         async def tool_handler(args: dict[str, Any]) -> str:
+            raised.set()
             raise FatalBackgroundError
 
         async def run_handler() -> AgentRunResult[str]:
@@ -886,7 +888,7 @@ class TestBackgroundTools:
                 args={},
                 handler=tool_handler,
             )
-            await asyncio.sleep(0)
+            await raised.wait()
             return AgentRunResult('done')
 
         with pytest.raises(FatalBackgroundError):
@@ -912,22 +914,30 @@ class TestBackgroundTools:
                 finished.set()
                 raise
 
-        run = asyncio.ensure_future(agent.run('go'))
-        await asyncio.wait_for(started.wait(), timeout=5)
-        run.cancel()
+        run_returned = asyncio.Event()
 
-        try:
-            await asyncio.wait_for(cancellation_seen.wait(), timeout=5)
-            await asyncio.sleep(1.1)
-            assert not run.done()
-        finally:
+        async def run() -> None:
+            try:
+                await agent.run('go')
+            finally:
+                run_returned.set()
+
+        async def release_after_a_while() -> None:
+            await asyncio.sleep(0.3)
+            assert not run_returned.is_set()
             release.set()
 
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(run, timeout=5)
+        releaser = asyncio.ensure_future(release_after_a_while())
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(run)
+            await asyncio.wait_for(started.wait(), timeout=5)
+            tg.cancel_scope.cancel()
+
+        await asyncio.wait_for(cancellation_seen.wait(), timeout=5)
+        await asyncio.wait_for(releaser, timeout=5)
         assert finished.is_set()
 
-    async def test_run_abort_does_not_wait_for_default_sync_worker(self) -> None:
+    async def test_run_abort_waits_for_default_sync_worker(self) -> None:
         started = threading.Event()
         release = threading.Event()
         finished = threading.Event()
@@ -944,14 +954,13 @@ class TestBackgroundTools:
         assert await asyncio.to_thread(started.wait, 5)
         run.cancel()
 
-        try:
-            with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(run, timeout=5)
-            assert not finished.is_set()
-        finally:
-            release.set()
+        await asyncio.sleep(0.3)
+        assert not run.done()
+        release.set()
 
-        assert await asyncio.to_thread(finished.wait, 5)
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(run, timeout=5)
+        assert finished.is_set()
 
     async def test_cancellation_token_cancels_live_tasks(self) -> None:
         cancel_seen = asyncio.Event()

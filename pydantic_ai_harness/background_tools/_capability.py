@@ -5,10 +5,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 from collections.abc import Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal
 
+import anyio
+import anyio.abc
+import anyio.lowlevel
+from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from pydantic_ai.capabilities import AbstractCapability, AgentNode, NodeResult, RawToolArgs
 from pydantic_ai.exceptions import (
     ApprovalRequired,
@@ -66,6 +72,16 @@ def _with_run_in_background(tool_def: ToolDefinition) -> ToolDefinition:
     }
     schema = {**tool_def.parameters_json_schema, 'properties': {**properties, _RUN_IN_BACKGROUND: flag}}
     return replace(tool_def, parameters_json_schema=schema)
+
+
+_Outcome = tuple[UserContent, ...] | BaseException
+"""What a finished background task hands to the run: the follow-up to deliver, or the error that ends the run."""
+
+
+def _deliver(ctx: RunContext[Any], outcome: _Outcome) -> None:
+    if isinstance(outcome, BaseException):
+        raise outcome
+    ctx.enqueue(*outcome)
 
 
 def _format_background_error(error: ApprovalRequired | CallDeferred | ToolRetryError | ToolFailedError) -> str:
@@ -136,12 +152,13 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
 
     Warning:
         Run cleanup cancels live background tasks and waits for them, so async tools must
-        propagate cancellation. A synchronous tool's worker thread cannot be stopped and
-        runs concurrently with the agent: keep the state it touches thread-safe.
+        propagate cancellation. A synchronous tool's worker thread cannot be interrupted, so
+        cleanup waits until it returns. It runs concurrently with the agent: keep the state
+        it touches thread-safe.
 
-    Exceptions raised by the tool become failure messages; running out of retries ends the
-    run, as it would for a sequential tool. Cancelling one background tool does not cancel
-    its siblings. See the docs page for streaming, realtime and durable-execution limits.
+    Exceptions raised by the tool become failure messages; running out of retries or raising
+    `CancelledError` ends the run, as it would for a sequential tool. See the docs page for
+    streaming, realtime and durable-execution limits.
     """
 
     tools: ToolSelector[AgentDepsT] = field(default_factory=lambda: {'background': True})
@@ -177,10 +194,13 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
 
         return replace(merged, tools=matches_any)
 
-    _tasks: set[asyncio.Task[tuple[UserContent, ...]]] = field(
-        default_factory=set[asyncio.Task[tuple[UserContent, ...]]], init=False, repr=False
-    )
-    """Live and finished background tasks; `after_node_run` sweeps the finished ones into the queue."""
+    _task_group: anyio.abc.TaskGroup = field(init=False, repr=False, compare=False)
+    """Owns the run's background tasks. `wrap_run` opens it around the run, so no task outlives the run."""
+    _live: int = field(default=0, init=False, repr=False)
+    """Background tasks that have not handed over their outcome yet."""
+    _send: MemoryObjectSendStream[_Outcome] = field(init=False, repr=False, compare=False)
+    _outcomes: MemoryObjectReceiveStream[_Outcome] = field(init=False, repr=False, compare=False)
+    """Outcomes in completion order; `after_node_run` takes them as they arrive."""
 
     def get_instructions(self) -> AgentInstructions[AgentDepsT] | None:
         return _instructions
@@ -248,28 +268,40 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
         task_id = call.tool_call_id
         tool_name = call.tool_name
 
-        async def _run() -> tuple[UserContent, ...]:
+        async def _run() -> None:
+            outcome: _Outcome
             try:
-                result = await handler(args)
-            except (ApprovalRequired, CallDeferred, ToolRetryError, ToolFailedError) as e:
-                return (f"Background tool '{tool_name}' (task {task_id}) failed: {_format_background_error(e)}",)
-            except UnexpectedModelBehavior:
-                # Core raises this when the tool's retry budget runs out; end the run as a sequential tool would.
-                raise
-            except Exception as e:
-                # Unexpected errors are logged in full; the model only learns the type.
-                logger.exception('Background tool %s failed', tool_name)
-                return (f"Background tool '{tool_name}' (task {task_id}) failed: {type(e).__name__}",)
-            return _format_background_result(tool_name, task_id, result)
-
-        def task_done(task: asyncio.Task[tuple[UserContent, ...]]) -> None:
-            # Core counts a tool call when its handler returns, so hold the slot while the task runs.
-            ctx.usage.tool_calls -= 1
+                # A task the run cancelled before it got to start must not run the tool.
+                await anyio.lowlevel.checkpoint_if_cancelled()
+                try:
+                    result = await handler(args)
+                except (ApprovalRequired, CallDeferred, ToolRetryError, ToolFailedError) as e:
+                    outcome = (f"Background tool '{tool_name}' (task {task_id}) failed: {_format_background_error(e)}",)
+                except asyncio.CancelledError as e:
+                    if self._task_group.cancel_scope.cancel_called:
+                        raise
+                    # The tool raised this itself: it ends the run, as it would for a sequential tool.
+                    outcome = e
+                except UnexpectedModelBehavior as e:
+                    # The retry budget ran out: it ends the run, as it would for a sequential tool.
+                    outcome = e
+                except Exception as e:
+                    # Unexpected errors are logged in full; the model only learns the type.
+                    logger.exception('Background tool %s failed', tool_name)
+                    outcome = (f"Background tool '{tool_name}' (task {task_id}) failed: {type(e).__name__}",)
+                except BaseException as e:
+                    outcome = e
+                else:
+                    outcome = _format_background_result(tool_name, task_id, result)
+                self._send.send_nowait(outcome)
+            finally:
+                self._live -= 1
+                # Core counts a tool call when its handler returns, so the slot was held while the task ran.
+                ctx.usage.tool_calls -= 1
 
         ctx.usage.tool_calls += 1
-        task = asyncio.create_task(_run(), name=f'background tool {tool_name} ({task_id})')
-        self._tasks.add(task)
-        task.add_done_callback(task_done)
+        self._live += 1
+        self._task_group.start_soon(_run, name=f'background tool {tool_name} ({task_id})')
         return (
             f"Tool '{tool_name}' is running in background (task {task_id}). "
             f'If this run remains active, you will receive the result automatically when it completes. '
@@ -290,16 +322,18 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
             # another model request by the end-of-run drain.
             return result
 
-        while True:
-            for task in [task for task in self._tasks if task.done()]:
-                self._tasks.discard(task)
-                if not task.cancelled():
-                    ctx.enqueue(*task.result())
-            # At the end of the run, wait for the first live task unless something is already
-            # waiting to be delivered; the end-of-run drain then redirects the run to a new request.
-            if not isinstance(result, End) or not self._tasks or ctx.pending_messages:
-                return result
-            await asyncio.wait(tuple(self._tasks), return_when=asyncio.FIRST_COMPLETED)
+        self._deliver_finished(ctx)
+        if isinstance(result, End) and self._live and not ctx.pending_messages:
+            # The model is ending the run while tasks are still live: wait for the next outcome, so
+            # that the end-of-run drain turns its follow-up into another model request.
+            _deliver(ctx, await self._outcomes.receive())
+        return result
+
+    def _deliver_finished(self, ctx: RunContext[AgentDepsT]) -> None:
+        """Hand every outcome that has arrived to the run, in completion order."""
+        with suppress(anyio.WouldBlock):
+            while True:
+                _deliver(ctx, self._outcomes.receive_nowait())
 
     async def wrap_run(
         self,
@@ -307,15 +341,19 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
         *,
         handler: WrapRunHandler,
     ) -> AgentRunResult[Any]:
-        try:
-            result = await handler()
-        finally:
-            tasks = tuple(self._tasks)
-            for task in tasks:
-                task.cancel()
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
-        for task in tasks:
-            if not task.cancelled() and (error := task.exception()) is not None:
-                raise error
+        self._send, self._outcomes = anyio.create_memory_object_stream[_Outcome](math.inf)
+        result: AgentRunResult[Any] | None = None
+        with self._send, self._outcomes:
+            async with anyio.create_task_group() as self._task_group:
+                result = await handler()
+                # Tasks still live after a deferred-tool pause or `run_stream()` are dropped.
+                self._task_group.cancel_scope.cancel()
+            # An error from a task that finished after the last node boundary still ends the run.
+            with suppress(anyio.WouldBlock):
+                while True:
+                    outcome = self._outcomes.receive_nowait()
+                    if isinstance(outcome, BaseException):
+                        raise outcome
+        # `result` is bound: the group re-raises the run's own exception, and no task cancels the group.
+        assert result is not None
         return result

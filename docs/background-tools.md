@@ -108,23 +108,21 @@ content. Application-only `ToolReturn.metadata` and deferred tool names from `To
 not carried into the follow-up. Retries and deferred calls are reported as text failures. Expected
 tool errors include
 their message. Unexpected exceptions are logged for the application, while the model sees only
-their type. Running out of retries ends the run, as it would for a sequential tool. Cancelling one background tool does not
-cancel its siblings; call `ctx.cancel()` when a background tool needs to stop the run and all live
-background tasks.
+their type. Running out of retries, or raising `CancelledError`, ends the run, as it would for a sequential tool. Call
+`ctx.cancel()` when a background tool needs to stop the run and all live background tasks.
 
 ## Execution behavior
 
 Normal completion waits for background tasks and delivers their follow-ups. Concurrent runs track
 their tasks separately. If a run pauses for [deferred tools](/ai/tools-toolsets/deferred-tools/) or
 ends through cancellation, a usage limit, or an error, live tasks are cancelled and their results
-are dropped. Run cleanup waits for their async tasks to finish, so async tools must propagate
-cancellation. Suppressing cancellation can keep cleanup open. When the run itself is cancelled
-by an outer anyio cancel scope, the wait is cut short too and the tasks finish unwinding on
-their own.
+are dropped. Run cleanup waits for the cancelled tasks to finish, also when the run itself is
+cancelled by an outer anyio cancel scope, so async tools must propagate cancellation. Suppressing
+cancellation can keep cleanup open.
 
 !!! warning
-    Python cannot stop a synchronous tool's worker thread, so it may continue after the cancelled
-    run returns. If it then calls `ctx.enqueue()`, that call raises `UserError`.
+    Python cannot interrupt a synchronous tool's worker thread, so cleanup waits until the tool
+    returns, even when the run was cancelled.
 
     A synchronous background tool runs concurrently with the agent. Make mutable dependencies and
     other shared state it uses thread-safe.
