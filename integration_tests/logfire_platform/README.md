@@ -48,7 +48,8 @@ pointing it at a project that matters.
 | `ANTHROPIC_API_KEY` | The code-side model (`anthropic:claude-haiku-4-5`). Without it the whole suite skips |
 | `OPENAI_API_KEY` | The published model (`openai:gpt-5.4-nano`), a different provider on purpose. Without it the two model tests skip |
 
-Twenty-nine tests, around forty real model requests (several tests need a second round trip, and a few publish and re-run), a few minutes end to end.
+Twenty-nine tests and around forty real model requests -- several need a second round trip, and
+a few publish and run again -- so a few minutes end to end.
 
 ## Getting a platform up
 
@@ -98,8 +99,9 @@ evidence is what matters here:
   at its default, so it is the regression test for that.
 
 The agent under test lives in [`_agent.py`](_agent.py): six addressable prompt blocks written in
-five different ways, four tools in two toolsets, real `deps`, and code-side settings. [`examples/agent_control.py`](../../examples/agent_control.py)
-is the readable version of the same agent, and runs with no Logfire at all.
+five different ways, four tools in two toolsets, real `deps`, and code-side settings.
+[`examples/agent_control.py`](../../examples/agent_control.py) is the readable version of the same
+agent, and runs with no Logfire at all.
 
 ## Why CI does not run it
 
