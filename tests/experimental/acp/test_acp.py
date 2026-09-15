@@ -447,14 +447,14 @@ class TestSessionConfig:
             return await ctx.workspace.working_dir()
 
         client = FakeClient()
-        async with LocalWorkspace(root=tmp_path) as backend:
-            adapter = PydanticAIACPAgent(
-                agent, session_config=lambda _session: AcpSessionConfig(deps=None, workspace=backend)
-            )
-            adapter.on_connect(client)
-            await adapter.initialize(protocol_version=1)
-            session = await adapter.new_session(cwd='.')
-            await adapter.prompt(prompt=[acp.text_block('where')], session_id=session.session_id)
+        backend = LocalWorkspace(root=tmp_path)
+        adapter = PydanticAIACPAgent(
+            agent, session_config=lambda _session: AcpSessionConfig(deps=None, workspace=backend)
+        )
+        adapter.on_connect(client)
+        await adapter.initialize(protocol_version=1)
+        session = await adapter.new_session(cwd='.')
+        await adapter.prompt(prompt=[acp.text_block('where')], session_id=session.session_id)
 
         [(_id, _status, raw_output)] = client.tool_completions()
         assert raw_output == str(tmp_path)
