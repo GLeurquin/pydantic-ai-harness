@@ -75,6 +75,11 @@ makes it back to Logfire.
 
 That's the whole setup on the code side. Creating the config itself is done in Logfire.
 
+[`examples/agent_control.py`](https://github.com/pydantic/pydantic-ai-harness/blob/main/examples/agent_control.py)
+is a complete agent wired up this way, with its prompt coming from five separate places and its
+tools from two toolsets, printing what resolved on every run. It runs with no Logfire configured
+at all, which is the behavior worth seeing first.
+
 Pinning `label='production'` is the recommended default, for the same
 [prompt-cache reasons](managed-prompt.md#prompt-cache-trade-off) as a managed prompt.
 

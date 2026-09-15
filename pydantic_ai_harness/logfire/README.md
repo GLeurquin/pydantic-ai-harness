@@ -372,6 +372,11 @@ agent = Agent(
 )
 ```
 
+[`examples/agent_control.py`](https://github.com/pydantic/pydantic-ai-harness/blob/main/examples/agent_control.py)
+is a complete agent wired up this way, with its prompt coming from five separate places and its
+tools from two toolsets, printing what resolved on every run. It runs with no Logfire configured
+at all, which is the behavior worth seeing first.
+
 The variable holds an `AgentConfig`. The contract -- that model, its stored JSON schema, how leniently
 a published value validates, and what each section does to a request -- lives in `logfire.agent_control`,
 where the Logfire UI and every framework's Agent Control adapter share one copy of it. Import it from
