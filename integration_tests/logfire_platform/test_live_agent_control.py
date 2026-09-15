@@ -30,11 +30,12 @@ Eighteen claims, one or more tests each:
 17. A config is picked up once per run, so publishing mid-run takes effect on the next one.
 18. A configured agent still reports its code baseline, marked `resolved`.
 
-**This suite publishes over and deletes the `agent__harness_agent_control_live` variable on the
-project it is pointed at**, before and after every test. That is what a conformance suite for a
-feature whose whole surface is stored state has to do. It touches no other variable, and it refuses
-to run at all without `LOGFIRE_PLATFORM_ALLOW_WRITES=1`. See `README.md` for the rest, including how
-to bring a platform up and the two traps worth knowing about.
+**This suite creates, publishes over and deletes one variable on the project it is pointed at**,
+before and after every test, because a conformance suite for a feature whose whole surface is stored
+state has to own the state it checks. The variable is `agent__harness_agent_control_live_<8 hex>`,
+generated per run, so the only config it can delete is one this run created -- and it refuses to run
+at all without `LOGFIRE_PLATFORM_ALLOW_WRITES=1`. See `README.md` for the rest, including how to
+bring a platform up and the two traps worth knowing about.
 
 Unlike the three suites beside it, no CI job runs this one: those need one container each, and this
 needs a whole Logfire platform. Run it by hand with `make integration-logfire-platform`.
@@ -179,11 +180,12 @@ def _forget() -> None:
 
 @pytest.fixture(autouse=True)
 def fresh_variable(platform: Platform) -> Iterator[None]:
-    """Delete this suite's variable before and after every test.
+    """Delete this run's own variable before and after every test.
 
     Every test publishes the state it is about to check, and none reads state the test before it left
     behind -- so the suite can be run in any order, repeatedly, and after an interrupted run. Deleting
-    afterwards as well means an interrupted run does not leave a config behind on the platform.
+    afterwards as well keeps a failed run from leaving a config on the platform. Nothing here can
+    delete a config someone else made: `VARIABLE_NAME` is generated per run.
     """
     _reset_variable(platform)
     yield
@@ -239,9 +241,9 @@ def hint_span_from_platform(platform: Platform, spans: SpanCapture) -> dict[str,
     """This agent's hint span, read back out of the platform rather than off the local pipeline.
 
     Polls rather than querying once: ingest is asynchronous, so a query issued the instant after the
-    flush can legitimately find nothing yet. Matched on the digest of the baseline this process
-    reported, so an unrelated agent's hint cannot satisfy it. An earlier run of this same test can,
-    since identical code digests identically -- and that span is the same evidence, byte for byte.
+    flush can legitimately find nothing yet. Matched on this run's variable name and on the digest
+    and reason this process reported, so neither another agent's hint nor an earlier run of this
+    suite can satisfy it.
     """
     flush()
     local = spans.hint_attributes()

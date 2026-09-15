@@ -13,28 +13,31 @@ make integration-logfire-platform
 
 ## Read this first: it publishes and deletes
 
-**This suite publishes over and deletes the `agent__harness_agent_control_live` variable on the
-project it is pointed at, before and after every test.** A conformance suite for a feature whose
-entire surface is stored state has to own that state, so each test publishes what it is about to
-check and the variable is removed either side of it.
+**This suite creates, publishes over and deletes one variable on the project it is pointed at,
+before and after every test.** A conformance suite for a feature whose entire surface is stored
+state has to own that state, so each test publishes what it is about to check and the variable is
+removed either side of it.
 
-Three things keep that from surprising you:
+Three things keep that from reaching anything you care about:
 
+- **The variable is generated per run**: `agent__harness_agent_control_live_<8 hex>`, from an agent
+  name made at import time. So the only config it can delete is one this run created, and no
+  pre-existing config can be in its way. A run killed outright (rather than failed, where the
+  fixtures still tear down) can leave one of those behind; they are safe to delete.
 - It does nothing at all unless `LOGFIRE_PLATFORM_ALLOW_WRITES=1` is set. Unconfigured, every test
   skips with the reason.
 - It reads its own `LOGFIRE_PLATFORM_*` variables, never the SDK's `LOGFIRE_API_KEY`. A credential
   that happens to be in your shell for a real project cannot become the one this publishes with.
-- The only variable it touches is `agent__harness_agent_control_live`, derived from an agent name
-  nothing else runs. It cannot overwrite the config you are editing in the UI, or a demo's.
 
-Running it *between* UI edits on some other agent is therefore safe. Running it against a project
-whose `agent__harness_agent_control_live` you care about is not.
+Running it between UI edits on some other agent is therefore safe. It still sends spans and makes
+real model requests against whatever you point it at, which is the part to think about before
+pointing it at a project that matters.
 
 ## What to point it at
 
 | Variable | What it is |
 |---|---|
-| `LOGFIRE_PLATFORM_ALLOW_WRITES` | Set to `1` to allow the publishing and deleting above. Without it the suite skips |
+| `LOGFIRE_PLATFORM_ALLOW_WRITES` | Set to `1` to allow the creating, publishing and deleting above. Without it the suite skips |
 | `LOGFIRE_PLATFORM_API_KEY` | An API key with `project:read_variables` **and** `project:write_variables`. The span write token cannot serve the variables API |
 | `LOGFIRE_PLATFORM_TEST_URL` | The platform origin: UI, OTLP and API. Defaults to `http://localhost:3000` |
 | `LOGFIRE_PLATFORM_WRITE_TOKEN` | A span write token. Without it spans stay in the process, every local check still runs, and the two read-back tests skip |

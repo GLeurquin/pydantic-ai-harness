@@ -61,7 +61,7 @@ CODE_SETTINGS: ModelSettings = {'temperature': 0.2, 'max_tokens': 400}
 CODE_BLOCKS: dict[str, str] = {
     'agent': 'You are the Northwind storefront support agent. Answer in one short sentence.',
     'agent:escalation': 'If the customer is angry, offer to escalate to a human within one reply.',
-    'capability:store_policy': 'Store policy: refunds within 30 days of delivery, no questions asked.',
+    'capability:store_policy': 'Store policy: a delivered order can be refunded, no questions asked.',
     'toolset:orders': 'Order tools are authoritative for status and refunds. Never guess an order status.',
     'toolset:catalog': 'Quote catalog prices exactly as returned; never round or convert them.',
 }

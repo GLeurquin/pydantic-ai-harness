@@ -43,10 +43,11 @@ integration-mongodb:
 integration-redis:
 	uv run pytest integration_tests/redis/test_live_redis.py
 
-# Needs a whole Logfire platform rather than one container, so no CI job runs it and
-# it skips unless you point it somewhere on purpose. It publishes over and deletes the
-# `agent__harness_agent_control_live` variable on the project it is pointed at, and it
-# makes real model requests. Read integration_tests/logfire_platform/README.md first.
+# Needs a whole Logfire platform rather than one container, so no CI job runs it and it
+# skips unless you point it somewhere on purpose. It creates, publishes over and deletes
+# one per-run `agent__harness_agent_control_live_<hex>` variable on the project it is
+# pointed at, and makes real model requests. Read
+# integration_tests/logfire_platform/README.md first.
 integration-logfire-platform:
 	uv run pytest integration_tests/logfire_platform
 

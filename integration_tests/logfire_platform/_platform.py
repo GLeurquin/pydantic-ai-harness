@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from dataclasses import dataclass
 from typing import NoReturn
 
@@ -26,15 +27,20 @@ import pytest
 from logfire.agent_control import AGENT_CONFIG_JSON_SCHEMA, agent_variable_name
 from pydantic import BaseModel, TypeAdapter
 
-AGENT_NAME = 'harness_agent_control_live'
+AGENT_NAME = f'harness_agent_control_live_{uuid.uuid4().hex[:8]}'
 """The agent this suite runs, and so the only variable it ever writes to or deletes.
 
-Deliberately not the name of any agent worth keeping: the suite publishes over this variable and
-deletes it between tests, so it must not be a name a demo or a real deployment would also resolve.
+Unique per run, which is what makes the destructive half of this suite safe rather than merely
+documented: every test publishes over this variable and deletes it afterwards, and a name generated
+here cannot be the name of a config someone else created. `LOGFIRE_PLATFORM_ALLOW_WRITES` authorizes
+writing to a project; it cannot prove the suite owns what is already in one.
+
+A run killed outright (rather than failed, where the fixtures still tear down) can leave one
+`agent__harness_agent_control_live_<8 hex>` variable behind. They are safe to delete.
 """
 
 VARIABLE_NAME = agent_variable_name(AGENT_NAME)
-"""`agent__harness_agent_control_live`, derived by the contract's own rule rather than spelled out."""
+"""`agent__harness_agent_control_live_<8 hex>`, derived by the contract's own rule rather than spelled out."""
 
 DEFAULT_TEST_URL = 'http://localhost:3000'
 """Where a local platform stack serves UI, OTLP and API. Override with `LOGFIRE_PLATFORM_TEST_URL`."""
@@ -220,9 +226,9 @@ def platform_target() -> Platform:
     """
     if not _flag('LOGFIRE_PLATFORM_ALLOW_WRITES'):
         unavailable(
-            'this suite publishes over and deletes the '
-            f'{VARIABLE_NAME} variable on the project it is pointed at; '
-            'set LOGFIRE_PLATFORM_ALLOW_WRITES=1 to say that is what you want'
+            f'this suite creates, publishes over and deletes the {VARIABLE_NAME} variable on the '
+            'project it is pointed at, and makes real model requests; set '
+            'LOGFIRE_PLATFORM_ALLOW_WRITES=1 to say that is what you want'
         )
     api_key = os.environ.get('LOGFIRE_PLATFORM_API_KEY')
     if not api_key:

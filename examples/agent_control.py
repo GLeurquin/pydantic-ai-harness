@@ -71,7 +71,7 @@ class StorePolicy(AbstractCapability[SupportDeps]):
 
     def get_instructions(self) -> str:
         """The policy the agent quotes, and the one block a policy change would edit."""
-        return 'Store policy: refunds within 30 days of delivery, no questions asked.'
+        return 'Store policy: a delivered order can be refunded, no questions asked.'
 
 
 @dataclass
