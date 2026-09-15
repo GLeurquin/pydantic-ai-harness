@@ -120,7 +120,9 @@ Normal completion waits for background tasks and delivers their follow-ups. Conc
 their tasks separately. If a run pauses for [deferred tools](/ai/tools-toolsets/deferred-tools/) or
 ends through cancellation, a usage limit, or an error, live tasks are cancelled and their results
 are dropped. Run cleanup waits for their async tasks to finish, so async tools must propagate
-cancellation. Suppressing cancellation can keep cleanup open.
+cancellation. Suppressing cancellation can keep cleanup open. When the run itself is cancelled
+by an outer anyio cancel scope, the wait is cut short too and the tasks finish unwinding on
+their own.
 
 !!! warning
     Python cannot stop a synchronous tool's worker thread, so it may continue after the cancelled
