@@ -14,7 +14,7 @@ from pydantic_ai_harness.coder import Coder
 from rich.console import Console
 
 from ._branding import print_banner
-from ._completion_adapter import PromptCompleter
+from ._completion_adapter import COMPLETION_STYLE, PromptCompleter
 from ._rendering import StreamRenderer
 from ._session import Session
 from .auth import CodexAuth
@@ -115,7 +115,11 @@ async def chat(
         if isinstance(plugin, CommandProvider):
             commands.register_many(plugin.get_commands(context))
     prompt = PromptSession[str](
-        history=InMemoryHistory(), completer=PromptCompleter(commands), complete_while_typing=True
+        history=InMemoryHistory(),
+        completer=PromptCompleter(commands),
+        complete_while_typing=True,
+        style=COMPLETION_STYLE,
+        reserve_space_for_menu=6,
     )
     async with agent:
         while True:

@@ -86,7 +86,12 @@ class Commands(Completer):
             prefix = text[1:]
             for command in self._commands.values():
                 if command.name.startswith(prefix):
-                    yield Completion(command.name, start_position=-len(prefix), display_meta=command.description)
+                    yield Completion(
+                        command.name,
+                        start_position=-len(prefix),
+                        display='/' + command.name,
+                        display_meta=command.description,
+                    )
             return
         if not words:
             return
