@@ -48,6 +48,8 @@ def test_splash_broken_stream_and_replaced_output(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(sys, 'stdout', stream)
     splash = Splash()
     assert '\x1b[35m' in splash.frame(10)
+    monkeypatch.setenv('COLORTERM', 'truecolor')
+    assert '\x1b[38;2;' in splash.frame(10)
     splash.start()
     monkeypatch.setattr(sys, 'stdout', io.StringIO())
     monkeypatch.setattr(sys, 'stderr', io.StringIO())
