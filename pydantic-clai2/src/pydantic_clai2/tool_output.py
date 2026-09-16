@@ -33,6 +33,10 @@ class DisplayArguments(BaseModel):
 
     path: str | None = None
     command: str | None = None
+    offset: int = 0
+    limit: int | None = None
+    glob: str | None = None
+    recursive: bool = True
 
 
 @dataclass
@@ -74,17 +78,37 @@ class ToolOutput:
     def render_call(self, event: FunctionToolCallEvent) -> bool:
         """Show arguments once, before execution, including for failed calls."""
         name = event.part.tool_name
-        if name not in ('shell', 'write_file', 'edit_file'):
+        if name not in ('shell', 'write_file', 'edit_file', 'read_file', 'list_files'):
             return False
         try:
             args = DisplayArguments.model_validate_json(event.part.args_as_json_str())
         except ValueError:
             return False
+        if name in ('read_file', 'list_files'):
+            return self._inspection_header(name, args)
         argument = args.command if name == 'shell' else args.path
         if argument is None:
             return False
         self._header(name, argument)
         self._headers.add((event.part.tool_call_id, name))
+        return True
+
+    def _inspection_header(self, name: str, args: DisplayArguments) -> bool:
+        if name == 'read_file':
+            if args.path is None:
+                return False
+            limit = min(args.limit, 2000) if args.limit is not None else 2000
+            details = f'offset={args.offset} limit={limit} lines'
+            if args.limit is not None and args.limit > 2000:
+                details += f' (requested {args.limit})'
+            path = args.path
+        else:
+            path = args.path or '.'
+            limit = args.limit if args.limit is not None else 200
+            details = f'recursive={str(args.recursive).lower()} limit={limit}'
+            if args.glob is not None:
+                details += f' glob={args.glob!r}'
+        self._header(name, f'{path!r} {details}')
         return True
 
     def _shell_chunk(self, event: ShellOutputEvent) -> None:
