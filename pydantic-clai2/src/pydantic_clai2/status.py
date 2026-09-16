@@ -71,6 +71,7 @@ class StatusLine:
     async def __aenter__(self) -> Self:
         """Reserve a row only on an interactive terminal."""
         if self.console.is_terminal and not self.console.is_dumb_terminal:
+            self.console.show_cursor(False)
             self._draw(0)
             self._task = asyncio.create_task(self._animate())
         return self
@@ -79,10 +80,13 @@ class StatusLine:
         """Restore scrolling on success, failure, and cancellation."""
         if self._task is not None:
             self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
-            self.console.file.write(f'\x1b7\x1b[r\x1b[{self._height};1H\x1b[2K\x1b8')
-            self.console.file.flush()
+            try:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._task
+            finally:
+                self.console.file.write(f'\x1b7\x1b[r\x1b[{self._height};1H\x1b[2K\x1b8')
+                self.console.show_cursor(True)
+                self.console.file.flush()
 
     def _draw(self, frame: int) -> None:
         width, height = self.console.size

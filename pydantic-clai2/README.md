@@ -138,7 +138,8 @@ unavailable. During a request it may reflect the previous response.
 While running, the footer reserves the terminal's bottom row using ANSI scrolling
 regions. Prompt-toolkit owns the footer while accepting input. The run footer is
 disabled for redirected output and restores normal scrolling on cancellation or
-failure. No model requests or telemetry are added for status reporting.
+failure. The cursor is hidden during runs and restored on completion, failure,
+or cancellation. No model requests or telemetry are added for status reporting.
 
 ## Capability plugins
 

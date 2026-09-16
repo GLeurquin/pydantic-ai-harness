@@ -35,6 +35,20 @@ async def test_redirected_output_has_no_footer() -> None:
     assert output.getvalue() == ''
 
 
+@pytest.mark.parametrize('fail', [False, True])
+async def test_cursor_restored_after_run(fail: bool) -> None:
+    output = io.StringIO()
+    try:
+        async with StatusLine(Console(file=output, force_terminal=True, width=80, height=24), Status()):
+            assert '\x1b[?25l' in output.getvalue()
+            assert '\x1b[?25h' not in output.getvalue()
+            if fail:
+                raise ValueError('run failed')
+    except ValueError:
+        assert fail
+    assert output.getvalue().endswith('\x1b[?25h')
+
+
 async def test_cancellation_restores_scroll_region() -> None:
     output = io.StringIO()
     entered = asyncio.Event()
@@ -49,8 +63,8 @@ async def test_cancellation_restores_scroll_region() -> None:
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert output.getvalue().startswith('\x1b7\x1b[1;23r')
+    assert output.getvalue().startswith('\x1b[?25l\x1b7\x1b[1;23r')
     assert '\x1b[23;1H' not in output.getvalue()
     assert '\n' not in output.getvalue()
     assert '\x1b[r' in output.getvalue()
-    assert output.getvalue().endswith('\x1b8')
+    assert output.getvalue().endswith('\x1b8\x1b[?25h')
