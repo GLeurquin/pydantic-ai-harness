@@ -49,12 +49,9 @@ import-based engine like this one, so it is not part of the configuration below.
 
 ## Start from `Coder`, `Researcher`, or your own
 
-Writing an agent module is the last of three options, not the first.
-
-**The default composition.** With no `PAI_AGENT` at all, the engine composes an agent from
-the harness's [`Coder`](/ai/harness/coder/) capability, which brings filesystem access, an
-allowlisted shell, planning, repository orientation and an explorer sub-agent. A workflow
-that wants a coding agent loose on its own repository needs no Python and no agent module:
+**Use `Coder` by default.** Omit `PAI_AGENT` to use [`Coder`](/ai/harness/coder/),
+with filesystem access and unrestricted shell commands inside the sandbox.
+No agent module is needed:
 
 ```yaml
 ---
@@ -155,7 +152,7 @@ Four things about that module.
   here to show that repository code is importable and that the agent's own tools work
   alongside the MCP tools gh-aw supplies.
 - **No third-party imports.** The engine installs `pydantic-ai-harness[cli]` and
-  `pydantic-ai-slim[anthropic,openai,mcp]`, so `pydantic_ai` is importable without any
+  `pydantic-ai-slim[anthropic,openai,mcp,spec]`, so `pydantic_ai` is importable without any
   setup of your own. Anything else your agent imports is installed by a workflow-level
   `steps:` block (see [Dependencies](#dependencies)).
 
@@ -179,7 +176,7 @@ engine:
 
 ```yaml {title="triage_agent.yml"}
 name: triage
-model: openai:gpt-5
+model: openai-chat:gpt-5
 instructions: |
   You triage one GitHub issue. Read the issue in the prompt, then post exactly one
   comment with the `safeoutputs_add_comment` tool. Suggest a label; do not apply one.
@@ -189,15 +186,17 @@ capabilities:
       effort: medium
 ```
 
+The engine installs the `spec` extra for YAML parsing.
+
 **The spec needs a `model:` even though it does not decide the model.** A module can leave
 the model out, because an `Agent` may be constructed without one, but `Agent.from_spec()`
-rejects a spec that names none, and it builds that model while loading the file. So the
-line has to be there, and it has to be a model the step can construct: name the same
-provider as the workflow's `engine.model`, since that is the one whose credential the
-engine puts in the environment. The value itself is then replaced, because the engine
-always passes `-m` and an explicit `-m` replaces whatever a loaded agent declares. Writing
-`openai/gpt-5` in the workflow and `openai:gpt-5` in the spec keeps the two readable
-together; only the workflow's copy is live.
+rejects a spec that names none, and it builds that model while loading the file, before
+the CLI's `-m` override. Use the client prefix that the engine configures, not the
+workflow's provider prefix: `openai-chat:<model>` for `copilot/`, `codex/` and `openai/`,
+or `anthropic:<model>` for `anthropic/`. With `PAI_BASE_URL`, use `openai-chat:<model>`
+regardless of the workflow provider. The engine then passes `-m` to replace the model.
+For example, pair `openai/gpt-5` in the workflow with `openai-chat:gpt-5` in the spec;
+only the workflow's copy selects the model used for the run.
 
 The gateway's MCP servers still arrive through `--mcp-config`, so a spec agent gets the
 safe outputs and the GitHub tools on the same terms as a module.
@@ -598,6 +597,13 @@ what the engine keys on. When it is set, and only then:
   agent's environment when they come from `engine.env`, so this happens only when a workflow
   puts a token in its own `env:` or a `steps:` block, which is the explicit way to ask for
   it. Leave the token out and the workflow's endpoint is the only place anything goes.
+- **Configuration and credentials stay outside the checkout.** The launcher passes explicit
+  `config_dir` and `data_dir` values pointing to a mode-0700 temporary directory under `/tmp`,
+  even if `TMPDIR` points into the checkout. Checkout `pyproject.toml` settings and
+  `.logfire/logfire_credentials.json` cannot select a telemetry destination. These arguments
+  also override `LOGFIRE_CONFIG_DIR` and `LOGFIRE_CREDENTIALS_DIR`, without disabling an
+  environment `LOGFIRE_TOKEN`. The directory lives through the process and is removed at
+  interpreter shutdown, after exporter shutdown handlers run.
 - **The trace context is attached.** gh-aw publishes the run's W3C trace context in
   `TRACEPARENT` so that an engine can nest its spans under the workflow span, but neither
   Logfire nor the OpenTelemetry SDK reads that variable on its own. Attaching it is what
@@ -655,13 +661,29 @@ It replaces the whole configuration, not the arguments you restate, so carry ove
 above that are load-bearing:
 
 ```python
+import atexit
+import tempfile
+
+logfire_dir = tempfile.TemporaryDirectory(prefix='gh-aw-logfire-', dir='/tmp')
+atexit.register(logfire_dir.cleanup)
+
 import logfire
 
-logfire.configure(send_to_logfire='if-token-present', console=False, distributed_tracing=True)
+logfire.configure(
+    send_to_logfire='if-token-present',
+    console=False,
+    distributed_tracing=True,
+    config_dir=logfire_dir.name,
+    data_dir=logfire_dir.name,
+)
 logfire.instrument_pydantic_ai()
 ```
 
-Four things to know before you do:
+Things to know before you do:
+
+- **Keep both directories private for the process lifetime.** Omitting `config_dir` or
+  `data_dir` re-enables checkout configuration or credentials. Register cleanup before
+  configuring Logfire so exporter shutdown handlers run first.
 
 - **`console=False` is not optional.** Leaving it out restores logfire's console exporter,
   which writes every span to stderr, which is the stream the engine's log parser reads.

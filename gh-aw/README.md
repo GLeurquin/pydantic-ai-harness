@@ -10,10 +10,9 @@ A workflow has to write the `imports:` line itself. gh-aw's engine catalog maps
 the `pydantic-ai` id to this path, but only to suggest it: naming the engine
 without the import fails to compile with a tip carrying the line to add.
 
-The engine runs the [Pydantic AI](https://ai.pydantic.dev) CLI (`pai`) over an agent
-composed from this package's `Coder` capability: filesystem, shell, planning,
-repository context and an explorer sub-agent, plus one toolset per MCP server the
-gh-aw gateway exposes.
+The engine runs the [Pydantic AI](https://ai.pydantic.dev) CLI (`pai`) with `Coder`
+by default, providing filesystem access and unrestricted shell commands inside the sandbox,
+plus the gh-aw gateway's MCP tools.
 
 ## Quick start
 
@@ -63,7 +62,7 @@ private directory it creates inside the sandbox, puts that directory on
 `PYTHONPATH`, and passes `-a gh_aw_agent:agent`. The CLI and its
 dependencies are installed before the agent starts, with
 `pip install --user "pydantic-ai-harness[cli]==<engine version>"
-"pydantic-ai-slim[anthropic,openai,mcp]>=2.36.0"`. The pinned harness version is
+"pydantic-ai-slim[anthropic,openai,mcp,spec]>=2.36.0"`. The pinned harness version is
 `engine.version` in `pydantic.md`, and it always names a published release: lint
 refuses a pull request whose pin is not on PyPI. The `2.36.0` floor is the first
 pydantic-ai release carrying `pai --mcp-config`, and the `anthropic` extra is what
@@ -171,12 +170,15 @@ runs `Researcher` with no agent code in the repository at all, given a `steps:` 
 installing the `researcher` extra. `pydantic_ai_harness.coder:coder_agent` names the
 default composition explicitly.
 
-A `.yml`, `.yaml` or `.json` spec covers instructions plus built-in capabilities, and
+The engine installs the `spec` extra for YAML parsing. A `.yml`, `.yaml` or `.json` spec
+covers instructions plus built-in capabilities, and
 the gateway's MCP servers still reach it through `--mcp-config`. Unlike a module it has
 to carry a `model:`, because `Agent.from_spec()` rejects a spec without one and builds
-that model while loading the file, so the value has to name the same provider as
-`engine.model`, whose credential the engine puts in the environment. `-m` then replaces
-it, which makes the spec's copy documentation rather than configuration. A spec cannot
+that model while loading the file, before the CLI's `-m` override. Use the client prefix
+that the engine configures, not the workflow's provider prefix: `openai-chat:<model>` for
+`copilot/`, `codex/` and `openai/`, or `anthropic:<model>` for `anthropic/`. With
+`PAI_BASE_URL`, use `openai-chat:<model>` regardless of the workflow provider. `-m` then
+replaces the model, so only the workflow's copy selects the model used for the run. A spec cannot
 name a harness capability: spec capability names resolve through a closed registry that
 the harness is not part of, and the CLI passes no `custom_capability_types`
 (pydantic/pydantic-ai#8334). Nor can it define a function tool. Either needs a module.
@@ -208,7 +210,7 @@ engine keys on: with it set, the install step adds `logfire` and the launcher ca
 target, then attaches the W3C context from `TRACEPARENT`. With it unset, neither happens
 and the install costs nothing.
 
-Four of those choices are not defaults, and each is load-bearing.
+These choices are not defaults, and each is load-bearing.
 
 - **`send_to_logfire="if-token-present"`.** The default requires a `LOGFIRE_TOKEN` in the
   environment and raises without one. The credential here is a header value gh-aw holds,
@@ -217,6 +219,13 @@ Four of those choices are not defaults, and each is load-bearing.
   second destination rather than replacing the endpoint, prompts and completions included;
   gh-aw strips `${{ secrets.* }}` out of `engine.env`, so that takes a workflow putting one
   in its own `env:` or a `steps:` block.
+- **Private `config_dir` and `data_dir`.** Both point to a mode-0700 temporary directory
+  under `/tmp`, outside the checkout even if `TMPDIR` points into it. This prevents
+  checkout `pyproject.toml` settings and `.logfire/logfire_credentials.json` from selecting
+  a telemetry destination. Explicit directory arguments also override `LOGFIRE_CONFIG_DIR`
+  and `LOGFIRE_CREDENTIALS_DIR`; `LOGFIRE_TOKEN` in the environment remains supported.
+  The directory stays alive through the process and is removed at interpreter shutdown,
+  after exporter shutdown handlers run.
 - **`console=False`.** logfire's console exporter writes every span to stderr, which is the
   stream this definition's `log-parser` reads.
 - **The `TRACEPARENT` attach, with `distributed_tracing=True`.** gh-aw sets the variable for
@@ -245,7 +254,9 @@ A `PAI_AGENT` module that calls `logfire.configure()` itself runs after the engi
 and replaces it, whole rather than argument by argument, so it has to restate the three
 settings above: `send_to_logfire="if-token-present"` or it raises, `console=False` or the
 `log-parser` reads spans, and `distributed_tracing=True` or it warns on every run. The
-context attached from `TRACEPARENT` survives the reconfiguration. Such a module also has
+context attached from `TRACEPARENT` survives the reconfiguration. Reconfiguration must also
+supply private `config_dir` and `data_dir` values with process-lifetime cleanup; omitting
+these re-enables checkout configuration and credentials. Such a module also has
 to install `logfire` through the workflow's own `steps:` if it imports it on runs that
 configure no endpoint.
 
