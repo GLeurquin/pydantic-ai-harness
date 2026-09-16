@@ -73,7 +73,7 @@ class StreamRenderer:
             if isinstance(event, FunctionToolCallEvent):
                 name = ''.join(char if char.isprintable() else ' ' for char in event.part.tool_name)
                 self.console.print(
-                    f'Tool: {name}', style='dim', markup=False, highlight=False, overflow='ellipsis', no_wrap=True
+                    f'● {name}', style='dim', markup=False, highlight=False, overflow='ellipsis', no_wrap=True
                 )
                 self.console.print()
 

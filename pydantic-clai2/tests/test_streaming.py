@@ -25,7 +25,7 @@ async def test_tools_have_one_line_and_one_blank_separator() -> None:
             FunctionToolResultEvent(part=ToolReturnPart(tool_name=name, content='done', tool_call_id='test'))
         )
     await renderer.finish()
-    assert output.getvalue() == 'Tool: shell\n\nTool: write_file\n\nTool: shell\n\n'
+    assert output.getvalue() == '● shell\n\n● write_file\n\n● shell\n\n'
 
 
 async def test_long_tool_name_does_not_wrap() -> None:
