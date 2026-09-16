@@ -1,6 +1,6 @@
 ---
 title: Run your own Pydantic AI agent as a GitHub Agentic Workflow
-description: Define a pydantic_ai.Agent in your repository and have gh-aw run it on issues, pull requests or a schedule, with MCP tools and safe outputs.
+description: Run your own Pydantic AI agent headless in GitHub Actions, on issues, pull requests or a schedule, sandboxed, with MCP tools and safe outputs.
 ---
 
 # Run your own Pydantic AI agent as a GitHub Agentic Workflow
@@ -15,6 +15,19 @@ points that machinery at a Pydantic AI agent, which can be the
 ships, or one your own repository defines. The three are laid out in
 [Start from `Coder`, `Researcher`, or your own](#start-from-coder-researcher-or-your-own);
 this page then walks through the last of them end to end.
+
+This is the agent running **headless**: on a GitHub runner, on the events you choose, with
+nobody at a prompt. Its output is a comment, a pull request or a commit rather than a reply
+on a screen, and the only place to see what it did afterwards is the run log and whatever
+telemetry you configured, which is why [Observability](#observability) is a section rather
+than an aside.
+
+Every model vendor ships an action for this shape, each one running that vendor's agent on
+that vendor's models. The difference here is that the agent is yours: your instructions,
+your tools, your [capabilities](/ai/capabilities/overview/), and [any
+model](/ai/models/overview/) a string swap away, in a repository you can also run from the
+terminal, serve over a web UI, or call from your own backend. It is the same `Agent` object
+in all of them.
 
 The finished repository is
 [dsfaccini/gh-aw-pydantic-ai-demo](https://github.com/dsfaccini/gh-aw-pydantic-ai-demo);
