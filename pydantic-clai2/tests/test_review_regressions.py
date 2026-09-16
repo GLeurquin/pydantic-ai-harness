@@ -55,7 +55,7 @@ async def test_cancelled_plugin_start_rolls_back(tmp_path: Path) -> None:
     with pytest.raises(asyncio.CancelledError):
         await harness.loader.load('cancelled')
     assert harness.loader.entries()[0].host is None
-    assert 'cancelled' not in harness.commands.execute('/help')
+    assert 'cancelled' not in await harness.commands.execute_async('/help')
 
 
 async def test_explicit_source_wins(tmp_path: Path) -> None:
