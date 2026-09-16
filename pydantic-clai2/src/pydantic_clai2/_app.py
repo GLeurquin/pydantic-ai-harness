@@ -23,6 +23,7 @@ from .command_context import CommandContext, CommandProvider
 from .commands import Command, Commands, config_command, config_completions, plugins_command, set_completions
 from .config import Settings
 from .input_history import input_history
+from .interrupts import Interrupts
 from .settings_store import SettingsStore
 from .status import Status, StatusLine
 
@@ -114,9 +115,7 @@ async def chat(
             ),
         )
     )
-    for plugin in plugins:
-        if isinstance(plugin, CommandProvider):
-            commands.register_many(plugin.get_commands(context))
+    _register_plugin_commands(commands, plugins, context)
     status = Status()
     prompt = PromptSession[str](
         history=input_history(store.path.with_name('input-history')),
@@ -126,12 +125,16 @@ async def chat(
         reserve_space_for_menu=6,
         bottom_toolbar=lambda: status.text(),
     )
+    interrupts = Interrupts()
     async with agent:
         while True:
             try:
                 status.model = session.model or _model_label(agent)
                 text = (await prompt.prompt_async('You > ')).strip()
             except KeyboardInterrupt:
+                if interrupts.press():
+                    return
+                console.print('Input cleared. Press Ctrl-C again within 2 seconds to exit.', style='dim')
                 continue
             except EOFError:
                 return
@@ -139,19 +142,42 @@ async def chat(
                 continue
             console.print()
             if text.startswith('/'):
-                try:
-                    console.print(await commands.execute_async(text), markup=False)
-                except Exception as exc:  # noqa: BLE001 -- command failures must not exit the interactive shell.
-                    console.print(str(exc), style='red', markup=False)
-                console.print()
-                _reset_status(text, status)
-                if text == '/exit':
+                await interrupts.run(_execute_command(commands, text, console=console, status=status))
+                if text == '/exit' or interrupts.exit_requested:
                     return
                 continue
             if session.model is None and agent.model is None:
                 console.print('Choose a model first: /set model <Tab>', style='yellow')
                 continue
-            await _run_prompt(session, text, console=console, settings=context.settings, status=status)
+            completed = await interrupts.run(
+                _run_prompt(session, text, console=console, settings=context.settings, status=status)
+            )
+            _report_interrupt(completed, console)
+            if interrupts.exit_requested:
+                return
+
+
+def _register_plugin_commands(
+    commands: Commands, plugins: Sequence[AbstractCapability[DepsT]], context: CommandContext
+) -> None:
+    for plugin in plugins:
+        if isinstance(plugin, CommandProvider):
+            commands.register_many(plugin.get_commands(context))
+
+
+def _report_interrupt(completed: bool, console: Console) -> None:
+    if not completed:
+        console.print('Turn cancelled. Press Ctrl-C again within 2 seconds to exit.', style='dim')
+        console.print()
+
+
+async def _execute_command(commands: Commands, text: str, *, console: Console, status: Status) -> None:
+    try:
+        console.print(await commands.execute_async(text), markup=False)
+    except Exception as exc:  # noqa: BLE001 -- command failures must not exit the interactive shell.
+        console.print(str(exc), style='red', markup=False)
+    console.print()
+    _reset_status(text, status)
 
 
 def _reset_status(command: str, status: Status) -> None:

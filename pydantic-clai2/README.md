@@ -8,6 +8,15 @@ not protect secret files or repository metadata. OS permissions still apply.
 Relative paths use the launch workspace. Use a custom agent with `Coder()` to
 retain workspace-scoped file tools. Shell output is displayed dimly.
 
+## Interrupting a turn
+
+Press Ctrl-C once to cancel the active agent turn and return to input. Tool cleanup
+and terminal restoration finish before the next prompt. Press Ctrl-C again within
+two seconds to exit, including across the transition back to input. At the prompt,
+the first press clears input and the second exits. Ctrl-D and `/exit` also quit.
+External application cancellation still propagates; cancelled turns are not added
+to conversation history, but completed tool side effects cannot be undone.
+
 ## Input history
 
 Submitted prompts and slash commands persist across restarts for Up/Down recall,
