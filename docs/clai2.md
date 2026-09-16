@@ -95,9 +95,14 @@ failed or cancelled turns leave the previous history intact, though external too
 side effects may already have occurred. History is in memory only. Structured
 outputs are supported and displayed after completion.
 
-Text and available thinking content are rendered line-by-line with Termflow,
-including final incomplete lines. Thinking signatures without text cannot be shown.
-A supplied agent's existing stream handler is preserved.
+Text and available thinking content are parsed line-by-line with Termflow and
+paced through its `SmoothWriter`, preserving ANSI sequences during typewriter output.
+A part drains before the next heading, tool status, or input prompt appears.
+Cancellation discards queued output. Incomplete Markdown lines are still buffered
+until a newline or part end; smoothing does not remove that parsing delay.
+Thinking signatures without text cannot be shown. A supplied agent's existing
+stream handler is preserved. Custom renderer integrations must await `finish()`
+and use `await abort()` on cancellation.
 
 ## Capability plugins
 

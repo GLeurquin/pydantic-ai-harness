@@ -128,12 +128,12 @@ async def test_renderer_flushes_and_hides_thinking() -> None:
     await renderer.on_stream_event(PartEndEvent(index=0, part=ThinkingPart(content='Consider this')))
     await renderer.on_stream_event(PartStartEvent(index=0, part=TextPart(content='# Answer\n')))
     await renderer.on_stream_event(PartDeltaEvent(index=0, delta=TextPartDelta(content_delta='last line')))
-    renderer.finish()
+    await renderer.finish()
     assert 'last line' in output.getvalue()
     assert 'Consider this' in output.getvalue()
     hidden = StreamRenderer(Console(file=output), stop_loading=lambda: None, show_thinking=False)
     await hidden.on_stream_event(PartStartEvent(index=0, part=ThinkingPart(content='secret')))
-    hidden.finish()
+    await hidden.finish()
     assert 'secret' not in output.getvalue()
 
 

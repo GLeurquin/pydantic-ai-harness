@@ -150,12 +150,15 @@ async def _run_prompt(session: Session[DepsT, OutputT], text: str, *, console: C
     session.on_stream_event = renderer.on_stream_event
     try:
         result = await session.prompt(text)
+        await renderer.finish()
         if not renderer.rendered_text or not isinstance(result.output, str):
             console.print(str(result.output), markup=False)
     except asyncio.CancelledError:
+        await renderer.abort()
         raise
     except Exception as exc:  # noqa: BLE001 -- interactive boundary reports plugin/provider failures.
+        await renderer.finish()
         console.print(f'{type(exc).__name__}: {exc}', style='red', markup=False)
         console.print('Turn not saved. External tool side effects may already have occurred.', style='dim')
     finally:
-        renderer.finish()
+        await renderer.finish()

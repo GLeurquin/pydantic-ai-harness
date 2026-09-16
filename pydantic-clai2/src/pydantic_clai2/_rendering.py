@@ -1,5 +1,6 @@
 """Incremental Markdown rendering for native Pydantic AI events."""
 
+import asyncio
 from collections.abc import Callable
 
 from pydantic_ai import (
@@ -17,6 +18,7 @@ from pydantic_ai import (
 from rich.console import Console
 from termflow import Parser, Renderer  # pyright: ignore[reportMissingTypeStubs]
 from termflow.render.style import RenderFeatures  # pyright: ignore[reportMissingTypeStubs]
+from termflow.stream import SmoothWriter  # pyright: ignore[reportMissingTypeStubs]
 
 
 class StreamRenderer:
@@ -26,6 +28,7 @@ class StreamRenderer:
         self.console = console
         self.show_thinking = show_thinking
         self.stop_loading = stop_loading
+        self._writer: SmoothWriter | None = None
         self._parser: Parser | None = None
         self._renderer: Renderer | None = None
         self._buffer = ''
@@ -35,7 +38,7 @@ class StreamRenderer:
     async def on_stream_event(self, event: AgentStreamEvent) -> None:
         """Bind this callback to `Session.on_stream_event`."""
         if isinstance(event, PartStartEvent) and isinstance(event.part, (TextPart, ThinkingPart)):
-            self.finish()
+            await self.finish()
             self.stop_loading()
             thinking = isinstance(event.part, ThinkingPart)
             if thinking and not self.show_thinking:
@@ -43,8 +46,10 @@ class StreamRenderer:
             self.console.print('Thinking' if thinking else 'CLAI', style='dim cyan' if thinking else 'bold magenta')
             self._index = event.index
             self._parser = Parser()
+            self._writer = SmoothWriter(self.console.file)
+            self._writer.start()
             self._renderer = Renderer(
-                output=self.console.file,  # pyright: ignore[reportArgumentType]
+                output=self._writer,  # pyright: ignore[reportArgumentType]
                 width=self.console.width,
                 dim=thinking,
                 features=RenderFeatures(clipboard=False, hyperlinks=False, images=False),
@@ -58,9 +63,9 @@ class StreamRenderer:
             elif isinstance(event.delta, ThinkingPartDelta):
                 self._feed(event.delta.content_delta or '')
         elif isinstance(event, PartEndEvent) and event.index == self._index:
-            self.finish()
+            await self.finish()
         elif isinstance(event, (FunctionToolCallEvent, FunctionToolResultEvent)):
-            self.finish()
+            await self.finish()
             self.stop_loading()
             self.console.print(
                 f'{"Tool" if isinstance(event, FunctionToolCallEvent) else "Finished"}: {event.part.tool_name}',
@@ -78,14 +83,28 @@ class StreamRenderer:
         if self._parser is not None and self._renderer is not None:
             self._renderer.render_all(self._parser.parse_line(line))
 
-    def finish(self) -> None:
-        """Flush incomplete lines and Markdown structures, including on failure."""
+    async def finish(self) -> None:
+        """Drain rendered Markdown before the next part, tool, or prompt appears."""
         if self._buffer:
             self._line(self._buffer)
         if self._parser is not None and self._renderer is not None:
             self._renderer.render_all(self._parser.finalize())
+        writer, self._writer = self._writer, None
+        self._reset()
+        if writer is not None:
+            await writer.close()
+        self.console.file.flush()
+
+    async def abort(self) -> None:
+        """Discard pending output on cancellation and let the drainer terminate."""
+        writer, self._writer = self._writer, None
+        self._reset()
+        if writer is not None:
+            writer.abort()
+            await asyncio.sleep(0)
+
+    def _reset(self) -> None:
         self._buffer = ''
         self._parser = None
         self._renderer = None
         self._index = None
-        self.console.file.flush()
