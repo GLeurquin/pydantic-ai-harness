@@ -6,7 +6,7 @@ from typing import Generic, TypeVar
 from pydantic_ai import AgentRunResult, AgentStreamEvent, RunContext
 from pydantic_ai.agent import AbstractAgent
 from pydantic_ai.capabilities import AbstractCapability
-from pydantic_ai.messages import ModelMessage
+from pydantic_ai.messages import ModelMessage, ModelResponse
 from pydantic_ai.models import Model
 from pydantic_ai.usage import UsageLimits
 
@@ -40,6 +40,7 @@ class Session(Generic[DepsT, OutputT]):
         self.on_stream_event = on_stream_event
         self._messages = list(message_history)
         self._running = False
+        self.on_context_usage: Callable[[int], None] | None = None
 
     @property
     def messages(self) -> list[ModelMessage]:
@@ -75,6 +76,11 @@ class Session(Generic[DepsT, OutputT]):
     async def _stream(self, ctx: RunContext[DepsT], events: AsyncIterable[AgentStreamEvent]) -> None:
         async def observed() -> AsyncIterable[AgentStreamEvent]:
             async for event in events:
+                if self.on_context_usage is not None:
+                    for message in reversed(ctx.messages):
+                        if isinstance(message, ModelResponse) and message.usage.input_tokens:
+                            self.on_context_usage(message.usage.total_tokens)
+                            break
                 if self.on_stream_event is not None:
                     await self.on_stream_event(event)
                 yield event

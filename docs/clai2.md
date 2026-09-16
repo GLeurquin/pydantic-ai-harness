@@ -121,6 +121,21 @@ Thinking signatures without text cannot be shown. A supplied agent's existing
 stream handler is preserved. Custom renderer integrations must await `finish()`
 and use `await abort()` on cancellation.
 
+## Status line
+
+The terminal footer shows the selected model, activity spinner, latest reported
+context tokens, and streamed output estimate, including text, thinking, and
+string tool-argument deltas. The estimate is characters divided by four, not a
+provider tokenizer count. On completion it is replaced by reported run output
+usage. Context is the most recent response's reported input plus output tokens,
+not cumulative conversation billing or a context-window percentage; `?` means
+unavailable. During a request it may reflect the previous response.
+
+While running, the footer reserves the terminal's bottom row using ANSI scrolling
+regions. Prompt-toolkit owns the footer while accepting input. The run footer is
+disabled for redirected output and restores normal scrolling on cancellation or
+failure. No model requests or telemetry are added for status reporting.
+
 ## Capability plugins
 
 Plugins are native `AbstractCapability` instances, supplied per run. Use core's

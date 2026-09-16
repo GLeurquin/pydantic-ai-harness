@@ -6,9 +6,10 @@ from typing import TypeVar
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import InMemoryHistory
-from pydantic_ai import Agent
+from pydantic_ai import Agent, AgentStreamEvent
 from pydantic_ai.agent import AbstractAgent
 from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.messages import ModelResponse
 from pydantic_ai.usage import UsageLimits
 from pydantic_ai_harness.coder import Coder
 from rich.console import Console
@@ -22,6 +23,7 @@ from .command_context import CommandContext, CommandProvider
 from .commands import Command, Commands, config_command, config_completions, plugins_command, set_completions
 from .config import Settings
 from .settings_store import SettingsStore
+from .status import Status, StatusLine
 
 DepsT = TypeVar('DepsT')
 OutputT = TypeVar('OutputT')
@@ -114,16 +116,22 @@ async def chat(
     for plugin in plugins:
         if isinstance(plugin, CommandProvider):
             commands.register_many(plugin.get_commands(context))
+    status = Status()
     prompt = PromptSession[str](
         history=InMemoryHistory(),
         completer=PromptCompleter(commands),
         complete_while_typing=True,
         style=COMPLETION_STYLE,
         reserve_space_for_menu=6,
+        bottom_toolbar=lambda: status.text(),
     )
     async with agent:
         while True:
             try:
+                model = agent.model
+                status.model = session.model or (
+                    model if isinstance(model, str) else model.model_name if model else 'agent default'
+                )
                 text = (await prompt.prompt_async('You > ')).strip()
             except KeyboardInterrupt:
                 continue
@@ -134,6 +142,10 @@ async def chat(
                     console.print(await commands.execute_async(text), markup=False)
                 except Exception as exc:  # noqa: BLE001 -- command failures must not exit the interactive shell.
                     console.print(str(exc), style='red', markup=False)
+                if text == '/new':
+                    status.context_tokens = None
+                    status.output_tokens = None
+                    status.streamed_chars = 0
                 if text == '/exit':
                     return
                 continue
@@ -142,17 +154,37 @@ async def chat(
             if session.model is None and agent.model is None:
                 console.print('Choose a model first: /set model <Tab>', style='yellow')
                 continue
-            await _run_prompt(session, text, console=console, settings=context.settings)
+            await _run_prompt(session, text, console=console, settings=context.settings, status=status)
 
 
-async def _run_prompt(session: Session[DepsT, OutputT], text: str, *, console: Console, settings: Settings) -> None:
+async def _run_prompt(
+    session: Session[DepsT, OutputT], text: str, *, console: Console, settings: Settings, status: Status
+) -> None:
     renderer = StreamRenderer(
         console, stop_loading=lambda: None, show_thinking=settings.thinking, smooth_seconds=settings.smooth_seconds
     )
-    session.on_stream_event = renderer.on_stream_event
+    status.streamed_chars = 0
+    status.output_tokens = None
+    status.activity = 'waiting'
+
+    async def observe(event: AgentStreamEvent) -> None:
+        status.observe(event)
+        await renderer.on_stream_event(event)
+
+    def context_usage(tokens: int) -> None:
+        status.context_tokens = tokens
+
+    session.on_context_usage = context_usage
+    session.on_stream_event = observe
     try:
-        result = await session.prompt(text)
-        await renderer.finish()
+        async with StatusLine(console, status):
+            result = await session.prompt(text)
+            await renderer.finish()
+        status.output_tokens = result.usage.output_tokens
+        for message in reversed(result.all_messages()):
+            if isinstance(message, ModelResponse):
+                status.context_tokens = message.usage.total_tokens or None
+                break
         if not renderer.rendered_text or not isinstance(result.output, str):
             console.print(str(result.output), markup=False)
     except asyncio.CancelledError:
@@ -163,4 +195,6 @@ async def _run_prompt(session: Session[DepsT, OutputT], text: str, *, console: C
         console.print(f'{type(exc).__name__}: {exc}', style='red', markup=False)
         console.print('Turn not saved. External tool side effects may already have occurred.', style='dim')
     finally:
+        status.activity = 'ready'
+        session.on_context_usage = None
         await renderer.finish()
