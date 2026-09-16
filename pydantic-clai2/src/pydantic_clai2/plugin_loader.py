@@ -96,7 +96,7 @@ class PluginLoader(Generic[DepsT]):
             previous = self._entries.get(name)
             refreshed[name] = PluginEntry(
                 declaration=declared[name],
-                path=folder.get(name),
+                path=folder.get(name) if declared[name].factory == name else None,
                 host=previous.host if previous else None,
                 error=previous.error if previous else None,
             )
@@ -218,6 +218,8 @@ class PluginLoader(Generic[DepsT]):
 
     async def reload(self, name: str) -> None:
         """Unload, re-import the module, and load again."""
+        if not self._entry(name).declaration.enabled:
+            raise ValueError(f'Plugin {name} is disabled; enable it before reloading.')
         await self.unload(name)
         await self.load(name, fresh=True)
 
@@ -260,13 +262,20 @@ class PluginLoader(Generic[DepsT]):
 
 def _import_file(name: str, path: Path) -> ModuleType:
     qualified = f'{_FOLDER_PACKAGE}.{name}'
+    if _FOLDER_PACKAGE not in sys.modules:
+        package = ModuleType(_FOLDER_PACKAGE)
+        package.__path__ = [str(path.parent.parent if path.name == '__init__.py' else path.parent)]
+        sys.modules[_FOLDER_PACKAGE] = package
+    for cached in list(sys.modules):
+        if cached == qualified or cached.startswith(qualified + '.'):
+            del sys.modules[cached]
     search = [str(path.parent)] if path.name == '__init__.py' else None
     spec = importlib.util.spec_from_file_location(qualified, path, submodule_search_locations=search)
     if spec is None or spec.loader is None:  # pragma: no cover -- importlib always builds a loader for a .py path.
         raise ImportError(f'Cannot load plugin from {path}')
     module = importlib.util.module_from_spec(spec)
     sys.modules[qualified] = module
-    spec.loader.exec_module(module)
+    exec(compile(path.read_bytes(), str(path), 'exec'), module.__dict__)
     return module
 
 

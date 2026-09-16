@@ -1,6 +1,5 @@
 """The `/set` menu: CLAI's own settings, edited through the shared field editor."""
 
-import asyncio
 from collections.abc import Callable
 
 from pydantic import ValidationError
@@ -9,6 +8,7 @@ from pydantic_ai.models import known_model_names
 from .command_context import CommandContext
 from .config import SETTING_FIELDS, Settings
 from .field_menu import FieldMenu, FieldRow, first_error, run_flow, shown
+from .menu_worker import run_worker
 
 
 class SettingsSource:
@@ -62,5 +62,5 @@ class SettingsSource:
 
 async def open_settings_menu(context: CommandContext, *, run: Callable[[FieldMenu], list[str]] | None = None) -> str:
     """Show the menu in a thread; edits save and apply as they happen."""
-    messages = await asyncio.to_thread(run or run_flow, FieldMenu(SettingsSource(context)))
+    messages = await run_worker(lambda: (run or run_flow)(FieldMenu(SettingsSource(context))))
     return '\n'.join(messages) or 'No changes.'

@@ -75,6 +75,12 @@ class StreamRenderer:
     async def on_stream_event(self, event: AgentStreamEvent) -> None:
         """Bind this callback to `Session.on_stream_event`."""
         if await self._render_with_plugins(event):
+            if isinstance(event, PartStartEvent) and isinstance(event.part, (TextPart, ThinkingPart)):
+                self._thinking = isinstance(event.part, ThinkingPart)
+                self._index = event.index
+                self._start_part()
+                if isinstance(event.part, TextPart):
+                    self.rendered_text = True
             return
         if isinstance(event, CapabilityEvent):
             await self.finish()

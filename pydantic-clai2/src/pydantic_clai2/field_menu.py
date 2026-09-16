@@ -11,6 +11,7 @@ from termflow.tui.menu import Menu, MenuResult  # pyright: ignore[reportMissingT
 from termflow.tui.textinput import TextInput, TextInputResult  # pyright: ignore[reportMissingTypeStubs]
 
 from ._rendering import markdown_style
+from .menu_worker import menu_key
 
 CUSTOM = 'Type a value...'
 KEEP = 'Keep current'
@@ -117,6 +118,7 @@ class FieldMenu:
             .preview(self.details)
             .on_key('r', self.reset_marker)
             .footer_hint(_LIST_HINT)
+            .key_source(menu_key)
             .build()
         )
 
@@ -139,6 +141,7 @@ class FieldMenu:
             .searchable(len(row.choices) > 8)
             .initial_index(initial)
             .footer_hint('Enter select - Esc keep current')
+            .key_source(menu_key)
             .build()
         )
 
@@ -151,6 +154,7 @@ class FieldMenu:
             .placeholder(f'current: {self._source.current(row)} (empty resets)')
             .validator(lambda text: None if not text.strip() else self._source.problem(row, text.strip()))
             .footer_hint('Enter save - Esc cancel')
+            .key_source(menu_key)
             .build()
         )
 

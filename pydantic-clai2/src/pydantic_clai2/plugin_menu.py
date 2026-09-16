@@ -8,6 +8,7 @@ from termflow.tui import MenuBuilder, MenuItem  # pyright: ignore[reportMissingT
 from termflow.tui.menu import Menu, MenuResult  # pyright: ignore[reportMissingTypeStubs]
 
 from ._rendering import markdown_style
+from .menu_worker import menu_key, run_worker
 from .plugin_loader import PluginEntry, PluginError, PluginLoader
 from .plugins import DepsT
 
@@ -96,6 +97,7 @@ class PluginMenu(Generic[DepsT]):
             .on_key('d', self.remove)
             .on_key('q', self.close)
             .footer_hint(_HINT)
+            .key_source(menu_key)
             .build()
         )
 
@@ -123,7 +125,7 @@ async def open_plugins_menu(
         asyncio.run_coroutine_threadsafe(action, loop).result()
 
     menu = PluginMenu(loader, apply=apply)
-    await asyncio.to_thread(run or _run_menu, menu)
+    await run_worker(lambda: (run or _run_menu)(menu))
     return await loader.command(['list'])
 
 

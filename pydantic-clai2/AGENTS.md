@@ -68,8 +68,9 @@ Plugins load and unload while CLAI runs. The rules that make that safe:
 - **Load fires `session_start` for that plugin; unload fires `session_end`.** A
   plugin cannot tell whether it was loaded at startup or later, and must not
   need to.
-- **`reload` is unload, `importlib.reload`, load.** Module-level state resets.
-  Do not try to preserve it.
+- **`reload` is unload, re-import, load.** Drop-in entry modules use fresh source.
+  Installed modules use `importlib.reload`, which retains globals absent from the
+  new source. Plugins must explicitly initialize their state on activation.
 - **Registration is idempotent per name.** A capability is bound per run
   (`agent.run(capabilities=...)`), so "active for the next prompt" is the
   natural unit; nothing rebuilds the agent.

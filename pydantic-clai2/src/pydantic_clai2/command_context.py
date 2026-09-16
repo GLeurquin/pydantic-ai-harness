@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pydantic import JsonValue, TypeAdapter
 from pydantic_ai.settings import ModelSettings
 
-from .config import SETTING_FIELDS, Settings, resolve_settings
+from .config import SETTING_FIELDS, Settings
 from .model_settings import model_settings_from_json
 from .settings_store import SettingsStore
 
@@ -47,7 +47,10 @@ class CommandContext:
     def reset_setting(self, key: str) -> str:
         """Forget the saved override and apply the default now."""
         self.store.reset(key)
-        self._apply(key, resolve_settings(self.store.overrides()))
+        updated = self.settings.model_dump()
+        field = SETTING_FIELDS[key]
+        updated[field] = Settings().model_dump()[field]
+        self._apply(key, Settings.model_validate(updated))
         return f'Reset {key}. ' + self._when(key)
 
     def _apply(self, key: str, settings: Settings) -> None:

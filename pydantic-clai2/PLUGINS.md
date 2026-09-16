@@ -10,6 +10,11 @@ what you want, you're done.
 
 ## Where plugins live
 
+Plugins are trusted Python code. Drop-in files execute automatically at startup;
+this directory is an executable startup configuration, not a sandbox. The default
+Coder runs as your OS user and can modify it, just as it can modify your shell
+startup files. Use a separate OS identity or sandbox for untrusted agent work.
+
 Two ways to install one:
 
 1. Drop a `.py` file (or a package folder) into
@@ -26,7 +31,10 @@ No restart needed when you do it from inside CLAI. A plugin you add or enable is
 active for the next prompt; one you disable or remove is gone for the next
 prompt. From the shell, `clai2 plugins ...` only saves; it loads on the next
 start. Plugins in the folder and the ones you added by name are managed the
-same way.
+same way. Explicit module declarations take precedence over a same-named drop-in
+file. Reloading a disabled plugin is rejected; enable it first. Drop-in entry
+modules are compiled from current source. Installed modules use `importlib.reload`,
+which can retain globals removed from source; initialize plugin state explicitly.
 
 Plugins are trusted code running as you. Only install what you trust.
 

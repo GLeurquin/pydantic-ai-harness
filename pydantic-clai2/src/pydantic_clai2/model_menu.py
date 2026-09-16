@@ -1,6 +1,5 @@
 """The `/model` menu: pick the model for the next prompt, or edit one model's settings."""
 
-import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal, get_args, get_origin
@@ -12,6 +11,7 @@ from termflow.tui.menu import Menu, MenuResult  # pyright: ignore[reportMissingT
 from ._rendering import markdown_style
 from .command_context import CommandContext
 from .field_menu import TERMINAL, FieldMenu, FieldRow, Runners, first_error, run_flow, shown
+from .menu_worker import menu_key, run_worker
 from .model_catalog import CatalogModel, catalog
 from .model_settings import ModelSettingsForm
 from .settings_store import SettingsStore
@@ -148,6 +148,7 @@ class ModelMenu:
             .preview(self.details)
             .on_key('s', self.settings_marker)
             .footer_hint(_HINT)
+            .key_source(menu_key)
             .build()
         )
 
@@ -196,5 +197,5 @@ def run_model_flow(menu: ModelMenu, runners: Runners = TERMINAL) -> list[str]:
 
 async def open_model_menu(context: CommandContext, *, run: Callable[[ModelMenu], list[str]] | None = None) -> str:
     """Show the menu in a thread; the pick and any settings edits apply to the next prompt."""
-    messages = await asyncio.to_thread(run or run_model_flow, ModelMenu(context))
+    messages = await run_worker(lambda: (run or run_model_flow)(ModelMenu(context)))
     return '\n'.join(messages) or 'No changes.'
