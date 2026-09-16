@@ -2,8 +2,8 @@ import os
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 
-import anyio
 import pytest
+from anyio.to_thread import run_sync
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.capabilities import AbstractCapability, on_event
 from pydantic_ai.messages import ModelMessage, ModelResponse, RetryPromptPart, TextPart, ToolCallPart, ToolReturnPart
@@ -149,7 +149,7 @@ class TestCoder:
             @on_event(ShellOutputEvent)
             async def output(self, ctx: RunContext[None], event: ShellOutputEvent) -> None:
                 if 'ready' in event.text:
-                    await anyio.to_thread.run_sync(release.write_text, 'continue\n')
+                    await run_sync(release.write_text, 'continue\n')
 
             @on_event(ShellFinishedEvent)
             async def finish(self, ctx: RunContext[None], event: ShellFinishedEvent) -> None:
