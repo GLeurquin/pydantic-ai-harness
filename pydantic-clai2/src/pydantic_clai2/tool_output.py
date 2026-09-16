@@ -19,12 +19,13 @@ class ShellPreview:
     """Count displayed logical lines across output chunks."""
 
     completed_lines: int = 0
-    partial: bool = False
+    pending: str = ''
+    carriage_return: bool = False
 
     @property
     def shown(self) -> int:
         """Include a displayed unterminated line."""
-        return self.completed_lines + int(self.partial)
+        return self.completed_lines
 
 
 class ToolOutput:
@@ -38,37 +39,64 @@ class ToolOutput:
 
     def _shell_chunk(self, event: ShellOutputEvent) -> None:
         preview = self._shells.setdefault(event.tool_call_id, ShellPreview())
-        fragments = event.text.split('\n')
-        for index, fragment in enumerate(fragments):
+        for char in event.text:
             if preview.completed_lines >= self.shell_lines:
                 break
-            newline = index < len(fragments) - 1
-            text = fragment + ('\n' if newline else '')
-            self.console.print(terminal_text(text), style='dim', end='', markup=False, highlight=False)
-            if newline:
-                preview.completed_lines += 1
-                preview.partial = False
-            elif fragment:
-                preview.partial = True
+            if char == '\n':
+                self._shell_line(preview)
+                preview.carriage_return = False
+            elif char == '\r':
+                preview.carriage_return = True
+            else:
+                if preview.carriage_return:
+                    preview.pending = ''
+                    preview.carriage_return = False
+                preview.pending += char
+
+    def _shell_line(self, preview: ShellPreview) -> None:
+        self.console.print(
+            terminal_text(preview.pending),
+            style='dim',
+            markup=False,
+            highlight=False,
+            overflow='ellipsis',
+            no_wrap=True,
+        )
+        preview.pending = ''
+        preview.completed_lines += 1
 
     def render(self, event: AgentStreamEvent) -> bool:
         """Return whether this event belongs to the specialized tool display."""
         if isinstance(event, ShellStartedEvent):
             self._shells[event.tool_call_id] = ShellPreview()
-            self.console.print(f'$ {terminal_text(event.command)}', style='cyan', markup=False, highlight=False)
+            command_lines = event.command.splitlines()
+            command = command_lines[0] if command_lines else ''
+            extra = f' (+{len(command_lines) - 1} command lines)' if len(command_lines) > 1 else ''
+            self.console.print(
+                f'$ {terminal_text(command)}{extra}',
+                style='dim cyan',
+                markup=False,
+                highlight=False,
+                overflow='ellipsis',
+                no_wrap=True,
+            )
         elif isinstance(event, ShellOutputEvent):
             self._shell_chunk(event)
         elif isinstance(event, ShellFinishedEvent):
             preview = self._shells.pop(event.tool_call_id, ShellPreview())
-            if preview.partial:
-                self.console.print()
+            if preview.pending and preview.completed_lines < self.shell_lines:
+                self._shell_line(preview)
             omitted = max(0, event.total_lines - preview.shown)
             if omitted:
                 self.console.print(f'Truncated {omitted} lines', style='dim')
             state = f'exit {event.exit_code}' if event.exit_code is not None else 'running in background'
-            self.console.print(f'{state} | PID {event.pid}', style='dim', markup=False)
-            self.console.print(f'Output: {terminal_text(event.output_path)}', style='dim', markup=False)
-            self.console.print(f'Status: {terminal_text(event.status_path)}', style='dim', markup=False)
+            self.console.print(f'{state} | PID {event.pid}', style='dim', markup=False, highlight=False)
+            self.console.print(
+                f'Output: {terminal_text(event.output_path)}', style='dim', markup=False, highlight=False
+            )
+            self.console.print(
+                f'Status: {terminal_text(event.status_path)}', style='dim', markup=False, highlight=False
+            )
             if event.truncated and not omitted:
                 self.console.print('Output preview truncated; full output is in the command log.', style='dim')
             self.console.print()

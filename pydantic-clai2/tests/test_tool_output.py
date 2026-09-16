@@ -60,6 +60,36 @@ async def test_shell_line_limit_across_chunks(limit: int) -> None:
     assert 'third' not in text and 'fourth' not in text
 
 
+async def test_shell_progress_replaces_carriage_return_frames() -> None:
+    output = io.StringIO()
+    renderer = StreamRenderer(Console(file=output, width=80), stop_loading=lambda: None)
+    await renderer.on_stream_event(
+        ShellStartedEvent(
+            tool_call_id='progress',
+            command='python3 - <<PY\nprint(123)\nPY',
+            pid=1,
+        )
+    )
+    for chunk in ('header\r', '\n10%', '\r50%', '\r', '100%\n', 'done'):
+        await renderer.on_stream_event(ShellOutputEvent(tool_call_id='progress', text=chunk))
+    await renderer.on_stream_event(
+        ShellFinishedEvent(
+            tool_call_id='progress',
+            pid=1,
+            output_path='/tmp/out',
+            status_path='/tmp/status',
+            exit_code=0,
+            truncated=False,
+            total_lines=3,
+        )
+    )
+    text = output.getvalue()
+    assert 'header\n100%\ndone\n' in text
+    assert '10%' not in text and '50%' not in text and '\\x0d' not in text
+    assert '(+2 command lines)' in text and 'print(123)' not in text
+    assert 'Truncated' not in text
+
+
 async def test_edit_uses_termflow_diff_renderer() -> None:
     output = io.StringIO()
     renderer = StreamRenderer(Console(file=output, force_terminal=True), stop_loading=lambda: None)
