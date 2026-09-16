@@ -10,14 +10,13 @@ from pathlib import Path
 
 import pytest
 from prompt_toolkit.application import create_app_session
-from prompt_toolkit.completion import CompleteEvent
-from prompt_toolkit.document import Document
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from pydantic_ai import Agent, AgentStreamEvent, RunContext
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.models.test import TestModel
 from rich.console import Console
+from termflow.tui.completion import CompleteEvent, Document  # pyright: ignore[reportMissingTypeStubs]
 
 from pydantic_clai2 import Session, chat
 from pydantic_clai2.command_context import CommandContext, CommandProvider
@@ -133,6 +132,9 @@ def test_set_autocomplete() -> None:
     assert 'false' in [c.text for c in commands.get_completions(Document('/set display.thinking f'), CompleteEvent())]
     models = list(commands.get_completions(Document('/set model anthropic:'), CompleteEvent()))
     assert models
+    codex = list(commands.get_completions(Document('/set model openai-codex'), CompleteEvent()))
+    assert [item.text for item in codex] == ['openai-codex:']
+    assert codex[0].start_position == -len('openai-codex')
     assert all(c.text.startswith('anthropic:') for c in models)
 
 

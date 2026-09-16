@@ -6,8 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from prompt_toolkit.completion import CompleteEvent
-from prompt_toolkit.document import Document
 from pydantic import ValidationError
 from pydantic_ai import (
     Agent,
@@ -26,6 +24,7 @@ from pydantic_ai.capabilities import AbstractCapability, on_event
 from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
 from pydantic_ai.models.test import TestModel
 from rich.console import Console
+from termflow.tui.completion import CompleteEvent, Document  # pyright: ignore[reportMissingTypeStubs]
 
 from pydantic_clai2 import Session, StreamRenderer
 from pydantic_clai2.commands import Command, Commands, config_command, config_completions, plugins_command

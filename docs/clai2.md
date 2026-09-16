@@ -35,7 +35,14 @@ are not written to the settings database.
 ```
 
 Tab completes setting names, boolean values, and model names from Pydantic AI's
-built-in catalog without network access. Custom model identifiers are accepted too.
+built-in catalog without network access. Provider prefixes include `openai-codex:`,
+which core supports but does not currently include in that model catalog. Complete
+the provider prefix, then enter the model identifier; suggestions do not establish
+subscription availability. Custom model identifiers are accepted too.
+
+The command registry uses Termflow's `Completer`, `Document`, and `Completion`
+types. The current input widget and popup still use prompt-toolkit through a small
+adapter; replacing that editor with a Termflow-based editor is separate work.
 `/set SETTING` shows its current value. `/set` changes apply to subsequent prompts
 and preserve conversation history; splash changes apply at next startup.
 

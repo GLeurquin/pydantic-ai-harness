@@ -1,14 +1,19 @@
-"""One command registry for execution, help, and prompt-toolkit completion."""
+"""One command registry for execution, help, and Termflow completion."""
 
 import json
 import shlex
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
+from pathlib import Path
 
-from prompt_toolkit.completion import CompleteEvent, Completer, Completion, PathCompleter
-from prompt_toolkit.document import Document
 from pydantic import JsonValue, TypeAdapter
 from pydantic_ai.models import known_model_names
+from termflow.tui.completion import (  # pyright: ignore[reportMissingTypeStubs]
+    CompleteEvent,
+    Completer,
+    Completion,
+    Document,
+)
 
 from .config import SETTING_FIELDS, PluginSettings
 from .settings_store import SettingsStore
@@ -30,7 +35,6 @@ class Commands(Completer):
     def __init__(self) -> None:
         """Create an empty registry and filesystem completer."""
         self._commands: dict[str, Command] = {}
-        self._paths = PathCompleter(expanduser=True)
 
     def register(self, command: Command) -> None:
         """Register one command, rejecting ambiguous duplicate names."""
@@ -56,13 +60,21 @@ class Commands(Completer):
             raise ValueError(f'Unknown command /{name}. Use /help.')
         return command.handler(args)
 
-    def get_completions(self, document: Document, complete_event: CompleteEvent) -> Iterable[Completion]:
+    def get_completions(self, document: Document, complete_event: CompleteEvent) -> Iterator[Completion]:
         """Complete slash commands, contextual arguments, and @file paths."""
         text = document.text_before_cursor
         if not text.startswith('/'):
             word = document.get_word_before_cursor(WORD=True)
             if word.startswith('@'):
-                yield from self._paths.get_completions(Document(word[1:]), complete_event)
+                path = Path(word[1:]).expanduser()
+                directory = path if word.endswith('/') else path.parent
+                prefix = '' if word.endswith('/') else path.name
+                try:
+                    for child in sorted(directory.iterdir()):
+                        if child.name.startswith(prefix):
+                            yield Completion(child.name[len(prefix) :] + ('/' if child.is_dir() else ''))
+                except OSError:
+                    return
             return
         words = text[1:].split()
         if len(words) <= 1 and not text.endswith(' '):
@@ -114,7 +126,9 @@ def set_completions(args: list[str]) -> Iterable[str]:
     if len(args) <= 1:
         return SETTING_FIELDS
     if len(args) == 2 and args[0] == 'model':
-        return known_model_names()
+        names = known_model_names()
+        providers = sorted({name.partition(':')[0] + ':' for name in names} | {'openai-codex:'})
+        return (*providers, *names)
     if len(args) == 2 and args[0].startswith('display.'):
         return ('true', 'false')
     return ()
