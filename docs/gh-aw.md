@@ -684,7 +684,6 @@ Things to know before you do:
 - **Keep both directories private for the process lifetime.** Omitting `config_dir` or
   `data_dir` re-enables checkout configuration or credentials. Register cleanup before
   configuring Logfire so exporter shutdown handlers run first.
-
 - **`console=False` is not optional.** Leaving it out restores logfire's console exporter,
   which writes every span to stderr, which is the stream the engine's log parser reads.
 - **`distributed_tracing=True` keeps you in the run's trace.** The engine has already
