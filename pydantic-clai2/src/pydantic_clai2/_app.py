@@ -134,6 +134,9 @@ async def chat(
                 continue
             except EOFError:
                 return
+            if not text:
+                continue
+            console.print()
             if text.startswith('/'):
                 try:
                     console.print(await commands.execute_async(text), markup=False)
@@ -143,8 +146,6 @@ async def chat(
                 _reset_status(text, status)
                 if text == '/exit':
                     return
-                continue
-            if not text:
                 continue
             if session.model is None and agent.model is None:
                 console.print('Choose a model first: /set model <Tab>', style='yellow')
