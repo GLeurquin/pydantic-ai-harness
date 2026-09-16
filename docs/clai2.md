@@ -189,7 +189,9 @@ repeated completion heading before the diff or output.
 
 Native capability events drive specialized output: `FileEditedEvent` renders its
 bounded unified diff using Termflow `DiffRenderer`, the same renderer Code Puppy
-uses. Successful file writes also show the proposed diff from their matching
+uses. Addition backgrounds are muted teal (`#203c3b`), deletion backgrounds are
+muted burgundy (`#432d3b`), and brighter markers distinguish the changes. Code
+syntax colors are unchanged. Successful file writes also show the proposed diff from their matching
 `FileChangeRequestEvent`: new files show additions, overwrites show before/after
 changes. Without a matching request event, only the written path is shown. Failed
 or cancelled writes do not display a success diff. Large diffs retain the

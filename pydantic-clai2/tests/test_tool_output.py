@@ -146,4 +146,5 @@ async def test_edit_uses_termflow_diff_renderer() -> None:
     text = output.getvalue()
     assert '● edit_file demo.py' in Text.from_ansi(text).plain
     assert 'old' in text and 'new' in text
-    assert '\x1b[' in text
+    assert '\x1b[48;2;32;60;59m' in text
+    assert '\x1b[48;2;67;45;59m' in text
