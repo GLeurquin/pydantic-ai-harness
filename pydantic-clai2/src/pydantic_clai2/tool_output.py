@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from pydantic_ai import AgentStreamEvent
 from pydantic_ai_harness.coder import ShellFinishedEvent, ShellOutputEvent, ShellStartedEvent
-from pydantic_ai_harness.filesystem import FileEditedEvent, FileWrittenEvent
+from pydantic_ai_harness.filesystem import FileChangeRequestEvent, FileEditedEvent, FileWrittenEvent
 from rich.console import Console
 from termflow.diff import DiffRenderer  # pyright: ignore[reportMissingTypeStubs]
 
@@ -36,6 +36,7 @@ class ToolOutput:
         self.console = console
         self.shell_lines = shell_lines
         self._shells: dict[str | None, ShellPreview] = {}
+        self._writes: dict[tuple[str | None, str, str], FileChangeRequestEvent] = {}
 
     def _shell_chunk(self, event: ShellOutputEvent) -> None:
         preview = self._shells.setdefault(event.tool_call_id, ShellPreview())
@@ -64,6 +65,18 @@ class ToolOutput:
         )
         preview.pending = ''
         preview.completed_lines += 1
+
+    def _diff(self, diff: str, *, truncated: bool) -> None:
+        safe_diff = terminal_text(diff)
+        if safe_diff:
+            if self.console.is_terminal:
+                self.console.file.write(DiffRenderer().render(safe_diff))
+                self.console.file.flush()
+            else:
+                self.console.print(safe_diff, markup=False, highlight=False)
+        if truncated:
+            self.console.print('Diff truncated.', style='dim')
+        self.console.print()
 
     def render(self, event: AgentStreamEvent) -> bool:
         """Return whether this event belongs to the specialized tool display."""
@@ -100,19 +113,19 @@ class ToolOutput:
             if event.truncated and not omitted:
                 self.console.print('Output preview truncated; full output is in the command log.', style='dim')
             self.console.print()
+        elif isinstance(event, FileChangeRequestEvent):
+            if event.operation == 'write':
+                self._writes[event.tool_call_id, event.root_dir, event.path] = event
         elif isinstance(event, FileEditedEvent):
             self.console.print(f'Edited {terminal_text(event.path)}', style='cyan', markup=False)
-            diff = terminal_text(event.diff)
-            if self.console.is_terminal:
-                self.console.file.write(DiffRenderer().render(diff))
-                self.console.file.flush()
-            else:
-                self.console.print(diff, markup=False, highlight=False)
-            if event.truncated:
-                self.console.print('Diff truncated.', style='dim')
-            self.console.print()
+            self._diff(event.diff, truncated=event.truncated)
         elif isinstance(event, FileWrittenEvent):
-            self.console.print(f'Wrote {terminal_text(event.path)}\n', style='cyan', markup=False)
+            self.console.print(f'Wrote {terminal_text(event.path)}', style='cyan', markup=False, highlight=False)
+            request = self._writes.pop((event.tool_call_id, event.root_dir, event.path), None)
+            if request is not None and not request.cancelled:
+                self._diff(request.diff, truncated=request.truncated)
+            else:
+                self.console.print()
         else:
             return False
         return True

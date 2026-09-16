@@ -165,7 +165,11 @@ after the snapshot; those future lines are not included in its count.
 
 Native capability events drive specialized output: `FileEditedEvent` renders its
 bounded unified diff using Termflow `DiffRenderer`, the same renderer Code Puppy
-uses. File writes show their path. Coder shell events show the command, attached
+uses. Successful file writes also show the proposed diff from their matching
+`FileChangeRequestEvent`: new files show additions, overwrites show before/after
+changes. Without a matching request event, only the written path is shown. Failed
+or cancelled writes do not display a success diff. Large diffs retain the
+filesystem's truncation notice. Coder shell events show the command, attached
 combined output, exit status (or background state), and durable log paths. Output
 is capped by the capability and truncation is marked. The standalone `Shell`
 capability does not yet emit these Coder-specific shell events.
