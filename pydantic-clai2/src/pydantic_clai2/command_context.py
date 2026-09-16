@@ -1,14 +1,25 @@
 """Conversation-local settings and actions behind `/set`."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 
 from pydantic import JsonValue, TypeAdapter
 from pydantic_ai.settings import ModelSettings
 
+from .commands import Command
 from .config import SETTING_FIELDS, Settings
 from .model_settings import model_settings_from_json
 from .settings_store import SettingsStore
+
+
+@runtime_checkable
+class CommandProvider(Protocol):
+    """Compatibility interface for capability-provided terminal commands."""
+
+    def get_commands(self, context: 'CommandContext') -> Sequence[Command]:
+        """Declare commands at startup."""
+        ...
 
 
 @dataclass(kw_only=True)

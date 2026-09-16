@@ -20,7 +20,7 @@ from ._completion_adapter import COMPLETION_STYLE, PromptCompleter
 from ._rendering import StreamRenderer
 from ._session import Session
 from .auth import CodexAuth
-from .command_context import CommandContext
+from .command_context import CommandContext, CommandProvider
 from .commands import Command, Commands, config_command, config_completions, set_completions
 from .config import Settings
 from .input_history import input_history
@@ -135,6 +135,9 @@ async def chat(
             complete=lambda args: _PLUGIN_ACTIONS if len(args) <= 1 else (entry.name for entry in loader.entries()),
         )
     )
+    for plugin in plugins:
+        if isinstance(plugin, CommandProvider):
+            commands.register_many(plugin.get_commands(context))
     status = Status()
     prompt = PromptSession[str](
         history=input_history(store.path.with_name('input-history')),

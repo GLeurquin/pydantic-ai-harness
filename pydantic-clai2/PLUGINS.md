@@ -240,7 +240,8 @@ Bad or missing values fail at startup with a message naming your plugin.
   For cancelable host events, edit the event or call `event.cancel()`.
 - Raising in `turn_start` prevents the turn. Raising in core `before_tool_execute`
   fails the agent run, not only that tool. Use core's documented tool-denial
-  mechanisms when the model should recover instead of ending the run.
+  mechanisms when the model should recover instead of ending the run, such as
+  `pydantic_ai.exceptions.SkipToolExecution` for skipping an individual tool.
 - Startup plugins load in alphabetical ID order. CLAI host handlers run in
   activation order, while `/plugins list` remains alphabetical. Core hook ordering
   follows core composition, including reverse order for `after_*` hooks. The first renderer that returns something wins. A
