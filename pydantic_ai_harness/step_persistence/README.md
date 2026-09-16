@@ -84,6 +84,8 @@ primitive for it (see [Three-level identity](#three-level-identity)).
 - **Neither set** uses `ctx.run_id` unchanged. A missing context run id raises
   `RuntimeError` because inventing one would disconnect replayed writes.
 
+Storing an agent's notes as well as its messages? [Memory](../memory/README.md#one-database-for-both) shows both capabilities pointed at one database; they write disjoint tables and stay separate capabilities.
+
 ## Durable execution
 
 `StepPersistence` has the stable capability id `step_persistence`, so it can

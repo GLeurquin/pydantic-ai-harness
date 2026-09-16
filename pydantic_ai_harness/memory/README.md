@@ -152,6 +152,31 @@ async def build_memory() -> tuple[Memory[None], asyncpg.Pool]:
 
 Call `build_memory` during application startup and close the returned pool during shutdown. The store does not manage it.
 
+## One database for both
+
+`Memory` and `StepPersistence` stay separate capabilities: one is a versioned notebook meant to outlive any conversation, the other an append-only log of what each run did, and their store protocols have nothing in common. What they can share is the database, so an application needs one connection and one thing to back up:
+
+```python
+import turso
+
+from pydantic_ai import Agent
+from pydantic_ai_harness import Memory, StepPersistence
+from pydantic_ai_harness.memory import SqliteMemoryStore
+from pydantic_ai_harness.step_persistence import SqliteStepStore
+
+connection = turso.connect('agent.db')
+
+agent = Agent(
+    'openai:gpt-5.2',
+    capabilities=[
+        Memory(SqliteMemoryStore(connection=connection)),
+        StepPersistence(SqliteStepStore(connection=connection)),
+    ],
+)
+```
+
+The two write disjoint tables, so they coexist in one file. Swap both connections for a pool and the same pairing runs on PostgreSQL; see [Step Persistence](../step_persistence/README.md) for what the message side records.
+
 ## Namespaces
 
 Use a namespace resolver when one `Agent` serves multiple users. It runs once per run from your typed dependencies, and its result is hidden from the model-facing tool schema.
