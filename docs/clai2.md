@@ -5,13 +5,15 @@ Python 3.11+ is required by Termflow. Tracking issue: https://github.com/pydanti
 
 ## Start chatting
 
-Launch `clai2`. No model needs to be configured before the terminal opens.
-Type `/set model ` and press Tab to pick a provider-qualified model name.
+Launch `clai2`. The default model is `openai-codex:gpt-6-astra`.
+Run `/login openai-codex` to connect your ChatGPT/Codex subscription.
+Type `/set model ` and press Tab to pick another provider-qualified model name.
 The choice is saved in SQLite and used for the next prompt without restarting.
 
 From a source checkout, launch with `uv run --project pydantic-clai2 clai2`.
 
-Set the provider's API key environment variable before starting. The default Coder
+For API-key providers, set the provider's API key environment variable before starting.
+Codex uses subscription OAuth instead, not `OPENAI_API_KEY`. The default Coder
 can read and modify files and execute commands with your user permissions. Run it
 in a workspace you trust. CLAI does not add a sandbox or approval layer.
 
@@ -19,6 +21,24 @@ The startup splash adapts Code Puppy's stdlib-only, alternate-screen Pydantic
 pyramid, with CLAI lettering. The persistent `CLAI 2.0` banner uses `ansi_shadow`.
 The splash is disabled for redirected output, CLI arguments, small terminals,
 Windows, `NO_COLOR`, or `CLAI_NO_SPLASH=1`.
+
+## Codex authentication
+
+`/login openai-codex` opens the browser and uses core's `OpenAICodexOAuthFlow`:
+authorization code with PKCE, state validation, and a callback at
+`http://localhost:1455/auth/callback`. It times out after five minutes. The browser
+must be able to reach that callback on the machine running CLAI.
+
+Tokens live in the configured OS keyring under service `pydantic-clai2`, not in
+SQLite or `~/.codex/auth.json`. Core owns token refresh and writes rotated tokens
+through CLAI's `OpenAICodexCredentialSource`. A functioning OS credential backend
+is required; CLAI does not fall back to a plaintext token file. Tests mock keyring,
+the browser, and OAuth exchange and do not access real credentials.
+
+The requested default does not guarantee model availability for a subscription.
+Custom agents supplied to `chat` retain their model unless settings explicitly
+select an override. `/login` is async, and plugin command handlers may also return
+an awaitable string.
 
 ## Settings and commands
 
@@ -50,7 +70,7 @@ Precedence is defaults, SQLite overrides, `CLAI_MODEL`, then explicit CLI flags.
 Settings are validated before writes. `/set` updates the active settings snapshot;
 legacy `/config` writes and plugin changes apply on restart. `--request-limit` controls the full prompt's model-request budget.
 
-Interactive commands: `/set`, `/help`, `/new`, `/exit`, `/config`, and `/plugins`.
+Interactive commands: `/login`, `/set`, `/help`, `/new`, `/exit`, `/config`, and `/plugins`.
 Tab completion suggests commands, settings, boolean values, plugin identifiers,
 and paths after `@`. Path completion inserts a path; it does not attach file contents.
 Unknown slash commands are not sent to the model. Up/down recall prompt history

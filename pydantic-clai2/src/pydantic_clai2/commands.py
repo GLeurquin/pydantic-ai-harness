@@ -2,7 +2,7 @@
 
 import json
 import shlex
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Awaitable, Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,7 +25,7 @@ class Command:
 
     name: str
     description: str
-    handler: Callable[[list[str]], str]
+    handler: Callable[[list[str]], str | Awaitable[str]]
     complete: Callable[[list[str]], Iterable[str]] = lambda _: ()
 
 
@@ -49,7 +49,7 @@ class Commands(Completer):
             pending[command.name] = command
         self._commands.update(pending)
 
-    def execute(self, text: str) -> str:
+    def execute(self, text: str) -> str | Awaitable[str]:
         """Parse shell-style arguments and dispatch without invoking a shell."""
         words = shlex.split(text.removeprefix('/'))
         if not words:
@@ -59,6 +59,11 @@ class Commands(Completer):
         if command is None:
             raise ValueError(f'Unknown command /{name}. Use /help.')
         return command.handler(args)
+
+    async def execute_async(self, text: str) -> str:
+        """Await asynchronous plugin commands without blocking the event loop."""
+        result = self.execute(text)
+        return result if isinstance(result, str) else await result
 
     def get_completions(self, document: Document, complete_event: CompleteEvent) -> Iterator[Completion]:
         """Complete slash commands, contextual arguments, and @file paths."""
@@ -128,7 +133,7 @@ def set_completions(args: list[str]) -> Iterable[str]:
     if len(args) == 2 and args[0] == 'model':
         names = known_model_names()
         providers = sorted({name.partition(':')[0] + ':' for name in names} | {'openai-codex:'})
-        return (*providers, *names)
+        return (*providers, 'openai-codex:gpt-6-astra', *names)
     if len(args) == 2 and args[0].startswith('display.'):
         return ('true', 'false')
     return ()

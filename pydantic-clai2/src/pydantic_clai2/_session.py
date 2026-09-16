@@ -7,6 +7,7 @@ from pydantic_ai import AgentRunResult, AgentStreamEvent, RunContext
 from pydantic_ai.agent import AbstractAgent
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import ModelMessage
+from pydantic_ai.models import Model
 from pydantic_ai.usage import UsageLimits
 
 DepsT = TypeVar('DepsT')
@@ -31,6 +32,7 @@ class Session(Generic[DepsT, OutputT]):
         on_stream_event: Callable[[AgentStreamEvent], Awaitable[None]] | None = None,
     ) -> None:
         self.model: str | None = None
+        self.resolve_model: Callable[[str], Model | str] = lambda name: name
         self.agent = agent
         self.deps = deps
         self.plugins = tuple(plugins)
@@ -59,7 +61,7 @@ class Session(Generic[DepsT, OutputT]):
             result = await self.agent.run(
                 text,
                 deps=self.deps,
-                model=self.model,
+                model=self.resolve_model(self.model) if self.model is not None else None,
                 message_history=self._messages,
                 capabilities=self.plugins,
                 usage_limits=self.usage_limits,

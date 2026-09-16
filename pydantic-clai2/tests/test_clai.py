@@ -171,7 +171,8 @@ def test_completion_uses_registry(tmp_path: Path) -> None:
     assert 'display.thinking' in [
         c.text for c in commands.get_completions(Document('/config set display.'), CompleteEvent())
     ]
-    assert commands.execute('/config set display.thinking false').startswith('Saved')
+    result = commands.execute('/config set display.thinking false')
+    assert isinstance(result, str) and result.startswith('Saved')
     assert not store.load().thinking
     with pytest.raises(ValueError, match='Unknown command'):
         commands.execute('/oops')

@@ -7,7 +7,7 @@ class Settings(BaseModel):
     """An immutable snapshot; storage contains only explicit overrides."""
 
     model_config = ConfigDict(extra='forbid', frozen=True, strict=True)
-    model: str | None = Field(default=None, min_length=1)
+    model: str | None = Field(default='openai-codex:gpt-6-astra', min_length=1)
     request_limit: int = Field(default=10000, gt=0)
     thinking: bool = True
     splash: bool = True

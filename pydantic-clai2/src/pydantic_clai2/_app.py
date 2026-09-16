@@ -17,6 +17,7 @@ from ._branding import print_banner
 from ._completion_adapter import PromptCompleter
 from ._rendering import StreamRenderer
 from ._session import Session
+from .auth import CodexAuth
 from .command_context import CommandContext, CommandProvider
 from .commands import Command, Commands, config_command, config_completions, plugins_command, set_completions
 from .config import Settings
@@ -49,10 +50,12 @@ async def chat(
     console = console or Console()
     print_banner(console)
     console.print('/new clears history; /exit quits. Ctrl-C interrupts a turn.', style='dim')
-    settings = settings or Settings()
+    settings = settings or Settings(model=None)
     store = store or SettingsStore()
     session = Session(agent, deps=deps, plugins=plugins, usage_limits=usage_limits)
     session.model = settings.model
+    auth = CodexAuth(console)
+    session.resolve_model = lambda name: auth.model(name) if name.startswith('openai-codex:') else name
     if session.model is None and agent.model is None:
         console.print('Choose a model with /set model <Tab>.', style='cyan')
 
@@ -65,6 +68,14 @@ async def chat(
     context = CommandContext(settings=settings, store=store, clear_history=session.clear, apply_setting=apply_setting)
 
     commands = Commands()
+    commands.register(
+        Command(
+            name='login',
+            description='Connect your ChatGPT/Codex subscription',
+            handler=auth.login,
+            complete=lambda _: ('openai-codex',),
+        )
+    )
     commands.register(
         Command(
             name='set',
@@ -116,8 +127,8 @@ async def chat(
                 return
             if text.startswith('/'):
                 try:
-                    console.print(commands.execute(text), markup=False)
-                except ValueError as exc:
+                    console.print(await commands.execute_async(text), markup=False)
+                except Exception as exc:  # noqa: BLE001 -- command failures must not exit the interactive shell.
                     console.print(str(exc), style='red', markup=False)
                 if text == '/exit':
                     return
