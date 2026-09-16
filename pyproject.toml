@@ -138,6 +138,7 @@ dev = [
     "pytest-examples>=0.0.18",
     "pytest-recording>=0.13.4",
     "mongomock-motor>=0.0.36",
+    "pyturso>=0.7.2",
     "redis>=6.0.0",
 ]
 lint = [
