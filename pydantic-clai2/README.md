@@ -298,8 +298,10 @@ search from Pydantic AI Harness without writing code:
 /plugins add exa pydantic_ai_harness.exa:ExaSearch '{"num_results": 8}'
 ```
 
-For more than one capability, a `/command`, or a lifecycle hook, a plugin is a
-Python file with an `activate(host)` function:
+For anything beyond one capability, a plugin is a Python file with an
+`activate(host)` function. A single plugin can do as much as it likes; this one
+both adds a capability and reacts to a lifecycle hook, to show two shapes at
+once:
 
 ```python
 from pydantic_ai_harness.exa import ExaSearch

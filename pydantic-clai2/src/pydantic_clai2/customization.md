@@ -40,8 +40,12 @@ signature in the installed source to know which exist. Other capabilities
 register the same way: YouSearch from pydantic_ai_harness.youdotcom, core's
 WebSearch, or a user-written AbstractCapability subclass.
 
-When a plugin needs more than one capability, a command, or a hook, write a
-drop-in file. Create ~/.config/pydantic-clai2/plugins/search.py, or use
+When a plugin needs anything beyond one capability, write a drop-in file. One
+plugin may do as many things as it likes: several capabilities, commands, hooks,
+renderers, in any combination. The example below deliberately does two
+unrelated things, adding ExaSearch and registering a /greet command, to show
+both shapes side by side; a real plugin would usually pick one purpose. Create
+~/.config/pydantic-clai2/plugins/search.py, or use
 $XDG_CONFIG_HOME/pydantic-clai2/plugins/search.py when XDG_CONFIG_HOME is set:
 
 ```python
