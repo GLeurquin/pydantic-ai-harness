@@ -34,9 +34,10 @@ class StreamRenderer:
         stop_loading: Callable[[], None],
         show_thinking: bool = True,
         smooth_seconds: float = 0.5,
+        shell_lines: int = 20,
     ) -> None:
         self.console = console
-        self._tool_output = ToolOutput(console)
+        self._tool_output = ToolOutput(console, shell_lines=shell_lines)
         self.smooth_seconds = smooth_seconds
         self._thinking = False
         self._heading_printed = False

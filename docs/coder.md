@@ -21,6 +21,11 @@ workspace drive, not other drives. OS permissions and file-change event listener
 still apply. This permits modifying secrets and repository metadata: use it only
 when you trust the agent and its inputs. Shell commands were already unrestricted.
 
+`grep` accepts a regular file or directory. Both `grep` and `list_files` honor
+`unrestricted_filesystem`; scoped agents still reject paths outside the workspace.
+Shell finished events include a logical line count from a bounded-memory scan of
+the log snapshot, allowing UIs to report how many lines their preview omitted.
+
 ## Shell progress events
 
 Coder emits `ShellStartedEvent`, `ShellOutputEvent`, and `ShellFinishedEvent`

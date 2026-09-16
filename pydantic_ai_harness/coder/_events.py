@@ -29,3 +29,4 @@ class ShellFinishedEvent(CapabilityEvent, namespace='coder', name='shell_finishe
     status_path: str
     exit_code: int | None
     truncated: bool
+    total_lines: int = 0

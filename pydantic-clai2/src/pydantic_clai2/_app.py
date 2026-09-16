@@ -172,7 +172,11 @@ async def _run_prompt(
     session: Session[DepsT, OutputT], text: str, *, console: Console, settings: Settings, status: Status
 ) -> None:
     renderer = StreamRenderer(
-        console, stop_loading=lambda: None, show_thinking=settings.thinking, smooth_seconds=settings.smooth_seconds
+        console,
+        stop_loading=lambda: None,
+        show_thinking=settings.thinking,
+        smooth_seconds=settings.smooth_seconds,
+        shell_lines=settings.shell_lines,
     )
     status.streamed_chars = 0
     status.output_tokens = None

@@ -4,11 +4,29 @@ import codecs
 from pathlib import Path
 from typing import Generic
 
+from anyio.to_thread import run_sync
 from pydantic import BaseModel
 from pydantic_ai import RunContext
 from pydantic_ai.tools import AgentDepsT
 
 from ._events import ShellFinishedEvent, ShellOutputEvent
+
+
+def count_lines(path: Path) -> int:
+    if not path.exists():
+        return 0
+    remaining = path.stat().st_size
+    count = 0
+    last = b''
+    with path.open('rb') as source:
+        while remaining:
+            chunk = source.read(min(65536, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+            count += chunk.count(b'\n')
+            last = chunk[-1:]
+    return count + int(bool(last) and last != b'\n')
 
 
 class CommandStatus(BaseModel):
@@ -54,5 +72,6 @@ class ShellOutput(Generic[AgentDepsT]):
                 status_path=str(status_path),
                 exit_code=status.exit_code if status else None,
                 truncated=self.path.exists() and self.path.stat().st_size > self.offset,
+                total_lines=await run_sync(count_lines, self.path),
             )
         )

@@ -135,6 +135,16 @@ Tool calls print once with a filled-circle marker and the tool name, followed by
 are truncated to one terminal row. Completion activity remains in the footer
 rather than adding a separate `Finished:` line to the transcript.
 
+## Shell preview limit
+
+Shell output defaults to the first 20 logical lines per command. Change it with
+`/set display.shell_lines 50` (0 to 1000; zero hides output). The setting applies
+to the next prompt. After the command returns, `Truncated N lines` reports omitted
+lines from the log snapshot at that time, including an unterminated final line.
+The capability's 16 KB event preview cap can shorten the preview further. Full
+output remains in the displayed log path. Background commands can keep writing
+after the snapshot; those future lines are not included in its count.
+
 ## Tool details
 
 Native capability events drive specialized output: `FileEditedEvent` renders its

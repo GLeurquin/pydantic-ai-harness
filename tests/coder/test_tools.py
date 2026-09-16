@@ -140,6 +140,19 @@ class TestCoder:
         assert (workspace / 'local.txt').read_text() == 'local'
         assert 'after' in await call(workspace, 'read_file', {'path': '../.env'}, unrestricted_filesystem=True)
 
+    async def test_grep_file_and_unrestricted_directory(self, tmp_path: Path) -> None:
+        workspace = tmp_path / 'workspace'
+        workspace.mkdir()
+        target = tmp_path / '-outside.txt'
+        target.write_text('needle\n')
+        assert 'inside the workspace' in await call(workspace, 'grep', {'path': str(target), 'pattern': 'needle'})
+        for path in (str(target), str(tmp_path)):
+            output = await call(workspace, 'grep', {'path': path, 'pattern': 'needle'}, unrestricted_filesystem=True)
+            assert 'needle' in output and 'outside.txt' in output
+        local = workspace / 'local.txt'
+        local.write_text('local match\n')
+        assert 'local match' in await call(workspace, 'grep', {'path': 'local.txt', 'pattern': 'match'})
+
     async def test_shell_events(self, tmp_path: Path) -> None:
         events: list[ShellStartedEvent | ShellOutputEvent | ShellFinishedEvent] = []
 
@@ -154,6 +167,7 @@ class TestCoder:
         assert 'hello' in result
         assert isinstance(events[0], ShellStartedEvent)
         assert isinstance(events[-1], ShellFinishedEvent)
+        assert events[-1].total_lines == 1
         assert ''.join(event.text for event in events if isinstance(event, ShellOutputEvent)) == 'hello'
 
     @pytest.mark.skipif(os.name == 'nt', reason='POSIX FIFO handshake')

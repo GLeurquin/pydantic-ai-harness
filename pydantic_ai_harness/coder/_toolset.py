@@ -153,22 +153,26 @@ class CoderToolset(FunctionToolset[AgentDepsT]):
         await ctx.emit(change.edited(content_hash=_content_hash(content)))
         return f'Edited {path}.'
 
-    def _directory(self, path: str) -> Path:
+    def _directory(self, path: str, *, allow_file: bool = False) -> Path:
         try:
             directory = (self.workspace / path).resolve(strict=True)
         except (OSError, RuntimeError, ValueError) as exc:
             raise ModelRetry(f'Cannot resolve directory: {exc}') from exc
-        if not directory.is_relative_to(self.workspace) or not directory.is_dir():
-            raise ModelRetry('path must be an existing directory inside the workspace.')
+        if not self.unrestricted_filesystem and not directory.is_relative_to(self.workspace):
+            raise ModelRetry('path must be inside the workspace.')
+        if not directory.is_dir() and not (allow_file and directory.is_file()):
+            raise ModelRetry('path must be an existing directory or, for grep, a regular file.')
         return directory
 
-    async def _rg(self, arguments: list[str], *, path: str, limit: int) -> str:
+    async def _rg(self, arguments: list[str], *, path: str, limit: int, allow_file: bool = False) -> str:
         if not 1 <= limit <= 1000:
             raise ModelRetry('limit must be between 1 and 1000.')
+        target = self._directory(path, allow_file=allow_file)
+        cwd = target if target.is_dir() else target.parent
+        if allow_file:
+            arguments.extend(['--', '.' if target.is_dir() else './' + target.name])
         try:
-            async with await anyio.open_process(
-                ['rg', *arguments], cwd=self._directory(path), stderr=subprocess.DEVNULL
-            ) as process:
+            async with await anyio.open_process(['rg', *arguments], cwd=cwd, stderr=subprocess.DEVNULL) as process:
                 assert process.stdout is not None
                 output = bytearray()
                 truncated = False
@@ -219,8 +223,8 @@ class CoderToolset(FunctionToolset[AgentDepsT]):
             arguments.append('--ignore-case')
         if literal:
             arguments.append('--fixed-strings')
-        arguments.extend(['--regexp', pattern, '--', '.'])
-        return await self._rg(arguments, path=path, limit=limit)
+        arguments.extend(['--regexp', pattern])
+        return await self._rg(arguments, path=path, limit=limit, allow_file=True)
 
     async def shell(
         self,
