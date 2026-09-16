@@ -12,6 +12,7 @@ class Settings(BaseModel):
     thinking: bool = True
     splash: bool = True
     shell_lines: int = Field(default=20, ge=0, le=1000)
+    grep_lines: int = Field(default=20, ge=0, le=1000)
     smooth_seconds: float = Field(default=0.5, ge=0.1, le=5, allow_inf_nan=False)
 
 
@@ -21,6 +22,7 @@ SETTING_FIELDS = {
     'display.thinking': 'thinking',
     'display.splash': 'splash',
     'display.shell_lines': 'shell_lines',
+    'display.grep_lines': 'grep_lines',
     'display.smooth_seconds': 'smooth_seconds',
 }
 

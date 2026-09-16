@@ -177,6 +177,7 @@ async def _run_prompt(
         show_thinking=settings.thinking,
         smooth_seconds=settings.smooth_seconds,
         shell_lines=settings.shell_lines,
+        grep_lines=settings.grep_lines,
     )
     status.streamed_chars = 0
     status.output_tokens = None

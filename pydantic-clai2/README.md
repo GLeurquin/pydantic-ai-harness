@@ -135,6 +135,15 @@ Tool calls print once with a filled-circle marker and the tool name, followed by
 are truncated to one terminal row. Completion activity remains in the footer
 rather than adding a separate `Finished:` line to the transcript.
 
+## Grep previews
+
+Grep calls display the expression and path. Results show the first 20 logical
+lines by default; `/set display.grep_lines 10` changes the next turn's preview
+(0 to 1000). `Truncated N result lines` counts returned lines hidden by the UI,
+including context lines. If the tool itself capped the search, a separate notice
+states that the additional result count is unknown. No matches is shown explicitly.
+The model still receives the original tool result.
+
 ## Shell preview limit
 
 Shell output defaults to the first 20 logical lines per command. Change it with

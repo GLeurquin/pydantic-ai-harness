@@ -21,6 +21,7 @@ from termflow import Parser, Renderer  # pyright: ignore[reportMissingTypeStubs]
 from termflow.render.style import RenderFeatures, RenderStyle  # pyright: ignore[reportMissingTypeStubs]
 from termflow.stream import SmoothWriter, StreamSmoother  # pyright: ignore[reportMissingTypeStubs]
 
+from .grep_output import GrepOutput
 from .tool_output import ToolOutput, terminal_text
 
 
@@ -35,9 +36,11 @@ class StreamRenderer:
         show_thinking: bool = True,
         smooth_seconds: float = 0.5,
         shell_lines: int = 20,
+        grep_lines: int = 20,
     ) -> None:
         self.console = console
         self._tool_output = ToolOutput(console, shell_lines=shell_lines)
+        self._grep_output = GrepOutput(console, lines=grep_lines)
         self.smooth_seconds = smooth_seconds
         self._thinking = False
         self._heading_printed = False
@@ -79,6 +82,8 @@ class StreamRenderer:
         elif isinstance(event, (FunctionToolCallEvent, FunctionToolResultEvent)):
             await self.finish()
             self.stop_loading()
+            if self._grep_output.render(event):
+                return
             if isinstance(event, FunctionToolCallEvent):
                 name = ''.join(char if char.isprintable() else ' ' for char in event.part.tool_name)
                 self.console.print(
