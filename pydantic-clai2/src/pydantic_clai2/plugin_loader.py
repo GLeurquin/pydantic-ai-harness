@@ -292,7 +292,11 @@ def _import_file(name: str, path: Path) -> ModuleType:
         raise ImportError(f'Cannot load plugin from {path}')
     module = importlib.util.module_from_spec(spec)
     sys.modules[qualified] = module
-    exec(compile(path.read_bytes(), str(path), 'exec'), module.__dict__)  # Explicitly trusted plugin source.
+    try:
+        exec(compile(path.read_bytes(), str(path), 'exec'), module.__dict__)  # Explicitly trusted plugin source.
+    except BaseException:
+        sys.modules.pop(qualified, None)
+        raise
     return module
 
 

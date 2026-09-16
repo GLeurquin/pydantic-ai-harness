@@ -241,8 +241,9 @@ Bad or missing values fail at startup with a message naming your plugin.
 - Raising in `turn_start` prevents the turn. Raising in core `before_tool_execute`
   fails the agent run, not only that tool. Use core's documented tool-denial
   mechanisms when the model should recover instead of ending the run.
-- Startup plugins load in alphabetical ID order. Handlers run in activation
-  order, while `/plugins list` remains alphabetical. The first renderer that returns something wins. A
+- Startup plugins load in alphabetical ID order. CLAI host handlers run in
+  activation order, while `/plugins list` remains alphabetical. Core hook ordering
+  follows core composition, including reverse order for `after_*` hooks. The first renderer that returns something wins. A
   plugin loaded later goes to the end of the line.
 - Anything you print, print through `host.console`, so it stays in step with
   streaming output.
