@@ -57,6 +57,7 @@ async def chat(
     Failed and cancelled turns are not added to the retained history.
     """
     console = console or Console()
+    console.print()
     print_banner(console)
     console.print('/new clears history; /exit quits. Ctrl-C interrupts a turn.', style=theme.MUTED)
     settings = settings or Settings(model=None)
@@ -173,7 +174,7 @@ class _Shell(Generic[DepsT, OutputT]):
         while True:
             try:
                 self.status.model = self.session.model or _model_label(self.agent)
-                text = (await self.prompt.prompt_async('You > ')).strip()
+                text = (await self.prompt.prompt_async('> ')).strip()
             except KeyboardInterrupt:
                 if self.interrupts.press():
                     return 'exit'
