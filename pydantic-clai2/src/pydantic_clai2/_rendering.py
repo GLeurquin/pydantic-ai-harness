@@ -21,8 +21,24 @@ from termflow import Parser, Renderer  # pyright: ignore[reportMissingTypeStubs]
 from termflow.render.style import RenderFeatures, RenderStyle  # pyright: ignore[reportMissingTypeStubs]
 from termflow.stream import SmoothWriter, StreamSmoother  # pyright: ignore[reportMissingTypeStubs]
 
+from . import theme
 from .grep_output import GrepOutput
 from .tool_output import ToolOutput, terminal_text
+
+
+def markdown_style() -> RenderStyle:
+    """Termflow palette from the brand guide: Lithium headings, Calcium markers, Aqua links."""
+    return RenderStyle(
+        bright=theme.LITHIUM,
+        head=theme.PURPLE,
+        symbol=theme.CALCIUM,
+        grey=theme.GREY,
+        dark=theme.DARK_PURPLE,
+        mid=theme.ELEMENT_PURPLE,
+        light=theme.GREY,
+        link=theme.AQUA,
+        error=theme.CALCIUM,
+    )
 
 
 class StreamRenderer:
@@ -96,7 +112,7 @@ class StreamRenderer:
         if isinstance(event, FunctionToolCallEvent) and not self._tool_output.render_call(event):
             name = ''.join(char if char.isprintable() else ' ' for char in event.part.tool_name)
             self.console.print(
-                f'● {name}', style='dim', markup=False, highlight=False, overflow='ellipsis', no_wrap=True
+                f'● {name}', style=theme.MUTED, markup=False, highlight=False, overflow='ellipsis', no_wrap=True
             )
             self.console.print()
 
@@ -128,18 +144,18 @@ class StreamRenderer:
         self._renderer = Renderer(
             output=self._writer or self.console.file,  # pyright: ignore[reportArgumentType]
             width=self.console.width,
-            style=RenderStyle.dracula(),
+            style=markdown_style(),
             features=RenderFeatures(clipboard=False, hyperlinks=False, images=False),
         )
 
     def _emit_thinking(self, content: str) -> None:
-        self.console.print(content, style='dim', end='', markup=False, highlight=False)
+        self.console.print(content, style=theme.MUTED, end='', markup=False, highlight=False)
 
     def _feed(self, content: str) -> None:
         content = terminal_text(content)
         if content and not self._heading_printed:
             if self._thinking:
-                self.console.print('Thinking', style='dim cyan')
+                self.console.print('Thinking', style=theme.THINKING)
             self._heading_printed = True
         if self._thinking:
             if self._thinking_writer is not None:

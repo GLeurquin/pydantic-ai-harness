@@ -7,6 +7,7 @@ from typing import Generic, Protocol
 from termflow.tui import MenuBuilder, MenuItem  # pyright: ignore[reportMissingTypeStubs]
 from termflow.tui.menu import Menu, MenuResult  # pyright: ignore[reportMissingTypeStubs]
 
+from ._rendering import markdown_style
 from .plugin_loader import PluginEntry, PluginError, PluginLoader
 from .plugins import DepsT
 
@@ -87,6 +88,7 @@ class PluginMenu(Generic[DepsT]):
         """Wire rows, details, and keys into a termflow menu."""
         return (
             MenuBuilder('Plugins')
+            .style(markdown_style())
             .items(self.items())
             .preview(self.details)
             .on_key(' ', self.toggle)

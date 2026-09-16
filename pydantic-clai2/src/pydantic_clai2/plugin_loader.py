@@ -13,6 +13,7 @@ from pydantic_ai import AgentStreamEvent
 from pydantic_ai.capabilities import AbstractCapability, AgentCapability
 from rich.console import Console
 
+from . import theme
 from .commands import Commands, plugins_command
 from .config import PluginSettings
 from .plugins import DepsT, HostEvent, PluginHost, Renderer, SessionEnd, SessionEndReason, SessionStart, TurnStart
@@ -141,7 +142,7 @@ class PluginLoader(Generic[DepsT]):
                 try:
                     await self.load(entry.name)
                 except PluginError as exc:
-                    self._console.print(str(exc), style='red', markup=False)
+                    self._console.print(str(exc), style=theme.ERROR, markup=False)
 
     async def load(self, name: str, *, fresh: bool = False) -> None:
         """Import, activate, and fire `session_start`. A failure leaves nothing registered."""
@@ -170,7 +171,7 @@ class PluginLoader(Generic[DepsT]):
         try:
             await _dispatch(entry.host, SessionEnd(reason=reason))
         except Exception as exc:  # noqa: BLE001 -- unloading must finish even if the plugin misbehaves.
-            self._console.print(str(PluginError(name, exc)), style='red', markup=False)
+            self._console.print(str(PluginError(name, exc)), style=theme.ERROR, markup=False)
         self._drop(entry)
 
     def _drop(self, entry: PluginEntry[DepsT]) -> None:
@@ -192,7 +193,7 @@ class PluginLoader(Generic[DepsT]):
             except Exception as exc:
                 if isinstance(event, TurnStart):
                     raise PluginError(name, exc) from exc
-                self._console.print(str(PluginError(name, exc)), style='red', markup=False)
+                self._console.print(str(PluginError(name, exc)), style=theme.ERROR, markup=False)
 
     async def enable(self, name: str) -> None:
         """Remember the plugin as enabled and load it now."""

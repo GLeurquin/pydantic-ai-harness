@@ -14,6 +14,7 @@ from pydantic_ai.usage import UsageLimits
 from pydantic_ai_harness.coder import Coder
 from rich.console import Console
 
+from . import theme
 from ._branding import print_banner
 from ._completion_adapter import COMPLETION_STYLE, PromptCompleter
 from ._rendering import StreamRenderer
@@ -57,7 +58,7 @@ async def chat(
     """
     console = console or Console()
     print_banner(console)
-    console.print('/new clears history; /exit quits. Ctrl-C interrupts a turn.', style='dim')
+    console.print('/new clears history; /exit quits. Ctrl-C interrupts a turn.', style=theme.MUTED)
     settings = settings or Settings(model=None)
     store = store or SettingsStore()
     session = Session(agent, deps=deps, plugins=plugins, usage_limits=usage_limits)
@@ -65,7 +66,7 @@ async def chat(
     auth = CodexAuth(console)
     session.resolve_model = lambda name: auth.model(name) if name.startswith('openai-codex:') else name
     if session.model is None and agent.model is None:
-        console.print('Choose a model with /set model <Tab>.', style='cyan')
+        console.print('Choose a model with /set model <Tab>.', style=theme.INFO)
 
     def apply_setting(key: str, updated: Settings) -> None:
         if key == 'model':
@@ -176,7 +177,7 @@ class _Shell(Generic[DepsT, OutputT]):
             except KeyboardInterrupt:
                 if self.interrupts.press():
                     return 'exit'
-                self.console.print('Input cleared. Press Ctrl-C again within 2 seconds to exit.', style='dim')
+                self.console.print('Input cleared. Press Ctrl-C again within 2 seconds to exit.', style=theme.MUTED)
                 continue
             except EOFError:
                 return 'eof'
@@ -191,7 +192,7 @@ class _Shell(Generic[DepsT, OutputT]):
                     return 'exit'
                 continue
             if self.session.model is None and self.agent.model is None:
-                self.console.print('Choose a model first: /set model <Tab>', style='yellow')
+                self.console.print('Choose a model first: /set model <Tab>', style=theme.WARNING)
                 continue
             if await self._turn(text):
                 return 'exit'
@@ -201,12 +202,12 @@ class _Shell(Generic[DepsT, OutputT]):
         try:
             await self.loader.fire(start)
         except PluginError as exc:
-            self.console.print(str(exc), style='red', markup=False)
+            self.console.print(str(exc), style=theme.ERROR, markup=False)
             self.console.print()
             return False
         if start.cancelled:
             self.console.print(
-                f'Turn cancelled by a plugin: {start.cancel_reason or "no reason given"}', style='yellow'
+                f'Turn cancelled by a plugin: {start.cancel_reason or "no reason given"}', style=theme.WARNING
             )
             self.console.print()
             return False
@@ -232,7 +233,7 @@ class _Shell(Generic[DepsT, OutputT]):
 
 def _report_interrupt(completed: bool, console: Console) -> None:
     if not completed:
-        console.print('Turn cancelled. Press Ctrl-C again within 2 seconds to exit.', style='dim')
+        console.print('Turn cancelled. Press Ctrl-C again within 2 seconds to exit.', style=theme.MUTED)
         console.print()
 
 
@@ -240,7 +241,7 @@ async def _execute_command(commands: Commands, text: str, *, console: Console, s
     try:
         console.print(await commands.execute_async(text), markup=False)
     except Exception as exc:  # noqa: BLE001 -- command failures must not exit the interactive shell.
-        console.print(str(exc), style='red', markup=False)
+        console.print(str(exc), style=theme.ERROR, markup=False)
     console.print()
     _reset_status(text, status)
 
@@ -308,8 +309,8 @@ async def _run_prompt(
         raise
     except Exception as exc:  # noqa: BLE001 -- interactive boundary reports plugin/provider failures.
         await renderer.finish()
-        console.print(f'{type(exc).__name__}: {exc}', style='red', markup=False)
-        console.print('Turn not saved. External tool side effects may already have occurred.', style='dim')
+        console.print(f'{type(exc).__name__}: {exc}', style=theme.ERROR, markup=False)
+        console.print('Turn not saved. External tool side effects may already have occurred.', style=theme.MUTED)
         console.print()
         return TurnEnd(text=text, outcome='failed', error=exc)
     finally:

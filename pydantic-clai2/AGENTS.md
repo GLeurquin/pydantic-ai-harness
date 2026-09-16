@@ -111,6 +111,16 @@ on `tool_name` strings. Always flush the stream before printing anything else;
 the host does this for renderers, so do not call `console.print` from inside an
 `on` handler when a renderer would do.
 
+## Colours
+
+Every colour comes from `theme.py`, which holds the Pydantic brand palette and
+the roles CLAI paints with (`ACCENT`, `INFO`, `WARNING`, `ERROR`, `MUTED`,
+`THINKING`). Use a role, not a hex, and never a bare Rich colour name like
+`'cyan'` or `'dim'`. Raw ANSI surfaces (status line, splash) go through
+`theme.sgr(...)`, which handles the 16-colour fallback. `theme.py` is stdlib
+only because the splash imports it before anything heavy. Source of truth is
+the pydantic.dev `pydantic-visual-identity` skill's `brand-identity.md`.
+
 ## File map
 
 | File | Holds |
@@ -125,6 +135,7 @@ the host does this for renderers, so do not call `console.print` from inside an
 | `commands.py` | `Command`, the registry, completion |
 | `config.py` | `Settings`, `PluginSettings` |
 | `settings_store.py` | the SQLite store under `$XDG_CONFIG_HOME/pydantic-clai2/` |
+| `theme.py` | brand palette, colour roles, `sgr()` |
 
 Keep files concise - we don't need any 10,000 line files. Single responsibility.
 

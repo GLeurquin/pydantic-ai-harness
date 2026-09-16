@@ -136,9 +136,13 @@ failed or cancelled turns leave the previous history intact, though external too
 side effects may already have occurred. History is in memory only. Structured
 outputs are supported and displayed after completion.
 
-CLAI uses Termflow's Dracula palette for Markdown (purple headings, pink markers,
-cyan links). This is local to the renderer; it does not change terminal colors or
-Termflow defaults in other applications. Code syntax highlighting retains Termflow's
+CLAI is painted in the Pydantic brand palette: Lithium magenta for headings,
+the banner, and the thing to look at; Calcium for list markers and errors; Aqua
+for links and added diff lines; Pydantic AI cyan for guidance and the status
+line; brand grey for tool previews and hints. On terminals without 24-bit
+colour the nearest of the 16 standard colours is used. Every colour lives in
+`theme.py`. This is local to CLAI; it does not change your terminal's colours
+or Termflow defaults elsewhere. Code block syntax highlighting retains Termflow's
 Monokai default.
 
 Streaming matches Code Puppy's separate output and thinking paths:
