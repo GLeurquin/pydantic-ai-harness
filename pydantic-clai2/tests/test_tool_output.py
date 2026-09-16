@@ -40,6 +40,22 @@ async def test_shell_header_includes_argument_once() -> None:
     assert output.getvalue() == '● shell ls /tmp\n\n'
 
 
+async def test_shell_sgr_colors_across_chunks_and_lines() -> None:
+    output = io.StringIO()
+    renderer = StreamRenderer(
+        Console(file=output, force_terminal=True, color_system='truecolor'), stop_loading=lambda: None
+    )
+    for chunk in ('\x1b[1;', '35mMAGENTA\n', 'STILL MAGENTA\x1b[0m\n', '\x1b[2J\x1b]52;c;payload\x07safe\n'):
+        await renderer.on_stream_event(ShellOutputEvent(tool_call_id='colors', text=chunk))
+    rendered = output.getvalue()
+    plain = Text.from_ansi(rendered).plain
+    assert 'MAGENTA\nSTILL MAGENTA' in plain
+    assert '\\x1b[1;35m' not in plain
+    assert '\x1b[2J' not in rendered and '\x1b]52;' not in rendered
+    assert '35m' in rendered
+    assert '\\x1b[2J' in plain
+
+
 async def test_shell_event_display() -> None:
     output = io.StringIO()
     renderer = StreamRenderer(Console(file=output), stop_loading=lambda: None)

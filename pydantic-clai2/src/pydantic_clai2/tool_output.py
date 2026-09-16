@@ -1,11 +1,13 @@
 """Render typed capability events without parsing model-facing tool results."""
 
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 
 from pydantic import BaseModel
 from pydantic_ai import AgentStreamEvent, FunctionToolCallEvent
 from pydantic_ai_harness.coder import ShellFinishedEvent, ShellOutputEvent, ShellStartedEvent
 from pydantic_ai_harness.filesystem import FileChangeRequestEvent, FileEditedEvent, FileWrittenEvent
+from rich.ansi import AnsiDecoder
 from rich.console import Console
 from rich.text import Text
 from termflow.diff import DiffRenderer  # pyright: ignore[reportMissingTypeStubs]
@@ -14,6 +16,16 @@ from termflow.diff import DiffRenderer  # pyright: ignore[reportMissingTypeStubs
 def terminal_text(text: str) -> str:
     """Make untrusted control characters inert before terminal rendering."""
     return ''.join(char if char.isprintable() or char in '\n\t' else f'\\x{ord(char):02x}' for char in text)
+
+
+_SGR = re.compile(r'(\x1b\[[0-9;]*m)')
+
+
+def shell_text(text: str, decoder: AnsiDecoder) -> Text:
+    """Decode SGR styles only; keep other terminal controls inert."""
+    parts = _SGR.split(text)
+    safe = ''.join(part if index % 2 else terminal_text(part) for index, part in enumerate(parts))
+    return decoder.decode_line(safe)
 
 
 class DisplayArguments(BaseModel):
@@ -30,6 +42,7 @@ class ShellPreview:
     completed_lines: int = 0
     pending: str = ''
     carriage_return: bool = False
+    decoder: AnsiDecoder = field(default_factory=AnsiDecoder)
 
     @property
     def shown(self) -> int:
@@ -86,13 +99,14 @@ class ToolOutput:
                 preview.carriage_return = True
             else:
                 if preview.carriage_return:
+                    shell_text(preview.pending, preview.decoder)
                     preview.pending = ''
                     preview.carriage_return = False
                 preview.pending += char
 
     def _shell_line(self, preview: ShellPreview) -> None:
         self.console.print(
-            terminal_text(preview.pending),
+            shell_text(preview.pending, preview.decoder),
             style='dim',
             markup=False,
             highlight=False,
