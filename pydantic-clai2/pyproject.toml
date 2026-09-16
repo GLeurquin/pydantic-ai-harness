@@ -31,7 +31,7 @@ packages = ['src/pydantic_clai2']
 pydantic-ai-harness = { path = '..', editable = true }
 
 [dependency-groups]
-dev = ['pytest>=9', 'pytest-anyio', 'pyright>=1.1.408', 'ruff>=0.14']
+dev = ['pytest>=9', 'pytest-anyio', 'pyright>=1.1.408', 'ruff>=0.14', 'coverage>=7.10.7']
 
 [tool.pyright]
 pythonVersion = '3.11'
@@ -49,6 +49,15 @@ extend-select = ['BLE001']
 '**/tests/**/*.py' = ['D']
 'src/pydantic_clai2/__init__.py' = ['PLC0415']
 'src/pydantic_clai2/__main__.py' = ['PLC0415']
+
+[tool.coverage.run]
+branch = true
+relative_files = true
+source = ['src/pydantic_clai2']
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
 
 [tool.pytest.ini_options]
 anyio_mode = 'auto'

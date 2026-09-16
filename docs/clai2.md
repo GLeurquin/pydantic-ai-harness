@@ -28,6 +28,13 @@ not encrypted. Delete this file while CLAI is closed to clear saved input.
 `/new` clears model conversation history, not input recall. Model responses and
 tool results are not saved to this file.
 
+## CI coverage
+
+The `CLAI coverage` check combines branch coverage from Python 3.11 and 3.14
+and requires 100% for `src/pydantic_clai2`. It is separate from Harness coverage;
+passing CLAI test jobs alone does not mean either coverage gate has passed.
+Tracked under [#875](https://github.com/pydantic/pydantic-ai-harness/issues/875).
+
 ## Start chatting
 
 Launch `clai2`. The default model is `openai-codex:gpt-6-astra`.
