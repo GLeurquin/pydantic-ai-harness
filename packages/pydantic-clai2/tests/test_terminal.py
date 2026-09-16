@@ -15,11 +15,13 @@ from prompt_toolkit.document import Document
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from pydantic_ai import Agent, AgentStreamEvent, RunContext
+from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.models.test import TestModel
 from rich.console import Console
 
 from pydantic_clai2 import Session, chat
-from pydantic_clai2.commands import Commands
+from pydantic_clai2.command_context import CommandContext, CommandProvider
+from pydantic_clai2.commands import Command, Commands, set_completions
 from pydantic_clai2.config import PluginSettings
 from pydantic_clai2.plugins import load_plugins
 from pydantic_clai2.settings_store import SettingsStore
@@ -53,6 +55,85 @@ async def test_existing_handler_and_structured_output() -> None:
     assert isinstance(result.output, list)
     assert existing == observed
     assert existing
+
+
+async def test_set_without_initial_model(tmp_path: Path) -> None:
+    output = io.StringIO()
+    store = SettingsStore(tmp_path / 'config.db')
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        pipe.send_text(
+            'hello\n/set model test\n/set display.thinking false\n/set run.request_limit 123\nhello\n/exit\n'
+        )
+        await chat(Agent(), deps=None, console=Console(file=output), store=store)
+    assert 'Choose a model first' in output.getvalue()
+    assert 'Applied.' in output.getvalue()
+    assert store.load().model == 'test'
+    assert store.load().request_limit == 123
+    assert not store.load().thinking
+    assert 'success' in output.getvalue()
+
+
+async def test_plugin_commands(tmp_path: Path) -> None:
+    class GreetingPlugin(AbstractCapability[None], CommandProvider):
+        def get_commands(self, context: CommandContext) -> list[Command]:
+            return [
+                Command(
+                    name='greet',
+                    description='Plugin greeting',
+                    handler=lambda args: f'Hello {args[0]}',
+                    complete=lambda _: ('Mike',),
+                )
+            ]
+
+    output = io.StringIO()
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        pipe.send_text('/help\n/greet Mike\n/exit\n')
+        await chat(
+            Agent(TestModel()),
+            deps=None,
+            plugins=[GreetingPlugin()],
+            console=Console(file=output),
+            store=SettingsStore(tmp_path / 'config.db'),
+        )
+    assert '/greet: Plugin greeting' in output.getvalue()
+    assert 'Hello Mike' in output.getvalue()
+
+
+def test_set_validation_preserves_active_and_saved_settings(tmp_path: Path) -> None:
+    store = SettingsStore(tmp_path / 'settings.db')
+    context = CommandContext(
+        settings=store.load(), store=store, clear_history=lambda: None, apply_setting=lambda key, settings: None
+    )
+    with pytest.raises(ValueError):
+        context.set_setting(['run.request_limit', '-1'])
+    assert context.settings.request_limit == store.load().request_limit == 10000
+    with pytest.raises(ValueError, match='Usage'):
+        context.set_setting(['typo', 'false'])
+    assert store.overrides() == {}
+
+
+def test_registry_registration_is_atomic() -> None:
+    commands = Commands()
+    commands.register(Command(name='help', description='Help', handler=lambda _: ''))
+    with pytest.raises(ValueError, match='duplicate'):
+        commands.register_many(
+            [
+                Command(name='greet', description='Greeting', handler=lambda _: ''),
+                Command(name='help', description='Collision', handler=lambda _: ''),
+            ]
+        )
+    assert 'greet' not in commands.help([])
+    assert 'help' not in Commands().help([])
+
+
+def test_set_autocomplete() -> None:
+    commands = Commands()
+    commands.register(Command(name='set', description='Settings', handler=lambda _: '', complete=set_completions))
+    assert 'model' in [c.text for c in commands.get_completions(Document('/set mo'), CompleteEvent())]
+    assert 'false' in [c.text for c in commands.get_completions(Document('/set display.thinking f'), CompleteEvent())]
+    models = list(commands.get_completions(Document('/set model anthropic:'), CompleteEvent()))
+    assert models
+    assert all(c.text.startswith('anthropic:') for c in models)
 
 
 async def test_prompt_loop_commands(tmp_path: Path) -> None:

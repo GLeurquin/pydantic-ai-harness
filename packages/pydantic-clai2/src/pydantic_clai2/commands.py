@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion, PathCompleter
 from prompt_toolkit.document import Document
 from pydantic import JsonValue, TypeAdapter
+from pydantic_ai.models import known_model_names
 
 from .config import SETTING_FIELDS, PluginSettings
 from .settings_store import SettingsStore
@@ -33,9 +34,16 @@ class Commands(Completer):
 
     def register(self, command: Command) -> None:
         """Register one command, rejecting ambiguous duplicate names."""
-        if command.name in self._commands or not command.name.isidentifier():
-            raise ValueError(f'Invalid or duplicate command: {command.name}')
-        self._commands[command.name] = command
+        self.register_many((command,))
+
+    def register_many(self, commands: Iterable[Command]) -> None:
+        """Validate a provider's declarations atomically, including collisions."""
+        pending: dict[str, Command] = {}
+        for command in commands:
+            if command.name in self._commands or command.name in pending or not command.name.isidentifier():
+                raise ValueError(f'Invalid or duplicate command: {command.name}')
+            pending[command.name] = command
+        self._commands.update(pending)
 
     def execute(self, text: str) -> str:
         """Parse shell-style arguments and dispatch without invoking a shell."""
@@ -99,6 +107,17 @@ def config_command(store: SettingsStore, args: list[str]) -> str:
     else:
         raise ValueError('Usage: config show|get KEY|set KEY VALUE|reset KEY')
     return 'Saved. Applies when you restart CLAI.'
+
+
+def set_completions(args: list[str]) -> Iterable[str]:
+    """Complete setting names and values without network calls or credentials."""
+    if len(args) <= 1:
+        return SETTING_FIELDS
+    if len(args) == 2 and args[0] == 'model':
+        return known_model_names()
+    if len(args) == 2 and args[0].startswith('display.'):
+        return ('true', 'false')
+    return ()
 
 
 def config_completions(args: list[str]) -> Iterable[str]:

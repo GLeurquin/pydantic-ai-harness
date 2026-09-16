@@ -16,7 +16,8 @@ from rich.console import Console
 from ._branding import print_banner
 from ._rendering import StreamRenderer
 from ._session import Session
-from .commands import Command, Commands, config_command, config_completions, plugins_command
+from .command_context import CommandContext, CommandProvider
+from .commands import Command, Commands, config_command, config_completions, plugins_command, set_completions
 from .config import Settings
 from .settings_store import SettingsStore
 
@@ -24,7 +25,7 @@ DepsT = TypeVar('DepsT')
 OutputT = TypeVar('OutputT')
 
 
-def create_agent(model: str) -> Agent[None, str]:
+def create_agent(model: str | None = None) -> Agent[None, str]:
     """Build the default coding agent; custom agents need not use `Coder`."""
     return Agent(model, capabilities=[Coder()])
 
@@ -50,7 +51,27 @@ async def chat(
     settings = settings or Settings()
     store = store or SettingsStore()
     session = Session(agent, deps=deps, plugins=plugins, usage_limits=usage_limits)
+    session.model = settings.model
+    if session.model is None and agent.model is None:
+        console.print('Choose a model with /set model <Tab>.', style='cyan')
+
+    def apply_setting(key: str, updated: Settings) -> None:
+        if key == 'model':
+            session.model = updated.model
+        elif key == 'run.request_limit':
+            session.usage_limits = UsageLimits(request_limit=updated.request_limit)
+
+    context = CommandContext(settings=settings, store=store, clear_history=session.clear, apply_setting=apply_setting)
+
     commands = Commands()
+    commands.register(
+        Command(
+            name='set',
+            description='View or change settings; Tab completes names and values',
+            handler=context.set_setting,
+            complete=set_completions,
+        )
+    )
     commands.register(Command(name='help', description='Show commands', handler=commands.help))
     commands.register(
         Command(
@@ -78,6 +99,9 @@ async def chat(
             ),
         )
     )
+    for plugin in plugins:
+        if isinstance(plugin, CommandProvider):
+            commands.register_many(plugin.get_commands(context))
     prompt = PromptSession[str](history=InMemoryHistory(), completer=commands, complete_while_typing=True)
     async with agent:
         while True:
@@ -97,16 +121,23 @@ async def chat(
                 continue
             if not text:
                 continue
-            renderer = StreamRenderer(console, stop_loading=lambda: None, show_thinking=settings.thinking)
-            session.on_stream_event = renderer.on_stream_event
-            try:
-                result = await session.prompt(text)
-                if not renderer.rendered_text or not isinstance(result.output, str):
-                    console.print(str(result.output), markup=False)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 -- interactive boundary reports plugin/provider failures.
-                console.print(f'{type(exc).__name__}: {exc}', style='red', markup=False)
-                console.print('Turn not saved. External tool side effects may already have occurred.', style='dim')
-            finally:
-                renderer.finish()
+            if session.model is None and agent.model is None:
+                console.print('Choose a model first: /set model <Tab>', style='yellow')
+                continue
+            await _run_prompt(session, text, console=console, settings=context.settings)
+
+
+async def _run_prompt(session: Session[DepsT, OutputT], text: str, *, console: Console, settings: Settings) -> None:
+    renderer = StreamRenderer(console, stop_loading=lambda: None, show_thinking=settings.thinking)
+    session.on_stream_event = renderer.on_stream_event
+    try:
+        result = await session.prompt(text)
+        if not renderer.rendered_text or not isinstance(result.output, str):
+            console.print(str(result.output), markup=False)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- interactive boundary reports plugin/provider failures.
+        console.print(f'{type(exc).__name__}: {exc}', style='red', markup=False)
+        console.print('Turn not saved. External tool side effects may already have occurred.', style='dim')
+    finally:
+        renderer.finish()

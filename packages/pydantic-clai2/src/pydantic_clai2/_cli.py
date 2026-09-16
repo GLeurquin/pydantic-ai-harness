@@ -35,11 +35,9 @@ def run() -> None:
         if args.request_limit is not None:
             overrides['run.request_limit'] = args.request_limit
         settings = resolve_settings(overrides)
-        if settings.model is None:
-            parser.error('Set --model, CLAI_MODEL, or run clai2 config set model PROVIDER:MODEL')
         asyncio.run(
             chat(
-                create_agent(settings.model),
+                create_agent(),
                 deps=None,
                 plugins=load_plugins(store.plugins()),
                 usage_limits=UsageLimits(request_limit=settings.request_limit),

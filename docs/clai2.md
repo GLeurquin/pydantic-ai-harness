@@ -3,14 +3,13 @@
 A separately installable terminal client for Pydantic AI, using `Coder()` by default.
 Python 3.11+ is required by Termflow. Tracking issue: https://github.com/pydantic/pydantic-ai-harness/issues/875.
 
-## Run from this repository
+## Start chatting
 
-```sh
-cd packages/pydantic-clai2
-uv sync
-uv run clai2 config set model anthropic:YOUR_MODEL_ID
-uv run clai2
-```
+Launch `clai2`. No model needs to be configured before the terminal opens.
+Type `/set model ` and press Tab to pick a provider-qualified model name.
+The choice is saved in SQLite and used for the next prompt without restarting.
+
+From a source checkout, launch with `uv run --project packages/pydantic-clai2 clai2`.
 
 Set the provider's API key environment variable before starting. The default Coder
 can read and modify files and execute commands with your user permissions. Run it
@@ -28,18 +27,23 @@ Preferences live in `$XDG_CONFIG_HOME/pydantic-clai2/config.db`, falling back to
 There is no automatic repository config loading. API keys and conversation messages
 are not written to the settings database.
 
-```sh
-clai2 config show
-clai2 config set display.thinking false
-clai2 config set run.request_limit 10000
-clai2 config reset display.thinking
+```text
+/set
+/set model <Tab>
+/set display.thinking false
+/set run.request_limit 10000
 ```
 
-Precedence is defaults, SQLite overrides, `CLAI_MODEL`, then explicit CLI flags.
-Settings are validated before writes and snapshotted at startup. Changes apply on
-restart. `--request-limit` controls the full prompt's model-request budget.
+Tab completes setting names, boolean values, and model names from Pydantic AI's
+built-in catalog without network access. Custom model identifiers are accepted too.
+`/set SETTING` shows its current value. `/set` changes apply to subsequent prompts
+and preserve conversation history; splash changes apply at next startup.
 
-Interactive commands: `/help`, `/new`, `/exit`, `/config`, and `/plugins`.
+Precedence is defaults, SQLite overrides, `CLAI_MODEL`, then explicit CLI flags.
+Settings are validated before writes. `/set` updates the active settings snapshot;
+legacy `/config` writes and plugin changes apply on restart. `--request-limit` controls the full prompt's model-request budget.
+
+Interactive commands: `/set`, `/help`, `/new`, `/exit`, `/config`, and `/plugins`.
 Tab completion suggests commands, settings, boolean values, plugin identifiers,
 and paths after `@`. Path completion inserts a path; it does not attach file contents.
 Unknown slash commands are not sent to the model. Up/down recall prompt history
@@ -99,9 +103,38 @@ are passed as constructor keyword arguments; the plugin owns validation, prefera
 with its own Pydantic model. Disabled plugins are not imported. Plugins execute
 trusted Python code with your permissions. Only register code you trust.
 
-`Commands.register(Command(...))` supports application-owned commands with a
-handler and contextual completion provider. Help, dispatch, and completion share
-one registry. Plugin-driven command registration is not implemented yet.
+### Plugin commands
+
+Capabilities can explicitly implement the typed `CommandProvider` protocol.
+CLAI calls `get_commands(context)` once at startup and registers the returned
+immutable `Command` declarations. Handlers receive parsed arguments and return
+text; completion providers receive argument prefixes and return suggestions.
+
+```python
+from pydantic_ai.capabilities import AbstractCapability
+from pydantic_clai2.command_context import CommandContext, CommandProvider
+from pydantic_clai2.commands import Command
+
+
+class GreetingPlugin(AbstractCapability[None], CommandProvider):
+    def get_commands(self, context: CommandContext) -> list[Command]:
+        return [
+            Command(
+                name='greet',
+                description='Show a greeting',
+                handler=lambda args: 'Hello ' + (' '.join(args) or 'there'),
+                complete=lambda args: ('Mike',),
+            )
+        ]
+```
+
+Pass `GreetingPlugin()` through `plugins=` or register its class with `/plugins`.
+Its `/greet` command appears in help and autocomplete automatically. `CommandContext`
+provides active settings, the settings store, history clearing, and the validated
+`set_setting` operation. Duplicate names, including collisions with built-ins, are
+rejected before a provider's commands are installed. Registries are conversation-local.
+There are no string event names or global callback hooks. Native `@on_event`
+methods remain responsible for runtime agent/capability event subscriptions.
 
 ## Telemetry and references
 

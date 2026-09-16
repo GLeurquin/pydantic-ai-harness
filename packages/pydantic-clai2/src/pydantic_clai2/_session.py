@@ -30,6 +30,7 @@ class Session(Generic[DepsT, OutputT]):
         usage_limits: UsageLimits | None = None,
         on_stream_event: Callable[[AgentStreamEvent], Awaitable[None]] | None = None,
     ) -> None:
+        self.model: str | None = None
         self.agent = agent
         self.deps = deps
         self.plugins = tuple(plugins)
@@ -58,6 +59,7 @@ class Session(Generic[DepsT, OutputT]):
             result = await self.agent.run(
                 text,
                 deps=self.deps,
+                model=self.model,
                 message_history=self._messages,
                 capabilities=self.plugins,
                 usage_limits=self.usage_limits,
