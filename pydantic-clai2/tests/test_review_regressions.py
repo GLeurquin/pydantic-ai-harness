@@ -44,6 +44,20 @@ async def test_package_relative_import_and_fresh_source(tmp_path: Path) -> None:
         await harness.loader.reload('package')
 
 
+async def test_cancelled_plugin_start_rolls_back(tmp_path: Path) -> None:
+    harness = Harness(tmp_path)
+    path = harness.write('cancelled')
+    path.write_text(
+        path.read_text().replace(
+            "host.console.print('cancelled started')", 'raise __import__("asyncio").CancelledError()'
+        )
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await harness.loader.load('cancelled')
+    assert harness.loader.entries()[0].host is None
+    assert 'cancelled' not in harness.commands.execute('/help')
+
+
 async def test_explicit_source_wins(tmp_path: Path) -> None:
     harness = Harness(tmp_path)
     harness.write('collision')

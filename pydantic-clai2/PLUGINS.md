@@ -144,12 +144,15 @@ Tools and capabilities emit typed events (a shell started, a file was written).
 Pass the class instead of a string:
 
 ```python
+from pydantic_ai import RunContext
 from pydantic_ai_harness.filesystem import FileWrittenEvent
+from pydantic_clai2.plugins import PluginHost
 
 
-@host.on(FileWrittenEvent)
-async def log_write(ctx, event: FileWrittenEvent) -> None:
-    host.console.print(f'wrote {event.path}', style='dim')
+def activate(host: PluginHost[None]) -> None:
+    @host.on(FileWrittenEvent)
+    async def log_write(ctx: RunContext[None], event: FileWrittenEvent) -> None:
+        host.console.print(f'wrote {event.path}')
 ```
 
 Some events let you say no. If the event has a `cancel()` method, calling it stops
@@ -199,9 +202,14 @@ better, return a Rich renderable (a `str` is fine). Return `None` to say "not mi
 use the default".
 
 ```python
-@host.render(FileWrittenEvent)
-def show_write(event: FileWrittenEvent) -> str | None:
-    return f'[green]wrote[/] {event.path}'
+from pydantic_ai_harness.filesystem import FileWrittenEvent
+from pydantic_clai2.plugins import PluginHost
+
+
+def activate(host: PluginHost[None]) -> None:
+    @host.render(FileWrittenEvent)
+    def show_write(event: FileWrittenEvent) -> str:
+        return f'wrote {event.path}'
 ```
 
 CLAI flushes any streaming text before it prints what you return, so your output
@@ -231,8 +239,8 @@ Bad or missing values fail at startup with a message naming your plugin.
   something, edit the event or call `event.cancel()`.
 - If a `turn_start` or `before_tool_execute` handler raises, the turn or the tool
   is cancelled and the error is shown. Failing closed is the only mode.
-- Plugins load in the order listed by `/plugins list`. Handlers for the same
-  name run in that order. The first renderer that returns something wins. A
+- Startup plugins load in alphabetical ID order. Handlers run in activation
+  order, while `/plugins list` remains alphabetical. The first renderer that returns something wins. A
   plugin loaded later goes to the end of the line.
 - Anything you print, print through `host.console`, so it stays in step with
   streaming output.

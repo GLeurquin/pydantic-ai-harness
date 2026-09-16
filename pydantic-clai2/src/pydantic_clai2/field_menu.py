@@ -211,6 +211,7 @@ def run_flow(menu: FieldMenu, runners: Runners = TERMINAL) -> list[str]:
         if isinstance(value, _Reset):
             row = menu.row_for(value.key)
             if row is not None:
+                cursor = menu.rows.index(row)
                 messages.append(menu.reset(row))
             continue
         row = menu.row_for(value)

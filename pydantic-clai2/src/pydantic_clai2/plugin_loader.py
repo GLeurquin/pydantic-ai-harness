@@ -1,5 +1,6 @@
 """Load, unload, and reload plugins between turns. Discarding a host unloads its plugin."""
 
+import asyncio
 import importlib
 import importlib.util
 import sys
@@ -157,6 +158,9 @@ class PluginLoader(Generic[DepsT]):
             entry.host = host
             self._loaded[name] = host
             await _dispatch(host, self._session_start())
+        except asyncio.CancelledError:
+            self._drop(entry)
+            raise
         except Exception as exc:
             self._drop(entry)
             entry.error = f'{type(exc).__name__}: {exc}'
@@ -172,7 +176,8 @@ class PluginLoader(Generic[DepsT]):
             await _dispatch(entry.host, SessionEnd(reason=reason))
         except Exception as exc:  # noqa: BLE001 -- unloading must finish even if the plugin misbehaves.
             self._console.print(str(PluginError(name, exc)), style=theme.ERROR, markup=False)
-        self._drop(entry)
+        finally:
+            self._drop(entry)
 
     def _drop(self, entry: PluginEntry[DepsT]) -> None:
         if entry.host is not None:

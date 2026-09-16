@@ -70,7 +70,7 @@ class ModelSettingsSource:
         except ValidationError as exc:
             return f'{row.key}: {first_error(exc)}'
         self._store.save_model_settings(self.model, form.model_dump(exclude_none=True))
-        return f'Saved {row.key} for {self.model}. Applies to the next prompt.'
+        return f'Saved {row.key} for {self.model}. Applies when this model is selected.'
 
     def reset(self, row: FieldRow) -> str:
         """Drop one override."""

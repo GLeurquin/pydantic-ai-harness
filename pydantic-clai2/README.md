@@ -111,8 +111,8 @@ prices, and any settings you have saved for that model. Type to filter. Enter
 makes it the model for the next prompt. `S` opens that model's settings:
 `max_tokens`, `temperature`, `top_p`, `top_k`, `seed`, `timeout`, the two
 penalties, `parallel_tool_calls`, `thinking`, and `service_tier`. They are
-saved per model and passed to every run with that model; providers ignore the
-ones they do not support. `/model NAME` sets the model without the menu.
+saved per model and passed to every run with that model. Unsupported settings
+may be ignored or rejected by the provider; select only settings your provider supports. `/model NAME` sets the model without the menu.
 
 Tab completes setting names, boolean values, and model names from Pydantic AI's
 built-in catalog without network access. Provider prefixes include `openai-codex:`,

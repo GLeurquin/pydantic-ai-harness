@@ -90,7 +90,7 @@ def test_model_settings_source(tmp_path: Path) -> None:
     assert source.problem(max_tokens, '10') is None
     assert source.problem(max_tokens, '0') == 'Input should be greater than 0'
     assert source.problem(max_tokens, 'ten') is not None
-    assert source.apply(max_tokens, '10') == 'Saved max_tokens for openai:gpt-5. Applies to the next prompt.'
+    assert source.apply(max_tokens, '10') == 'Saved max_tokens for openai:gpt-5. Applies when this model is selected.'
     assert source.apply(thinking, 'high').startswith('Saved thinking')
     assert source.apply(max_tokens, '-1') == 'max_tokens: Input should be greater than 0'
     assert store.model_settings('openai:gpt-5') == {'max_tokens': 10, 'thinking': 'high'}
@@ -122,7 +122,10 @@ def test_model_menu_rows_details_and_flow(tmp_path: Path) -> None:
         texts=[typed('42')],
     )
     messages = run_model_flow(menu, script.runners)
-    assert messages == [f'Saved max_tokens for {priced.value}. Applies to the next prompt.', 'Saved model. Applied.']
+    assert messages == [
+        f'Saved max_tokens for {priced.value}. Applies when this model is selected.',
+        'Saved model. Applied.',
+    ]
     assert context.settings.model == priced.value
     assert applied == ['model']
     assert 'settings  max_tokens=42' in menu.details(priced)
