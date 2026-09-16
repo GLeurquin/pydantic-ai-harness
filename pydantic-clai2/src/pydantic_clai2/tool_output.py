@@ -2,16 +2,25 @@
 
 from dataclasses import dataclass
 
-from pydantic_ai import AgentStreamEvent
+from pydantic import BaseModel
+from pydantic_ai import AgentStreamEvent, FunctionToolCallEvent
 from pydantic_ai_harness.coder import ShellFinishedEvent, ShellOutputEvent, ShellStartedEvent
 from pydantic_ai_harness.filesystem import FileChangeRequestEvent, FileEditedEvent, FileWrittenEvent
 from rich.console import Console
+from rich.text import Text
 from termflow.diff import DiffRenderer  # pyright: ignore[reportMissingTypeStubs]
 
 
 def terminal_text(text: str) -> str:
     """Make untrusted control characters inert before terminal rendering."""
     return ''.join(char if char.isprintable() or char in '\n\t' else f'\\x{ord(char):02x}' for char in text)
+
+
+class DisplayArguments(BaseModel):
+    """Optional display fields for file and shell tools."""
+
+    path: str | None = None
+    command: str | None = None
 
 
 @dataclass
@@ -36,7 +45,34 @@ class ToolOutput:
         self.console = console
         self.shell_lines = shell_lines
         self._shells: dict[str | None, ShellPreview] = {}
+        self._headers: set[tuple[str | None, str]] = set()
         self._writes: dict[tuple[str | None, str, str], FileChangeRequestEvent] = {}
+
+    def _header(self, name: str, argument: str) -> None:
+        lines = argument.splitlines()
+        summary = lines[0] if lines else ''
+        if len(lines) > 1:
+            summary += f' (+{len(lines) - 1} command lines)'
+        text = Text(f'● {name} ', style='dim')
+        text.append(terminal_text(summary), style='cyan')
+        self.console.print(text, overflow='ellipsis', no_wrap=True)
+        self.console.print()
+
+    def render_call(self, event: FunctionToolCallEvent) -> bool:
+        """Show arguments once, before execution, including for failed calls."""
+        name = event.part.tool_name
+        if name not in ('shell', 'write_file', 'edit_file'):
+            return False
+        try:
+            args = DisplayArguments.model_validate_json(event.part.args_as_json_str())
+        except ValueError:
+            return False
+        argument = args.command if name == 'shell' else args.path
+        if argument is None:
+            return False
+        self._header(name, argument)
+        self._headers.add((event.part.tool_call_id, name))
+        return True
 
     def _shell_chunk(self, event: ShellOutputEvent) -> None:
         preview = self._shells.setdefault(event.tool_call_id, ShellPreview())
@@ -82,17 +118,10 @@ class ToolOutput:
         """Return whether this event belongs to the specialized tool display."""
         if isinstance(event, ShellStartedEvent):
             self._shells[event.tool_call_id] = ShellPreview()
-            command_lines = event.command.splitlines()
-            command = command_lines[0] if command_lines else ''
-            extra = f' (+{len(command_lines) - 1} command lines)' if len(command_lines) > 1 else ''
-            self.console.print(
-                f'$ {terminal_text(command)}{extra}',
-                style='dim cyan',
-                markup=False,
-                highlight=False,
-                overflow='ellipsis',
-                no_wrap=True,
-            )
+            key = (event.tool_call_id, 'shell')
+            if key not in self._headers:
+                self._header('shell', event.command)
+            self._headers.discard(key)
         elif isinstance(event, ShellOutputEvent):
             self._shell_chunk(event)
         elif isinstance(event, ShellFinishedEvent):
@@ -117,10 +146,16 @@ class ToolOutput:
             if event.operation == 'write':
                 self._writes[event.tool_call_id, event.root_dir, event.path] = event
         elif isinstance(event, FileEditedEvent):
-            self.console.print(f'Edited {terminal_text(event.path)}', style='cyan', markup=False)
+            key = (event.tool_call_id, 'edit_file')
+            if key not in self._headers:
+                self._header('edit_file', event.path)
+            self._headers.discard(key)
             self._diff(event.diff, truncated=event.truncated)
         elif isinstance(event, FileWrittenEvent):
-            self.console.print(f'Wrote {terminal_text(event.path)}', style='cyan', markup=False, highlight=False)
+            key = (event.tool_call_id, 'write_file')
+            if key not in self._headers:
+                self._header('write_file', event.path)
+            self._headers.discard(key)
             request = self._writes.pop((event.tool_call_id, event.root_dir, event.path), None)
             if request is not None and not request.cancelled:
                 self._diff(request.diff, truncated=request.truncated)

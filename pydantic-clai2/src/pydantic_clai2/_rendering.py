@@ -85,6 +85,8 @@ class StreamRenderer:
             if self._grep_output.render(event):
                 return
             if isinstance(event, FunctionToolCallEvent):
+                if self._tool_output.render_call(event):
+                    return
                 name = ''.join(char if char.isprintable() else ' ' for char in event.part.tool_name)
                 self.console.print(
                     f'● {name}', style='dim', markup=False, highlight=False, overflow='ellipsis', no_wrap=True

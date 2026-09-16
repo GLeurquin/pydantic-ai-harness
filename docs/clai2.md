@@ -161,6 +161,10 @@ The capability's 16 KB event preview cap can shorten the preview further. Full
 output remains in the displayed log path. Background commands can keep writing
 after the snapshot; those future lines are not included in its count.
 
+File-write/edit headers include the path on the same line as the tool name.
+Shell headers include the command on that line. Arguments use cyan, with no
+repeated completion heading before the diff or output.
+
 ## Tool details
 
 Native capability events drive specialized output: `FileEditedEvent` renders its

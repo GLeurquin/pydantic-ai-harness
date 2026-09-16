@@ -3,9 +3,12 @@
 import io
 
 import pytest
+from pydantic_ai import FunctionToolCallEvent
+from pydantic_ai.messages import ToolCallPart
 from pydantic_ai_harness.coder import ShellFinishedEvent, ShellOutputEvent, ShellStartedEvent
 from pydantic_ai_harness.filesystem import FileEditedEvent
 from rich.console import Console
+from rich.text import Text
 
 from pydantic_clai2 import StreamRenderer
 
@@ -13,6 +16,28 @@ from pydantic_clai2 import StreamRenderer
 @pytest.fixture
 def anyio_backend() -> str:
     return 'asyncio'
+
+
+async def test_shell_header_includes_argument_once() -> None:
+    output = io.StringIO()
+    renderer = StreamRenderer(Console(file=output), stop_loading=lambda: None)
+    await renderer.on_stream_event(
+        FunctionToolCallEvent(
+            part=ToolCallPart(
+                'shell',
+                {'command': 'ls /tmp'},
+                tool_call_id='shell-call',
+            )
+        )
+    )
+    await renderer.on_stream_event(
+        ShellStartedEvent(
+            tool_call_id='shell-call',
+            command='ls /tmp',
+            pid=1,
+        )
+    )
+    assert output.getvalue() == '● shell ls /tmp\n\n'
 
 
 async def test_shell_event_display() -> None:
@@ -30,7 +55,7 @@ async def test_shell_event_display() -> None:
             truncated=True,
         )
     )
-    assert '$ printf hello' in output.getvalue()
+    assert '● shell printf hello' in output.getvalue()
     assert 'hello' in output.getvalue()
     assert '\x1b]52;' not in output.getvalue()
     assert 'truncated' in output.getvalue()
@@ -103,6 +128,6 @@ async def test_edit_uses_termflow_diff_renderer() -> None:
         )
     )
     text = output.getvalue()
-    assert 'Edited' in text and 'demo.py' in text
+    assert '● edit_file demo.py' in Text.from_ansi(text).plain
     assert 'old' in text and 'new' in text
     assert '\x1b[' in text

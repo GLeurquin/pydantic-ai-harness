@@ -41,4 +41,6 @@ async def test_write_diff_through_agent(tmp_path: Path, existing: bool) -> None:
     await session.prompt('write the file')
     assert path.read_text() == 'new content\n'
     assert '+new content' in output.getvalue()
+    assert output.getvalue().count('● write_file example.txt') == 1
+    assert 'Wrote ' not in output.getvalue()
     assert ('-old content' in output.getvalue()) == existing
