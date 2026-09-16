@@ -26,15 +26,33 @@ CLAI or print terminal output from a reusable Harness capability.
 
 ## Create and install a plugin
 
-Create ~/.config/pydantic-clai2/plugins/greet.py, or use
-$XDG_CONFIG_HOME/pydantic-clai2/plugins/greet.py when XDG_CONFIG_HOME is set:
+The quickest plugin is an existing Pydantic AI capability. Pydantic AI Harness
+ships several; ExaSearch adds web_search and get_page tools backed by Exa. It
+needs the exa extra installed in CLAI's Python environment and EXA_API_KEY set,
+then one command, no file:
+
+```text
+/plugins add exa pydantic_ai_harness.exa:ExaSearch '{"num_results": 8}'
+```
+
+The JSON supplies constructor keyword arguments; read the capability's
+signature in the installed source to know which exist. Other capabilities
+register the same way: YouSearch from pydantic_ai_harness.youdotcom, core's
+WebSearch, or a user-written AbstractCapability subclass.
+
+When a plugin needs more than one capability, a command, or a hook, write a
+drop-in file. Create ~/.config/pydantic-clai2/plugins/search.py, or use
+$XDG_CONFIG_HOME/pydantic-clai2/plugins/search.py when XDG_CONFIG_HOME is set:
 
 ```python
+from pydantic_ai_harness.exa import ExaSearch
+
 from pydantic_clai2.commands import Command
 from pydantic_clai2.plugins import PluginHost
 
 
 def activate(host: PluginHost[None]) -> None:
+    host.add(ExaSearch(num_results=8, text_summary=True))
     host.commands.register(
         Command(
             name='greet',
@@ -44,20 +62,21 @@ def activate(host: PluginHost[None]) -> None:
     )
 ```
 
-Restart CLAI to discover the drop-in, or use /plugins enable greet while running.
-/greet Ada now prints Hello Ada. Use /plugins reload greet after editing.
-Alternatively install an importable Python package in CLAI's Python environment
-and run /plugins add greet my_package.greet. A module exports activate(host);
-module:attr may identify a host activation function or a bare capability class.
-For a bare class, the optional JSON supplies constructor keyword arguments:
+Restart CLAI to discover the drop-in, or use /plugins enable search while running.
+The agent has the search tools on the next prompt and /greet Ada prints Hello Ada.
+Use /plugins reload search after editing. Alternatively install an importable
+Python package in CLAI's Python environment and run /plugins add search
+my_package.search. A module exports activate(host); module:attr may identify a
+host activation function or a bare capability class. For a bare class, the
+optional JSON supplies constructor keyword arguments:
 
 ```text
 /plugins add coder pydantic_ai_harness.coder:Coder '{"unrestricted_filesystem": true}'
 /plugins list
-/plugins disable greet
-/plugins enable greet
-/plugins reload greet
-/plugins remove greet
+/plugins disable search
+/plugins enable search
+/plugins reload search
+/plugins remove search
 ```
 
 Do not add a second Coder when the default agent already has one. The example

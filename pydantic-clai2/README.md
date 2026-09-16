@@ -291,15 +291,25 @@ or cancellation. No model requests or telemetry are added for status reporting.
 ## Plugins
 
 Everything beyond the prompt loop is a plugin, including the default coding
-tools. A plugin is a Python file with an `activate(host)` function. Through
-`host` it can react to lifecycle moments and typed events, add `/commands`, give
-the agent tools, draw its own output, and read validated settings.
+tools. Any Pydantic AI capability is a plugin as it is; give the agent web
+search from Pydantic AI Harness without writing code:
+
+```text
+/plugins add exa pydantic_ai_harness.exa:ExaSearch '{"num_results": 8}'
+```
+
+For more than one capability, a `/command`, or a lifecycle hook, a plugin is a
+Python file with an `activate(host)` function:
 
 ```python
+from pydantic_ai_harness.exa import ExaSearch
+
 from pydantic_clai2.plugins import PluginHost, TurnEnd
 
 
 def activate(host: PluginHost) -> None:
+    host.add(ExaSearch(num_results=8))
+
     @host.on('turn_end')
     async def ping(event: TurnEnd) -> None:
         host.console.bell()
