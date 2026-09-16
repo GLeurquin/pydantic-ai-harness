@@ -85,12 +85,12 @@ Plugins load and unload while CLAI runs. The rules that make that safe:
 3. Fire it from exactly one place in the shell.
 4. Document it in `PLUGINS.md` in the table it belongs to.
 
-## The `/plugins` and `/set` menus
+## The `/plugins`, `/set`, and `/model` menus
 
 Built on termflow's `MenuBuilder` (and `TextInputBuilder` for typed values),
-exactly like Code Puppy's `/agent`, `/mcp`, and `/set` menus: alternate screen,
-a `.preview` panel on the right, `.on_key` for single-key actions,
-`.footer_hint` for the key legend, `markdown_style()` for colours.
+exactly like Code Puppy's `/agent`, `/mcp`, `/set`, and `/model` menus:
+alternate screen, a `.preview` panel on the right, `.on_key` for single-key
+actions, `.footer_hint` for the key legend, `markdown_style()` for colours.
 
 - Split it in two: a pure `build_plugins_menu(...)` that returns the menu (so
   tests drive it headless, no terminal), and a thin async runner that owns the
@@ -102,9 +102,21 @@ a `.preview` panel on the right, `.on_key` for single-key actions,
 - Esc and Ctrl-C close cleanly. They are not errors.
 - Adding a plugin is not in the menu. It needs free text, so it stays
   `/plugins add`.
+- Anything that is "edit named, validated fields" uses `field_menu.py`: a
+  `FieldSource` supplies rows, current values, validation, apply, and reset;
+  `FieldMenu` builds the widgets; `run_flow` is the loop. `/set` and per-model
+  settings are two sources, not two editors. Do not write a third editor.
 - `/set` edits go through `CommandContext.set_setting` / `reset_setting`, the
-  same path as the typed command, so validation lives in one place. The menu
-  loop (`run_flow`) takes its widget runners as parameters; tests script them.
+  same path as the typed command, so validation lives in one place.
+- Widget runners are a `Runners` value passed into the loops; tests pass
+  scripted ones (`tests/menu_script.py`). Only the real `widget.run()`
+  one-liners are `no cover`.
+- Model sources live in `model_catalog.py`. To add one (models.dev, a provider
+  API), write a function returning `CatalogModel`s and merge it in `catalog()`.
+  The menu never talks to a source directly.
+- Per-model settings are the editable subset of core's `ModelSettings`,
+  declared once as `ModelSettingsForm` with descriptions and bounds. Extend the
+  form, not the menu, to expose another setting.
 
 ## Rendering
 
@@ -136,7 +148,11 @@ the pydantic.dev `pydantic-visual-identity` skill's `brand-identity.md`.
 | `plugins.py` | `PluginHost`, hook names, event dataclasses |
 | `plugin_loader.py` | discovery, load, unload, reload; the `/plugins` subcommands |
 | `plugin_menu.py` | the `/plugins` full-screen menu (`PluginMenu` plus its runner) |
-| `set_menu.py` | the `/set` full-screen menu (`SettingsMenu`, `run_flow`, its runner) |
+| `field_menu.py` | the shared field editor (`FieldSource`, `FieldMenu`, `Runners`, `run_flow`) |
+| `set_menu.py` | `/set`: `SettingsSource` over `CommandContext` |
+| `model_menu.py` | `/model`: the picker, `ModelSettingsSource`, `run_model_flow` |
+| `model_catalog.py` | model sources (genai-prices today) merged by `catalog()` |
+| `model_settings.py` | `ModelSettingsForm`, the editable subset of `ModelSettings` |
 | `commands.py` | `Command`, the registry, completion |
 | `config.py` | `Settings`, `PluginSettings` |
 | `settings_store.py` | the SQLite store under `$XDG_CONFIG_HOME/pydantic-clai2/` |

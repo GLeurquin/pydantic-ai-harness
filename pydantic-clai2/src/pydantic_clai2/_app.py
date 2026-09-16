@@ -25,6 +25,7 @@ from .commands import Command, Commands, config_command, config_completions, set
 from .config import Settings
 from .input_history import input_history
 from .interrupts import Interrupts
+from .model_menu import open_model_menu
 from .plugin_loader import PluginError, PluginLoader
 from .plugin_menu import open_plugins_menu
 from .plugins import Renderer, SessionEndReason, SessionStart, TurnEnd, TurnStart
@@ -93,6 +94,14 @@ async def chat(
             description='Change settings; no arguments opens the menu',
             handler=lambda args: context.set_setting(args) if args else open_settings_menu(context),
             complete=set_completions,
+        )
+    )
+    commands.register(
+        Command(
+            name='model',
+            description='Pick a model or edit its settings; no arguments opens the menu',
+            handler=lambda args: context.set_setting(['model', *args]) if args else open_model_menu(context),
+            complete=lambda args: set_completions(['model', *args]) if len(args) <= 1 else (),
         )
     )
     commands.register(Command(name='help', description='Show commands', handler=commands.help))
@@ -214,6 +223,7 @@ class _Shell(Generic[DepsT, OutputT]):
             self.console.print()
             return False
         self.session.plugins = (*self.plugins, *self.loader.capabilities())
+        self.session.model_settings = self.context.model_settings(self.session.model or _model_label(self.agent))
         ended: TurnEnd | None = None
 
         async def run_prompt() -> None:

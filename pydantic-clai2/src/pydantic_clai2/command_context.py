@@ -4,8 +4,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from pydantic import JsonValue, TypeAdapter
+from pydantic_ai.settings import ModelSettings
 
 from .config import SETTING_FIELDS, Settings, resolve_settings
+from .model_settings import model_settings_from_json
 from .settings_store import SettingsStore
 
 
@@ -37,6 +39,10 @@ class CommandContext:
         updated = self.settings.model_dump()
         updated[SETTING_FIELDS[key]] = value
         return value, Settings.model_validate(updated)
+
+    def model_settings(self, model: str) -> ModelSettings | None:
+        """Saved overrides for `model`, ready for `agent.run`; `None` when there are none."""
+        return model_settings_from_json(self.store.model_settings(model)).to_model_settings()
 
     def reset_setting(self, key: str) -> str:
         """Forget the saved override and apply the default now."""

@@ -102,6 +102,18 @@ anything not listed), everything else a typed input that validates as you go.
 An empty value resets. `R` resets the highlighted setting. Esc closes. Every
 edit saves and applies immediately, the same as `/set KEY VALUE`.
 
+## Models and their settings
+
+`/model` opens a picker over every model CLAI knows: genai-prices' catalog
+filtered to providers Pydantic AI can run, plus core's own model list, plus
+whatever you have set now. The right side shows the provider, context window,
+prices, and any settings you have saved for that model. Type to filter. Enter
+makes it the model for the next prompt. `S` opens that model's settings:
+`max_tokens`, `temperature`, `top_p`, `top_k`, `seed`, `timeout`, the two
+penalties, `parallel_tool_calls`, `thinking`, and `service_tier`. They are
+saved per model and passed to every run with that model; providers ignore the
+ones they do not support. `/model NAME` sets the model without the menu.
+
 Tab completes setting names, boolean values, and model names from Pydantic AI's
 built-in catalog without network access. Provider prefixes include `openai-codex:`,
 which core supports but does not currently include in that model catalog. Complete
@@ -119,7 +131,7 @@ Settings are validated before writes. `/set` updates the active settings snapsho
 legacy `/config` writes apply on restart; plugin changes apply on the next prompt.
 `--request-limit` controls the full prompt's model-request budget.
 
-Interactive commands: `/login`, `/set`, `/help`, `/new`, `/exit`, `/config`, and `/plugins`.
+Interactive commands: `/login`, `/set`, `/model`, `/help`, `/new`, `/exit`, `/config`, and `/plugins`.
 Tab completion suggests commands, settings, boolean values, plugin identifiers,
 and paths after `@`. Path completion inserts a path; it does not attach file contents.
 Unknown slash commands are not sent to the model. Up/down recall prompt history
