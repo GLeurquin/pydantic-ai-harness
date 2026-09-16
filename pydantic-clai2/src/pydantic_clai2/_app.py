@@ -215,12 +215,14 @@ class _Shell(Generic[DepsT, OutputT]):
         except PluginError as exc:
             self.console.print(str(exc), style=theme.ERROR, markup=False)
             self.console.print()
+            await self.loader.fire(TurnEnd(text=start.text, outcome='failed', error=exc))
             return False
         if start.cancelled:
             self.console.print(
                 f'Turn cancelled by a plugin: {start.cancel_reason or "no reason given"}', style=theme.WARNING
             )
             self.console.print()
+            await self.loader.fire(TurnEnd(text=start.text, outcome='cancelled'))
             return False
         self.session.plugins = (*self.plugins, *self.loader.capabilities())
         self.session.model_settings = self.context.model_settings(self.session.model or _model_label(self.agent))

@@ -1,6 +1,7 @@
 """Load, unload, and reload plugins between turns. Discarding a host unloads its plugin."""
 
 import asyncio
+import hashlib
 import importlib
 import importlib.util
 import sys
@@ -91,13 +92,14 @@ class PluginLoader(Generic[DepsT]):
         folder = self._discover()
         declared = {declaration.id: declaration for declaration in self._store.plugins()}
         for name in folder.keys() - declared.keys():
-            declared[name] = PluginSettings(id=name, factory=name)
+            declared[name] = PluginSettings(id=name, factory=name, path=str(folder[name]))
         refreshed: dict[str, PluginEntry[DepsT]] = {}
         for name in sorted(declared):
             previous = self._entries.get(name)
+            path = declared[name].path
             refreshed[name] = PluginEntry(
                 declaration=declared[name],
-                path=folder.get(name) if declared[name].factory == name else None,
+                path=Path(path) if path is not None else None,
                 host=previous.host if previous else None,
                 error=previous.error if previous else None,
             )
@@ -112,7 +114,12 @@ class PluginLoader(Generic[DepsT]):
         if not folder.is_dir():
             return {}
         found: dict[str, Path] = {}
-        for child in sorted(folder.iterdir()):
+        try:
+            children = sorted(folder.iterdir())
+        except OSError as exc:
+            self._console.print(f'Cannot discover plugins: {exc}', style=theme.ERROR, markup=False)
+            return {}
+        for child in children:
             name = child.stem if child.suffix == '.py' else child.name
             if not name.isidentifier() or name.startswith('_'):
                 continue
@@ -269,11 +276,13 @@ class PluginLoader(Generic[DepsT]):
 
 
 def _import_file(name: str, path: Path) -> ModuleType:
-    qualified = f'{_FOLDER_PACKAGE}.{name}'
-    if _FOLDER_PACKAGE not in sys.modules:
-        package = ModuleType(_FOLDER_PACKAGE)
-        package.__path__ = [str(path.parent.parent if path.name == '__init__.py' else path.parent)]
-        sys.modules[_FOLDER_PACKAGE] = package
+    root = path.parent.parent if path.name == '__init__.py' else path.parent
+    namespace = f'{_FOLDER_PACKAGE}_{hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:16]}'
+    qualified = f'{namespace}.{name}'
+    if namespace not in sys.modules:
+        package = ModuleType(namespace)
+        package.__path__ = [str(root)]
+        sys.modules[namespace] = package
     for cached in list(sys.modules):
         if cached == qualified or cached.startswith(qualified + '.'):
             del sys.modules[cached]

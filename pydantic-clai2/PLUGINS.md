@@ -235,10 +235,12 @@ Bad or missing values fail at startup with a message naming your plugin.
 ## Rules that keep plugins predictable
 
 - Handlers are `async`. There is no sync variant of anything.
-- Handlers return `None` unless the name says otherwise. To change or stop
-  something, edit the event or call `event.cancel()`.
-- If a `turn_start` or `before_tool_execute` handler raises, the turn or the tool
-  is cancelled and the error is shown. Failing closed is the only mode.
+- CLAI host observers return `None`. Core hooks keep their exact core return
+  contracts: for example `before_model_request` must return its `ModelRequestContext`.
+  For cancelable host events, edit the event or call `event.cancel()`.
+- Raising in `turn_start` prevents the turn. Raising in core `before_tool_execute`
+  fails the agent run, not only that tool. Use core's documented tool-denial
+  mechanisms when the model should recover instead of ending the run.
 - Startup plugins load in alphabetical ID order. Handlers run in activation
   order, while `/plugins list` remains alphabetical. The first renderer that returns something wins. A
   plugin loaded later goes to the end of the line.

@@ -55,5 +55,6 @@ class PluginSettings(BaseModel):
     model_config = ConfigDict(extra='forbid', frozen=True, strict=True)
     id: str = Field(min_length=1)
     factory: str = Field(pattern=r'^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?::[A-Za-z_]\w*)?$')
+    path: str | None = None
     enabled: bool = True
     settings: dict[str, JsonValue] = Field(default_factory=dict)

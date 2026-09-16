@@ -18,6 +18,7 @@ from pydantic_clai2.command_context import CommandContext
 from pydantic_clai2.config import PluginSettings, Settings
 from pydantic_clai2.menu_worker import menu_key, run_worker
 from pydantic_clai2.model_settings import ModelSettingsForm
+from pydantic_clai2.plugin_loader import PluginError
 from pydantic_clai2.plugins import PluginHost
 from pydantic_clai2.settings_store import SettingsStore
 
@@ -58,6 +59,22 @@ async def test_cancelled_plugin_start_rolls_back(tmp_path: Path) -> None:
         await harness.loader.load('cancelled')
     assert harness.loader.entries()[0].host is None
     assert 'cancelled' not in await harness.commands.execute_async('/help')
+
+
+async def test_missing_dropin_and_unreadable_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    harness = Harness(tmp_path)
+    path = harness.write('gone')
+    await harness.loader.disable('gone')
+    path.unlink()
+    with pytest.raises(PluginError):
+        await harness.loader.enable('gone')
+
+    def denied(path: Path) -> list[Path]:
+        raise PermissionError('denied')
+
+    monkeypatch.setattr(Path, 'iterdir', denied)
+    assert harness.loader.entries()
+    assert 'Cannot discover plugins' in harness.text
 
 
 async def test_explicit_source_wins(tmp_path: Path) -> None:
