@@ -27,7 +27,7 @@ clai2 = 'pydantic_clai2.__main__:main'
 packages = ['src/pydantic_clai2']
 
 [tool.uv.sources]
-pydantic-ai-harness = { path = '../..', editable = true }
+pydantic-ai-harness = { path = '..', editable = true }
 
 [dependency-groups]
 dev = ['pytest>=9', 'pytest-anyio', 'pyright>=1.1.408', 'ruff>=0.14']
@@ -39,7 +39,7 @@ venvPath = '.'
 venv = '.venv'
 
 [tool.ruff]
-extend = '../../pyproject.toml'
+extend = '../pyproject.toml'
 
 [tool.ruff.lint]
 extend-select = ['BLE001']

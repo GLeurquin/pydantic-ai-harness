@@ -9,7 +9,7 @@ Launch `clai2`. No model needs to be configured before the terminal opens.
 Type `/set model ` and press Tab to pick a provider-qualified model name.
 The choice is saved in SQLite and used for the next prompt without restarting.
 
-From a source checkout, launch with `uv run --project packages/pydantic-clai2 clai2`.
+From a source checkout, launch with `uv run --project pydantic-clai2 clai2`.
 
 Set the provider's API key environment variable before starting. The default Coder
 can read and modify files and execute commands with your user permissions. Run it
