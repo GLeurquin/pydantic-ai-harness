@@ -14,8 +14,10 @@ Press Ctrl-C once to cancel the active agent turn and return to input. Tool clea
 and terminal restoration finish before the next prompt. Press Ctrl-C again within
 two seconds to exit, including across the transition back to input. At the prompt,
 the first press clears input and the second exits. Ctrl-D and `/exit` also quit.
-External application cancellation still propagates; cancelled turns are not added
-to conversation history, but completed tool side effects cannot be undone.
+The interrupted prompt and captured partial responses and tool results stay in
+conversation history, so you can follow up with a clarification. No interrupted
+run is automatically retried. External application cancellation still propagates,
+and completed tool side effects cannot be undone.
 
 ## Input history
 
@@ -134,9 +136,9 @@ legacy `/config` writes apply on restart; plugin changes apply on the next promp
 Interactive commands: `/login`, `/set`, `/model`, `/help`, `/new`, `/exit`, `/config`, and `/plugins`.
 Tab completion suggests commands, settings, boolean values, plugin identifiers,
 and paths after `@`. Path completion inserts a path; it does not attach file contents.
-Unknown slash commands are not sent to the model. Up/down recall prompt history
-within this process. Ctrl-D exits. Ctrl-C at input clears the line; during a run it
-exits and unwinds the agent. No cancelled run is automatically retried.
+Unknown slash commands are not sent to the model. Up/down recall saved prompt
+history. Ctrl-D exits. Ctrl-C at input clears the line; during a run it cancels
+the turn and returns to input. No cancelled run is automatically retried.
 
 ## Bring an agent
 
@@ -152,9 +154,10 @@ asyncio.run(chat(agent, deps=None))
 `Session(agent, deps=..., plugins=..., on_stream_event=...)` is the noninteractive
 API. Call `await session.prompt(text)` for each turn. Native `agent.run` drives the
 loop through tools to completion. Successful turns retain `result.all_messages()`;
-failed or cancelled turns leave the previous history intact, though external tool
-side effects may already have occurred. History is in memory only. Structured
-outputs are supported and displayed after completion.
+cancelled turns retain the prompt and messages captured by Pydantic AI, including
+interrupted responses and tool results. Failed turns leave the previous history
+intact. External tool side effects may already have occurred. History is in memory
+only. Structured outputs are supported and displayed after completion.
 
 CLAI is painted in the Pydantic brand palette: Lithium magenta for headings,
 the banner, and the thing to look at; Calcium for list markers and errors; Aqua

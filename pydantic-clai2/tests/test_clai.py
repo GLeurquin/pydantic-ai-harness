@@ -1,10 +1,10 @@
 """Public behavior of sessions, settings, plugins, completion, and rendering."""
 
-import asyncio
 import io
 from dataclasses import dataclass
 from pathlib import Path
 
+import anyio
 import pytest
 from pydantic import ValidationError
 from pydantic_ai import (
@@ -21,7 +21,7 @@ from pydantic_ai import (
     models,
 )
 from pydantic_ai.capabilities import AbstractCapability, on_event
-from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
+from pydantic_ai.messages import ModelRequest, UserPromptPart
 from pydantic_ai.models.test import TestModel
 from rich.console import Console
 from termflow.tui.completion import CompleteEvent, Document  # pyright: ignore[reportMissingTypeStubs]
@@ -95,8 +95,8 @@ async def test_history_tools_and_plugins() -> None:
 
 
 async def test_cancel_preserves_history_and_rejects_concurrency() -> None:
-    started = asyncio.Event()
-    release = asyncio.Event()
+    started = anyio.Event()
+    release = anyio.Event()
     agent = Agent(TestModel(custom_output_text='done'))
 
     @agent.tool_plain
@@ -105,17 +105,36 @@ async def test_cancel_preserves_history_and_rejects_concurrency() -> None:
         await release.wait()
         return 'ok'
 
-    history: list[ModelMessage] = []
-    session = Session(agent, deps=None, message_history=history)
-    task = asyncio.create_task(session.prompt('wait'))
-    await started.wait()
-    with pytest.raises(RuntimeError):
-        await session.prompt('overlap')
-    with pytest.raises(RuntimeError):
-        session.clear()
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    session = Session(agent, deps=None, message_history=[ModelRequest(parts=[UserPromptPart('first')])])
+    prior = session.messages
+    scope = anyio.CancelScope()
+
+    async def interrupted_turn() -> None:
+        with scope:
+            await session.prompt('make a personality plugin')
+
+    async with anyio.create_task_group() as tasks:
+        tasks.start_soon(interrupted_turn)
+        await started.wait()
+        with pytest.raises(RuntimeError):
+            await session.prompt('overlap')
+        with pytest.raises(RuntimeError):
+            session.clear()
+        scope.cancel()
+    assert scope.cancelled_caught
+    assert session.messages[: len(prior)] == prior
+    assert len(session.messages) > len(prior)
+    release.set()
+    result = await session.prompt('actually, combine playful and pedantic')
+    prompts = [
+        part.content
+        for message in result.all_messages()
+        if isinstance(message, ModelRequest)
+        for part in message.parts
+        if isinstance(part, UserPromptPart)
+    ]
+    assert prompts == ['first', 'make a personality plugin', 'actually, combine playful and pedantic']
+    session.clear()
     assert session.messages == []
 
 

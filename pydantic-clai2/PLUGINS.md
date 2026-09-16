@@ -121,6 +121,11 @@ Four names belong to CLAI itself. They fire outside the agent run, in the shell:
 | `turn_start` | you pressed Enter on a prompt | `text` | yes: edit `event.text`, or `event.cancel()` |
 | `turn_end` | the turn finished, failed, or was interrupted | `text`, `outcome`, `result`, `error` | no |
 
+Ctrl-C during an agent run keeps the prompt and captured partial messages in
+conversation history for the next turn. Cancellation still reaches the running
+tools for cleanup; it does not undo completed side effects or retry the run.
+A prompt cancelled by `turn_start` never starts an agent run and is not retained.
+
 Every other name is a Pydantic AI lifecycle hook, spelled exactly as on core's
 `Hooks().on`, with the same handler signature. The ones people reach for:
 
