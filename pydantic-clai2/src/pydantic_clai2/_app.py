@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import TypeVar
 
 from prompt_toolkit import PromptSession
@@ -65,7 +66,7 @@ async def chat(
         if key == 'model':
             session.model = updated.model
         elif key == 'run.request_limit':
-            session.usage_limits = UsageLimits(request_limit=updated.request_limit)
+            session.usage_limits = replace(session.usage_limits or UsageLimits(), request_limit=updated.request_limit)
 
     context = CommandContext(settings=settings, store=store, clear_history=session.clear, apply_setting=apply_setting)
 

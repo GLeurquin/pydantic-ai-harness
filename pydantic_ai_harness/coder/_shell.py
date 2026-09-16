@@ -15,8 +15,11 @@ from typing import Literal
 
 import anyio
 from anyio.to_thread import run_sync
-from pydantic_ai import ModelRetry
+from pydantic_ai import ModelRetry, RunContext
+from pydantic_ai.tools import AgentDepsT
 
+from pydantic_ai_harness.coder._events import ShellStartedEvent
+from pydantic_ai_harness.coder._shell_events import ShellOutput
 from pydantic_ai_harness.shell import LLM_API_KEY_ENV_PATTERNS
 
 
@@ -26,6 +29,7 @@ async def shell(
     *,
     mode: Literal['foreground', 'background'] = 'foreground',
     timeout: float = 270,
+    ctx: RunContext[AgentDepsT] | None = None,
 ) -> str:
     """Run a shell command, returning durable PID, output and exit-status paths."""
     if '\0' in command:
@@ -55,13 +59,20 @@ async def shell(
     # Reap the supervisor without tying command lifetime to an async run or loop.
     threading.Thread(target=process.wait, daemon=True).start()
     status_path = directory / 'status.json'
+    events = ShellOutput(directory / 'output.log', ctx)
+
     try:
+        if ctx is not None:
+            await ctx.emit(ShellStartedEvent(tool_call_id=ctx.tool_call_id, command=command, pid=process.pid))
         if mode == 'foreground':
             with anyio.move_on_after(timeout):
                 while not status_path.exists() or json.loads(status_path.read_text())['exit_code'] is None:
                     if process.returncode is not None and not status_path.exists():
                         raise ModelRetry(f'Shell supervisor exited with {process.returncode}; logs: {directory}')
+                    await events.emit()
                     await anyio.sleep(0.05)
+        if mode == 'foreground':
+            await events.drain()
     except BaseException:
         # A cancelled call cannot return handles. Terminate its process group
         # instead of leaving an unreachable command behind.
@@ -87,4 +98,5 @@ async def shell(
         with output.open('rb') as source:
             source.seek(max(0, output.stat().st_size - 16000))
             handles += source.read(16000).decode('utf-8', errors='replace')
+    await events.finish(pid=process.pid, status_path=status_path)
     return handles

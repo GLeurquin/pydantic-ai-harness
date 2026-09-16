@@ -5,6 +5,7 @@ from collections.abc import Callable
 
 from pydantic_ai import (
     AgentStreamEvent,
+    CapabilityEvent,
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     PartDeltaEvent,
@@ -20,6 +21,8 @@ from termflow import Parser, Renderer  # pyright: ignore[reportMissingTypeStubs]
 from termflow.render.style import RenderFeatures, RenderStyle  # pyright: ignore[reportMissingTypeStubs]
 from termflow.stream import SmoothWriter, StreamSmoother  # pyright: ignore[reportMissingTypeStubs]
 
+from .tool_output import ToolOutput, terminal_text
+
 
 class StreamRenderer:
     """Render text and thinking separately, flushing Markdown at part boundaries."""
@@ -33,6 +36,7 @@ class StreamRenderer:
         smooth_seconds: float = 0.5,
     ) -> None:
         self.console = console
+        self._tool_output = ToolOutput(console)
         self.smooth_seconds = smooth_seconds
         self._thinking = False
         self._heading_printed = False
@@ -48,6 +52,10 @@ class StreamRenderer:
 
     async def on_stream_event(self, event: AgentStreamEvent) -> None:
         """Bind this callback to `Session.on_stream_event`."""
+        if isinstance(event, CapabilityEvent):
+            await self.finish()
+            if self._tool_output.render(event):
+                return
         if isinstance(event, PartStartEvent) and isinstance(event.part, (TextPart, ThinkingPart)):
             await self.finish()
             self.stop_loading()
@@ -102,6 +110,7 @@ class StreamRenderer:
         self.console.print(content, style='dim', end='', markup=False, highlight=False)
 
     def _feed(self, content: str) -> None:
+        content = terminal_text(content)
         if content and not self._heading_printed:
             if self._thinking:
                 self.console.print('Thinking', style='dim cyan')

@@ -2,14 +2,15 @@ import os
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 
+import anyio
 import pytest
-from pydantic_ai import Agent
-from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai import Agent, RunContext
+from pydantic_ai.capabilities import AbstractCapability, on_event
 from pydantic_ai.messages import ModelMessage, ModelResponse, RetryPromptPart, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 
-from pydantic_ai_harness.coder import Coder
+from pydantic_ai_harness.coder import Coder, ShellFinishedEvent, ShellOutputEvent, ShellStartedEvent
 
 pytestmark = pytest.mark.anyio
 
@@ -121,6 +122,50 @@ class TestCoder:
     )
     async def test_search_errors(self, tmp_path: Path, name: str, arguments: dict[str, object]) -> None:
         assert await call(tmp_path, name, arguments)
+
+    async def test_shell_events(self, tmp_path: Path) -> None:
+        events: list[ShellStartedEvent | ShellOutputEvent | ShellFinishedEvent] = []
+
+        class Observer(AbstractCapability[None]):
+            @on_event(ShellStartedEvent, ShellOutputEvent, ShellFinishedEvent)
+            async def observe(
+                self, ctx: RunContext[None], event: ShellStartedEvent | ShellOutputEvent | ShellFinishedEvent
+            ) -> None:
+                events.append(event)
+
+        result = await call(tmp_path, 'shell', {'command': 'printf hello'}, capabilities=[Observer()])
+        assert 'hello' in result
+        assert isinstance(events[0], ShellStartedEvent)
+        assert isinstance(events[-1], ShellFinishedEvent)
+        assert ''.join(event.text for event in events if isinstance(event, ShellOutputEvent)) == 'hello'
+
+    @pytest.mark.skipif(os.name == 'nt', reason='POSIX FIFO handshake')
+    async def test_shell_output_arrives_before_command_exit(self, tmp_path: Path) -> None:
+        release = tmp_path / 'release.pipe'
+        os.mkfifo(release)
+        finished: list[ShellFinishedEvent] = []
+
+        class Observer(AbstractCapability[None]):
+            @on_event(ShellOutputEvent)
+            async def output(self, ctx: RunContext[None], event: ShellOutputEvent) -> None:
+                if 'ready' in event.text:
+                    await anyio.to_thread.run_sync(release.write_text, 'continue\n')
+
+            @on_event(ShellFinishedEvent)
+            async def finish(self, ctx: RunContext[None], event: ShellFinishedEvent) -> None:
+                finished.append(event)
+
+        result = await call(
+            tmp_path,
+            'shell',
+            {
+                'command': 'printf ready; read reply < release.pipe; printf done',
+                'timeout': 5,
+            },
+            capabilities=[Observer()],
+        )
+        assert 'readydone' in result
+        assert finished[0].exit_code == 0
 
     async def test_shell(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv('OPENAI_API_KEY', 'do-not-expose')

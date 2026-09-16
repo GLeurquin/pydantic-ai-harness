@@ -216,6 +216,7 @@ class CoderToolset(FunctionToolset[AgentDepsT]):
 
     async def shell(
         self,
+        ctx: RunContext[AgentDepsT],
         command: str,
         *,
         mode: Literal['foreground', 'background'] = 'foreground',
@@ -226,4 +227,4 @@ class CoderToolset(FunctionToolset[AgentDepsT]):
         Returns PID, output log and status file paths. Background processes survive
         agent runs; use shell to inspect logs/status and kill processes when done.
         """
-        return await shell(self.workspace, command, mode=mode, timeout=timeout)
+        return await shell(self.workspace, command, mode=mode, timeout=timeout, ctx=ctx)
