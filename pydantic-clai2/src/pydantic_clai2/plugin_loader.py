@@ -107,7 +107,7 @@ class PluginLoader(Generic[DepsT]):
             refreshed[name] = PluginEntry(
                 declaration=declared[name],
                 path=Path(path) if path is not None else None,
-                builtin=name in self._builtin and declared[name].factory == self._builtin[name].factory,
+                builtin=declared[name].model_copy(update={'enabled': True}) == self._builtin.get(name),
                 host=previous.host if previous else None,
                 error=previous.error if previous else None,
             )
@@ -235,7 +235,7 @@ class PluginLoader(Generic[DepsT]):
             self._store.save_plugin(entry.declaration.model_copy(update={'enabled': False}))
             return f'Disabled {name}. Delete {entry.path} to remove the plugin itself.'
         self._store.delete_plugin(name)
-        if entry.builtin:
+        if name in self._builtin:
             await self.load(name)
             return f'{name} is built in; restored its defaults. Use /plugins disable {name} to turn it off.'
         return f'Removed {name}.'
@@ -255,11 +255,14 @@ class PluginLoader(Generic[DepsT]):
             )
         action, *rest = args
         if action == 'add':
-            if rest and any(entry.name == rest[0] for entry in self.entries()):
+            existing = next((entry for entry in self.entries() if rest and entry.name == rest[0]), None)
+            if existing is not None and not existing.builtin:
                 raise ValueError(f'Plugin {rest[0]} already exists; remove its declaration before replacing it.')
+            if existing is not None:
+                await self.unload(rest[0])
             plugins_command(self._store, args)
             await self.load(rest[0])
-            return f'Added and loaded {rest[0]}.'
+            return f'Replaced built-in {rest[0]}.' if existing is not None else f'Added and loaded {rest[0]}.'
         if len(rest) != 1:
             raise ValueError(
                 'Usage: /plugins [list|add ID MODULE[:ATTR] [JSON]|enable ID|disable ID|remove ID|reload ID]'

@@ -292,3 +292,26 @@ async def test_store_declaration_replaces_a_builtin(tmp_path: Path) -> None:
     assert not entry.builtin and entry.path is not None
     assert 'hello' in {command.name for command in harness.commands}
     assert (await harness.loader.command(['remove', 'hello'])).startswith('Disabled hello.')
+
+
+async def test_add_replaces_a_builtin_and_remove_restores_it(tmp_path: Path) -> None:
+    harness = Harness(tmp_path, builtin=BUILTIN)
+    await harness.loader.load_all()
+    message = await harness.loader.command(
+        ['add', 'hello', 'pydantic_ai.capabilities:Capability', '{"instructions": "Say goodbye."}']
+    )
+    assert message == 'Replaced built-in hello.'
+    entry = harness.loader.entries()[0]
+    assert not entry.builtin and entry.state == 'enabled, loaded'
+    assert harness.store.plugins()[0].settings == {'instructions': 'Say goodbye.'}
+    assert len(harness.loader.capabilities()) == 1
+
+    message = await harness.loader.command(['remove', 'hello'])
+    assert message == 'hello is built in; restored its defaults. Use /plugins disable hello to turn it off.'
+    entry = harness.loader.entries()[0]
+    assert entry.builtin and entry.state == 'enabled, loaded'
+    assert harness.store.plugins() == []
+    replace = ['add', 'hello', 'pydantic_ai.capabilities:Capability']
+    assert await harness.loader.command(replace) == 'Replaced built-in hello.'
+    with pytest.raises(ValueError, match='already exists'):
+        await harness.loader.command(replace)
