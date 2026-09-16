@@ -72,7 +72,8 @@ async def test_render_edge_events() -> None:
     assert 'write_file' in output.getvalue()
 
 
-async def test_refused_write_releases_diff() -> None:
+@pytest.mark.parametrize('abort', [False, True])
+async def test_refused_write_releases_diff(abort: bool) -> None:
     output = io.StringIO()
     renderer = StreamRenderer(Console(file=output), stop_loading=lambda: None)
     for call_id in ('refused', 'pending'):
@@ -86,9 +87,12 @@ async def test_refused_write_releases_diff() -> None:
                 tool_call_id=call_id,
             )
         )
-    await renderer.on_stream_event(
-        FunctionToolResultEvent(part=ToolReturnPart('write_file', 'refused', tool_call_id='refused'))
-    )
+    if abort:
+        await renderer.abort()
+    else:
+        await renderer.on_stream_event(
+            FunctionToolResultEvent(part=ToolReturnPart('write_file', 'refused', tool_call_id='refused'))
+        )
     await renderer.on_stream_event(
         FileWrittenEvent(path='file', root_dir='/tmp', content_hash='hash', tool_call_id='refused')
     )
@@ -96,7 +100,7 @@ async def test_refused_write_releases_diff() -> None:
     await renderer.on_stream_event(
         FileWrittenEvent(path='file', root_dir='/tmp', content_hash='hash', tool_call_id='pending')
     )
-    assert 'sentinel proposed diff' in output.getvalue()
+    assert ('sentinel proposed diff' in output.getvalue()) == (not abort)
 
 
 async def test_thinking_deltas_and_abort() -> None:

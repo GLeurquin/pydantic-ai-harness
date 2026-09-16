@@ -160,6 +160,12 @@ class ToolOutput:
             self.console.print('Diff truncated.', style='dim')
         self.console.print()
 
+    def abort(self) -> None:
+        """Release pending events when a run ends without tool results."""
+        self._writes.clear()
+        self._headers.clear()
+        self._shells.clear()
+
     def discard_call(self, tool_call_id: str) -> None:
         """Release proposed diffs after a tool result, including refusals and retries."""
         self._writes = {key: value for key, value in self._writes.items() if key[0] != tool_call_id}

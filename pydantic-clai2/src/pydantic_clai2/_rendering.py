@@ -163,6 +163,7 @@ class StreamRenderer:
 
     async def abort(self) -> None:
         """Discard pending output on cancellation and let the drainer terminate."""
+        self._tool_output.abort()
         writer, self._writer = self._writer, None
         thinking_writer, self._thinking_writer = self._thinking_writer, None
         self._reset()
