@@ -94,9 +94,9 @@ class StatusLine:
         )
         prefix = ''
         if height != self._height:
-            prefix = f'\x1b[1;{height - 1}r\x1b[{height - 1};1H\n'
+            prefix = f'\x1b[1;{height - 1}r'
             self._height = height
-        self.console.file.write(f'{prefix}\x1b7\x1b[{height};1H\x1b[2K\x1b[36m{text[: max(0, width - 1)]}\x1b[0m\x1b8')
+        self.console.file.write(f'\x1b7{prefix}\x1b[{height};1H\x1b[2K\x1b[36m{text[: max(0, width - 1)]}\x1b[0m\x1b8')
         self.console.file.flush()
 
     async def _animate(self) -> None:

@@ -70,11 +70,12 @@ class StreamRenderer:
         elif isinstance(event, (FunctionToolCallEvent, FunctionToolResultEvent)):
             await self.finish()
             self.stop_loading()
-            self.console.print(
-                f'{"Tool" if isinstance(event, FunctionToolCallEvent) else "Finished"}: {event.part.tool_name}',
-                style='dim',
-                markup=False,
-            )
+            if isinstance(event, FunctionToolCallEvent):
+                name = ''.join(char if char.isprintable() else ' ' for char in event.part.tool_name)
+                self.console.print(
+                    f'Tool: {name}', style='dim', markup=False, highlight=False, overflow='ellipsis', no_wrap=True
+                )
+                self.console.print()
 
     def _start_part(self) -> None:
         if self._thinking:

@@ -121,6 +121,10 @@ Thinking signatures without text cannot be shown. A supplied agent's existing
 stream handler is preserved. Custom renderer integrations must await `finish()`
 and use `await abort()` on cancellation.
 
+Tool calls print once as `Tool: <name>`, followed by one blank line. Long names
+are truncated to one terminal row. Completion activity remains in the footer
+rather than adding a separate `Finished:` line to the transcript.
+
 ## Status line
 
 The terminal footer shows the selected model, activity spinner, latest reported

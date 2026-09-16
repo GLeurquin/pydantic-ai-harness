@@ -4,7 +4,8 @@ import asyncio
 import io
 
 import pytest
-from pydantic_ai import PartStartEvent, TextPart, ThinkingPart
+from pydantic_ai import FunctionToolCallEvent, FunctionToolResultEvent, PartStartEvent, TextPart, ThinkingPart
+from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 from rich.console import Console
 
 from pydantic_clai2 import StreamRenderer
@@ -13,6 +14,25 @@ from pydantic_clai2 import StreamRenderer
 @pytest.fixture
 def anyio_backend() -> str:
     return 'asyncio'
+
+
+async def test_tools_have_one_line_and_one_blank_separator() -> None:
+    output = io.StringIO()
+    renderer = StreamRenderer(Console(file=output), stop_loading=lambda: None)
+    for name in ('shell', 'write_file', 'shell'):
+        await renderer.on_stream_event(FunctionToolCallEvent(part=ToolCallPart(tool_name=name, args='{}')))
+        await renderer.on_stream_event(
+            FunctionToolResultEvent(part=ToolReturnPart(tool_name=name, content='done', tool_call_id='test'))
+        )
+    await renderer.finish()
+    assert output.getvalue() == 'Tool: shell\n\nTool: write_file\n\nTool: shell\n\n'
+
+
+async def test_long_tool_name_does_not_wrap() -> None:
+    output = io.StringIO()
+    renderer = StreamRenderer(Console(file=output, width=20), stop_loading=lambda: None)
+    await renderer.on_stream_event(FunctionToolCallEvent(part=ToolCallPart(tool_name='a' * 100, args='{}')))
+    assert len(output.getvalue().splitlines()) == 2
 
 
 async def test_markdown_uses_clai_dracula_palette() -> None:

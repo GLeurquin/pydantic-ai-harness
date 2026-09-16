@@ -49,6 +49,8 @@ async def test_cancellation_restores_scroll_region() -> None:
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert '\x1b[1;23r' in output.getvalue()
+    assert output.getvalue().startswith('\x1b7\x1b[1;23r')
+    assert '\x1b[23;1H' not in output.getvalue()
+    assert '\n' not in output.getvalue()
     assert '\x1b[r' in output.getvalue()
     assert output.getvalue().endswith('\x1b8')

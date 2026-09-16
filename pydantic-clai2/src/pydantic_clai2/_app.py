@@ -128,10 +128,7 @@ async def chat(
     async with agent:
         while True:
             try:
-                model = agent.model
-                status.model = session.model or (
-                    model if isinstance(model, str) else model.model_name if model else 'agent default'
-                )
+                status.model = session.model or _model_label(agent)
                 text = (await prompt.prompt_async('You > ')).strip()
             except KeyboardInterrupt:
                 continue
@@ -142,10 +139,7 @@ async def chat(
                     console.print(await commands.execute_async(text), markup=False)
                 except Exception as exc:  # noqa: BLE001 -- command failures must not exit the interactive shell.
                     console.print(str(exc), style='red', markup=False)
-                if text == '/new':
-                    status.context_tokens = None
-                    status.output_tokens = None
-                    status.streamed_chars = 0
+                _reset_status(text, status)
                 if text == '/exit':
                     return
                 continue
@@ -155,6 +149,20 @@ async def chat(
                 console.print('Choose a model first: /set model <Tab>', style='yellow')
                 continue
             await _run_prompt(session, text, console=console, settings=context.settings, status=status)
+
+
+def _reset_status(command: str, status: Status) -> None:
+    if command == '/new':
+        status.context_tokens = None
+        status.output_tokens = None
+        status.streamed_chars = 0
+
+
+def _model_label(agent: AbstractAgent[DepsT, OutputT]) -> str:
+    model = agent.model
+    if isinstance(model, str):
+        return model
+    return model.model_name if model else 'agent default'
 
 
 async def _run_prompt(
