@@ -2,13 +2,13 @@
 
 import asyncio
 from collections.abc import Sequence
-from dataclasses import replace
-from typing import TypeVar
+from dataclasses import dataclass, replace
+from typing import Generic, TypeVar
 
 from prompt_toolkit import PromptSession
 from pydantic_ai import Agent, AgentStreamEvent
 from pydantic_ai.agent import AbstractAgent
-from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.capabilities import AgentCapability
 from pydantic_ai.messages import ModelResponse
 from pydantic_ai.usage import UsageLimits
 from pydantic_ai_harness.coder import Coder
@@ -19,16 +19,20 @@ from ._completion_adapter import COMPLETION_STYLE, PromptCompleter
 from ._rendering import StreamRenderer
 from ._session import Session
 from .auth import CodexAuth
-from .command_context import CommandContext, CommandProvider
-from .commands import Command, Commands, config_command, config_completions, plugins_command, set_completions
+from .command_context import CommandContext
+from .commands import Command, Commands, config_command, config_completions, set_completions
 from .config import Settings
 from .input_history import input_history
 from .interrupts import Interrupts
+from .plugin_loader import PluginError, PluginLoader
+from .plugin_menu import open_plugins_menu
+from .plugins import Renderer, SessionEndReason, SessionStart, TurnEnd, TurnStart
 from .settings_store import SettingsStore
 from .status import Status, StatusLine
 
 DepsT = TypeVar('DepsT')
 OutputT = TypeVar('OutputT')
+_PLUGIN_ACTIONS = ('list', 'add', 'enable', 'disable', 'remove', 'reload')
 
 
 def create_agent(model: str | None = None) -> Agent[None, str]:
@@ -40,7 +44,7 @@ async def chat(
     agent: AbstractAgent[DepsT, OutputT],
     *,
     deps: DepsT,
-    plugins: Sequence[AbstractCapability[DepsT]] = (),
+    plugins: Sequence[AgentCapability[DepsT]] = (),
     usage_limits: UsageLimits | None = None,
     console: Console | None = None,
     settings: Settings | None = None,
@@ -105,17 +109,20 @@ async def chat(
             complete=config_completions,
         )
     )
+    loader: PluginLoader[DepsT] = PluginLoader(
+        store=store,
+        console=console,
+        commands=commands,
+        session_start=lambda: SessionStart(agent=agent, settings=context.settings),
+    )
     commands.register(
         Command(
             name='plugins',
-            description='list|add|enable|disable plugins',
-            handler=lambda args: plugins_command(store, args),
-            complete=lambda args: (
-                ('list', 'add', 'enable', 'disable') if len(args) <= 1 else (p.id for p in store.plugins())
-            ),
+            description='Manage plugins; no arguments opens the menu',
+            handler=lambda args: loader.command(args) if args else open_plugins_menu(loader),
+            complete=lambda args: _PLUGIN_ACTIONS if len(args) <= 1 else (entry.name for entry in loader.entries()),
         )
     )
-    _register_plugin_commands(commands, plugins, context)
     status = Status()
     prompt = PromptSession[str](
         history=input_history(store.path.with_name('input-history')),
@@ -125,44 +132,102 @@ async def chat(
         reserve_space_for_menu=6,
         bottom_toolbar=lambda: status.text(),
     )
-    interrupts = Interrupts()
-    async with agent:
+    shell = _Shell(
+        agent=agent,
+        session=session,
+        plugins=tuple(plugins),
+        loader=loader,
+        commands=commands,
+        console=console,
+        context=context,
+        status=status,
+        prompt=prompt,
+        interrupts=Interrupts(),
+    )
+    reason: SessionEndReason = 'error'
+    try:
+        async with agent:
+            await loader.load_all()
+            reason = await shell.run()
+    finally:
+        await loader.close(reason)
+
+
+@dataclass(kw_only=True)
+class _Shell(Generic[DepsT, OutputT]):
+    """The prompt loop; one turn is one `TurnStart`, one agent run, one `TurnEnd`."""
+
+    agent: AbstractAgent[DepsT, OutputT]
+    session: Session[DepsT, OutputT]
+    plugins: tuple[AgentCapability[DepsT], ...]
+    loader: PluginLoader[DepsT]
+    commands: Commands
+    console: Console
+    context: CommandContext
+    status: Status
+    prompt: PromptSession[str]
+    interrupts: Interrupts
+
+    async def run(self) -> SessionEndReason:
         while True:
             try:
-                status.model = session.model or _model_label(agent)
-                text = (await prompt.prompt_async('You > ')).strip()
+                self.status.model = self.session.model or _model_label(self.agent)
+                text = (await self.prompt.prompt_async('You > ')).strip()
             except KeyboardInterrupt:
-                if interrupts.press():
-                    return
-                console.print('Input cleared. Press Ctrl-C again within 2 seconds to exit.', style='dim')
+                if self.interrupts.press():
+                    return 'exit'
+                self.console.print('Input cleared. Press Ctrl-C again within 2 seconds to exit.', style='dim')
                 continue
             except EOFError:
-                return
+                return 'eof'
             if not text:
                 continue
-            console.print()
+            self.console.print()
             if text.startswith('/'):
-                await interrupts.run(_execute_command(commands, text, console=console, status=status))
-                if text == '/exit' or interrupts.exit_requested:
-                    return
+                await self.interrupts.run(
+                    _execute_command(self.commands, text, console=self.console, status=self.status)
+                )
+                if text == '/exit' or self.interrupts.exit_requested:
+                    return 'exit'
                 continue
-            if session.model is None and agent.model is None:
-                console.print('Choose a model first: /set model <Tab>', style='yellow')
+            if self.session.model is None and self.agent.model is None:
+                self.console.print('Choose a model first: /set model <Tab>', style='yellow')
                 continue
-            completed = await interrupts.run(
-                _run_prompt(session, text, console=console, settings=context.settings, status=status)
+            if await self._turn(text):
+                return 'exit'
+
+    async def _turn(self, text: str) -> bool:
+        start = TurnStart(text=text)
+        try:
+            await self.loader.fire(start)
+        except PluginError as exc:
+            self.console.print(str(exc), style='red', markup=False)
+            self.console.print()
+            return False
+        if start.cancelled:
+            self.console.print(
+                f'Turn cancelled by a plugin: {start.cancel_reason or "no reason given"}', style='yellow'
             )
-            _report_interrupt(completed, console)
-            if interrupts.exit_requested:
-                return
+            self.console.print()
+            return False
+        self.session.plugins = (*self.plugins, *self.loader.capabilities())
+        ended: TurnEnd | None = None
 
+        async def run_prompt() -> None:
+            nonlocal ended
+            ended = await _run_prompt(
+                self.session,
+                start.text,
+                console=self.console,
+                settings=self.context.settings,
+                status=self.status,
+                renderers=self.loader.renderers(),
+            )
 
-def _register_plugin_commands(
-    commands: Commands, plugins: Sequence[AbstractCapability[DepsT]], context: CommandContext
-) -> None:
-    for plugin in plugins:
-        if isinstance(plugin, CommandProvider):
-            commands.register_many(plugin.get_commands(context))
+        completed = await self.interrupts.run(run_prompt())
+        _report_interrupt(completed, self.console)
+        await self.loader.fire(ended or TurnEnd(text=start.text, outcome='cancelled'))
+        return self.interrupts.exit_requested
 
 
 def _report_interrupt(completed: bool, console: Console) -> None:
@@ -195,8 +260,14 @@ def _model_label(agent: AbstractAgent[DepsT, OutputT]) -> str:
 
 
 async def _run_prompt(
-    session: Session[DepsT, OutputT], text: str, *, console: Console, settings: Settings, status: Status
-) -> None:
+    session: Session[DepsT, OutputT],
+    text: str,
+    *,
+    console: Console,
+    settings: Settings,
+    status: Status,
+    renderers: Sequence[Renderer[AgentStreamEvent]] = (),
+) -> TurnEnd:
     renderer = StreamRenderer(
         console,
         stop_loading=lambda: None,
@@ -204,6 +275,7 @@ async def _run_prompt(
         smooth_seconds=settings.smooth_seconds,
         shell_lines=settings.shell_lines,
         grep_lines=settings.grep_lines,
+        renderers=renderers,
     )
     status.streamed_chars = 0
     status.output_tokens = None
@@ -230,6 +302,7 @@ async def _run_prompt(
         if not renderer.rendered_text or not isinstance(result.output, str):
             console.print(str(result.output), markup=False)
             console.print()
+        return TurnEnd(text=text, outcome='completed', result=result)
     except asyncio.CancelledError:
         await renderer.abort()
         raise
@@ -238,6 +311,7 @@ async def _run_prompt(
         console.print(f'{type(exc).__name__}: {exc}', style='red', markup=False)
         console.print('Turn not saved. External tool side effects may already have occurred.', style='dim')
         console.print()
+        return TurnEnd(text=text, outcome='failed', error=exc)
     finally:
         status.activity = 'ready'
         session.on_context_usage = None

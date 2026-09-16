@@ -36,10 +36,10 @@ def resolve_settings(overrides: dict[str, JsonValue]) -> Settings:
 
 
 class PluginSettings(BaseModel):
-    """Declaration for a trusted Python capability factory."""
+    """Declaration for a trusted plugin: a module with `activate`, or `module:Capability`."""
 
     model_config = ConfigDict(extra='forbid', frozen=True, strict=True)
-    id: str = Field(min_length=1)
-    factory: str = Field(pattern=r'^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*:[A-Za-z_]\w*$')
+    id: str = Field(min_length=1, pattern=r'^[A-Za-z_]\w*$')
+    factory: str = Field(pattern=r'^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*(?::[A-Za-z_]\w*)?$')
     enabled: bool = True
     settings: dict[str, JsonValue] = Field(default_factory=dict)

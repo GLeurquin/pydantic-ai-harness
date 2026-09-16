@@ -1,7 +1,7 @@
 """Incremental Markdown rendering for native Pydantic AI events."""
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 from pydantic_ai import (
     AgentStreamEvent,
@@ -16,7 +16,7 @@ from pydantic_ai import (
     ThinkingPart,
     ThinkingPartDelta,
 )
-from rich.console import Console
+from rich.console import Console, RenderableType
 from termflow import Parser, Renderer  # pyright: ignore[reportMissingTypeStubs]
 from termflow.render.style import RenderFeatures, RenderStyle  # pyright: ignore[reportMissingTypeStubs]
 from termflow.stream import SmoothWriter, StreamSmoother  # pyright: ignore[reportMissingTypeStubs]
@@ -37,8 +37,10 @@ class StreamRenderer:
         smooth_seconds: float = 0.5,
         shell_lines: int = 20,
         grep_lines: int = 20,
+        renderers: Sequence[Callable[[AgentStreamEvent], RenderableType | None]] = (),
     ) -> None:
         self.console = console
+        self._renderers = tuple(renderers)
         self._tool_output = ToolOutput(console, shell_lines=shell_lines)
         self._grep_output = GrepOutput(console, lines=grep_lines)
         self.smooth_seconds = smooth_seconds
@@ -56,6 +58,8 @@ class StreamRenderer:
 
     async def on_stream_event(self, event: AgentStreamEvent) -> None:
         """Bind this callback to `Session.on_stream_event`."""
+        if await self._render_with_plugins(event):
+            return
         if isinstance(event, CapabilityEvent):
             await self.finish()
             if self._tool_output.render(event):
@@ -82,18 +86,30 @@ class StreamRenderer:
         elif isinstance(event, (FunctionToolCallEvent, FunctionToolResultEvent)):
             await self.finish()
             self.stop_loading()
-            if isinstance(event, FunctionToolResultEvent):
-                self._tool_output.discard_call(event.part.tool_call_id)
-            if self._grep_output.render(event):
-                return
-            if isinstance(event, FunctionToolCallEvent):
-                if self._tool_output.render_call(event):
-                    return
-                name = ''.join(char if char.isprintable() else ' ' for char in event.part.tool_name)
-                self.console.print(
-                    f'● {name}', style='dim', markup=False, highlight=False, overflow='ellipsis', no_wrap=True
-                )
+            self._render_tool_event(event)
+
+    def _render_tool_event(self, event: FunctionToolCallEvent | FunctionToolResultEvent) -> None:
+        if isinstance(event, FunctionToolResultEvent):
+            self._tool_output.discard_call(event.part.tool_call_id)
+        if self._grep_output.render(event):
+            return
+        if isinstance(event, FunctionToolCallEvent) and not self._tool_output.render_call(event):
+            name = ''.join(char if char.isprintable() else ' ' for char in event.part.tool_name)
+            self.console.print(
+                f'● {name}', style='dim', markup=False, highlight=False, overflow='ellipsis', no_wrap=True
+            )
+            self.console.print()
+
+    async def _render_with_plugins(self, event: AgentStreamEvent) -> bool:
+        for renderer in self._renderers:
+            renderable = renderer(event)
+            if renderable is not None:
+                await self.finish()
+                self.stop_loading()
+                self.console.print(renderable)
                 self.console.print()
+                return True
+        return False
 
     def _start_part(self) -> None:
         if self._thinking:

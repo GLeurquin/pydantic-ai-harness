@@ -28,8 +28,6 @@ from termflow.tui.completion import CompleteEvent, Document  # pyright: ignore[r
 
 from pydantic_clai2 import Session, StreamRenderer
 from pydantic_clai2.commands import Command, Commands, config_command, config_completions, plugins_command
-from pydantic_clai2.config import PluginSettings
-from pydantic_clai2.plugins import load_plugins
 from pydantic_clai2.settings_store import SettingsStore
 from pydantic_clai2.splash import Splash
 
@@ -153,7 +151,9 @@ def test_settings_round_trip_and_validation(tmp_path: Path) -> None:
     assert store.load().model == 'test'
     plugins_command(store, ['add', 'audit', 'missing.module:Plugin'])
     plugins_command(store, ['disable', 'audit'])
-    assert load_plugins(store.plugins()) == []
+    assert [plugin.enabled for plugin in store.plugins()] == [False]
+    plugins_command(store, ['remove', 'audit'])
+    assert store.plugins() == []
 
 
 def test_completion_uses_registry(tmp_path: Path) -> None:
@@ -186,7 +186,3 @@ def test_splash_noop_and_frames() -> None:
     assert splash.frame(0) != splash.frame(10)
     splash.stop()
     splash.stop()
-
-
-def test_disabled_plugin_is_not_imported() -> None:
-    assert load_plugins([PluginSettings(id='x', factory='nonexistent:Plugin', enabled=False)]) == []

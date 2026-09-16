@@ -5,7 +5,7 @@ from typing import Generic, TypeVar
 
 from pydantic_ai import AgentRunResult, AgentStreamEvent, RunContext
 from pydantic_ai.agent import AbstractAgent
-from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.capabilities import AgentCapability
 from pydantic_ai.messages import ModelMessage, ModelResponse
 from pydantic_ai.models import Model
 from pydantic_ai.usage import UsageLimits
@@ -17,8 +17,8 @@ OutputT = TypeVar('OutputT')
 class Session(Generic[DepsT, OutputT]):
     """Run prompts to completion, retaining successful turns in memory.
 
-    Plugins are native capabilities: use `@on_event` to subscribe to typed
-    core or capability events. They are added per run, not to the agent itself.
+    Plugins are capabilities (or capability functions) bound per run, not to
+    the agent itself, so the set can change between prompts.
     """
 
     def __init__(
@@ -26,7 +26,7 @@ class Session(Generic[DepsT, OutputT]):
         agent: AbstractAgent[DepsT, OutputT],
         *,
         deps: DepsT,
-        plugins: Sequence[AbstractCapability[DepsT]] = (),
+        plugins: Sequence[AgentCapability[DepsT]] = (),
         message_history: Sequence[ModelMessage] = (),
         usage_limits: UsageLimits | None = None,
         on_stream_event: Callable[[AgentStreamEvent], Awaitable[None]] | None = None,
@@ -35,7 +35,7 @@ class Session(Generic[DepsT, OutputT]):
         self.resolve_model: Callable[[str], Model | str] = lambda name: name
         self.agent = agent
         self.deps = deps
-        self.plugins = tuple(plugins)
+        self.plugins: Sequence[AgentCapability[DepsT]] = tuple(plugins)
         self.usage_limits = usage_limits
         self.on_stream_event = on_stream_event
         self._messages = list(message_history)

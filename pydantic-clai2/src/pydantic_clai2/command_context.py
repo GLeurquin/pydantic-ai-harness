@@ -1,12 +1,10 @@
-"""Typed application services available to command providers."""
+"""Conversation-local settings and actions behind `/set`."""
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
 
 from pydantic import JsonValue, TypeAdapter
 
-from .commands import Command
 from .config import SETTING_FIELDS, Settings
 from .settings_store import SettingsStore
 
@@ -38,16 +36,3 @@ class CommandContext:
         self.settings = settings
         self.apply_setting(key, settings)
         return f'Saved {key}. ' + ('Applies at next startup.' if key == 'display.splash' else 'Applied.')
-
-
-@runtime_checkable
-class CommandProvider(Protocol):
-    """Optional typed interface implemented by capabilities contributing commands.
-
-    Explicitly inherit this protocol to have the type checker validate the
-    implementation. Command handlers may close over this run-independent context.
-    """
-
-    def get_commands(self, context: CommandContext) -> Sequence[Command]:
-        """Declare commands once at startup, before the first user prompt."""
-        ...

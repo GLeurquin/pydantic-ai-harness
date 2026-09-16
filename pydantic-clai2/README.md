@@ -108,7 +108,8 @@ and preserve conversation history; splash changes apply at next startup.
 
 Precedence is defaults, SQLite overrides, `CLAI_MODEL`, then explicit CLI flags.
 Settings are validated before writes. `/set` updates the active settings snapshot;
-legacy `/config` writes and plugin changes apply on restart. `--request-limit` controls the full prompt's model-request budget.
+legacy `/config` writes apply on restart; plugin changes apply on the next prompt.
+`--request-limit` controls the full prompt's model-request budget.
 
 Interactive commands: `/login`, `/set`, `/help`, `/new`, `/exit`, `/config`, and `/plugins`.
 Tab completion suggests commands, settings, boolean values, plugin identifiers,
@@ -242,69 +243,29 @@ disabled for redirected output and restores normal scrolling on cancellation or
 failure. The cursor is hidden during runs and restored on completion, failure,
 or cancellation. No model requests or telemetry are added for status reporting.
 
-## Capability plugins
+## Plugins
 
-Plugins are native `AbstractCapability` instances, supplied per run. Use core's
-`@on_event` for typed `AgentStreamEvent` or `CapabilityEvent` subscriptions. There
-is no second event dispatcher or global callback registry.
-
-```python
-from pydantic_ai import CapabilityEvent, RunContext
-from pydantic_ai.capabilities import AbstractCapability, on_event
-
-
-class AuditPlugin(AbstractCapability[None]):
-    @on_event(CapabilityEvent)
-    async def record(self, ctx: RunContext[None], event: CapabilityEvent) -> None:
-        print(type(event).__name__)
-```
-
-Pass instances through `chat(..., plugins=[AuditPlugin()])` or `Session`.
-For the default CLI, explicitly register an importable class:
-
-```sh
-clai2 plugins add audit my_plugins:AuditPlugin
-clai2 plugins list
-clai2 plugins disable audit
-```
-
-An optional fourth argument to `plugins add` is a JSON settings object. Its entries
-are passed as constructor keyword arguments; the plugin owns validation, preferably
-with its own Pydantic model. Disabled plugins are not imported. Plugins execute
-trusted Python code with your permissions. Only register code you trust.
-
-### Plugin commands
-
-Capabilities can explicitly implement the typed `CommandProvider` protocol.
-CLAI calls `get_commands(context)` once at startup and registers the returned
-immutable `Command` declarations. Handlers receive parsed arguments and return
-text; completion providers receive argument prefixes and return suggestions.
+Everything beyond the prompt loop is a plugin, including the default coding
+tools. A plugin is a Python file with an `activate(host)` function. Through
+`host` it can react to lifecycle moments and typed events, add `/commands`, give
+the agent tools, draw its own output, and read validated settings.
 
 ```python
-from pydantic_ai.capabilities import AbstractCapability
-from pydantic_clai2.command_context import CommandContext, CommandProvider
-from pydantic_clai2.commands import Command
+from pydantic_clai2.plugins import PluginHost, TurnEnd
 
 
-class GreetingPlugin(AbstractCapability[None], CommandProvider):
-    def get_commands(self, context: CommandContext) -> list[Command]:
-        return [
-            Command(
-                name='greet',
-                description='Show a greeting',
-                handler=lambda args: 'Hello ' + (' '.join(args) or 'there'),
-                complete=lambda args: ('Mike',),
-            )
-        ]
+def activate(host: PluginHost) -> None:
+    @host.on('turn_end')
+    async def ping(event: TurnEnd) -> None:
+        host.console.bell()
 ```
 
-Pass `GreetingPlugin()` through `plugins=` or register its class with `/plugins`.
-Its `/greet` command appears in help and autocomplete automatically. `CommandContext`
-provides active settings, the settings store, history clearing, and the validated
-`set_setting` operation. Duplicate names, including collisions with built-ins, are
-rejected before a provider's commands are installed. Registries are conversation-local.
-There are no string event names or global callback hooks. Native `@on_event`
-methods remain responsible for runtime agent/capability event subscriptions.
+Drop the file in `~/.config/pydantic-clai2/plugins/`, or register anything
+importable with `/plugins add NAME module[:attr] [JSON]`. It is live for the
+next prompt; no restart. `/plugins` alone opens a full-screen menu to enable, disable,
+reload, and remove. Plugins are trusted code running as you.
+
+[PLUGINS.md](PLUGINS.md) has the full list of hooks, events, and rules.
 
 ## Telemetry and references
 
