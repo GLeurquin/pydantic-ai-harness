@@ -6,7 +6,6 @@ from dataclasses import replace
 from typing import TypeVar
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.history import InMemoryHistory
 from pydantic_ai import Agent, AgentStreamEvent
 from pydantic_ai.agent import AbstractAgent
 from pydantic_ai.capabilities import AbstractCapability
@@ -23,6 +22,7 @@ from .auth import CodexAuth
 from .command_context import CommandContext, CommandProvider
 from .commands import Command, Commands, config_command, config_completions, plugins_command, set_completions
 from .config import Settings
+from .input_history import input_history
 from .settings_store import SettingsStore
 from .status import Status, StatusLine
 
@@ -119,7 +119,7 @@ async def chat(
             commands.register_many(plugin.get_commands(context))
     status = Status()
     prompt = PromptSession[str](
-        history=InMemoryHistory(),
+        history=input_history(store.path.with_name('input-history')),
         completer=PromptCompleter(commands),
         complete_while_typing=True,
         style=COMPLETION_STYLE,

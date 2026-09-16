@@ -8,6 +8,17 @@ not protect secret files or repository metadata. OS permissions still apply.
 Relative paths use the launch workspace. Use a custom agent with `Coder()` to
 retain workspace-scoped file tools. Shell output is displayed dimly.
 
+## Input history
+
+Submitted prompts and slash commands persist across restarts for Up/Down recall,
+including multiline input. They are stored as plaintext in `input-history` next
+to `config.db`: `$XDG_CONFIG_HOME/pydantic-clai2/input-history`, or
+`~/.config/pydantic-clai2/input-history` by default. On POSIX the file is restricted
+to its owner (mode 0600). Avoid entering secrets in the prompt: input history is
+not encrypted. Delete this file while CLAI is closed to clear saved input.
+`/new` clears model conversation history, not input recall. Model responses and
+tool results are not saved to this file.
+
 ## Start chatting
 
 Launch `clai2`. The default model is `openai-codex:gpt-6-astra`.
