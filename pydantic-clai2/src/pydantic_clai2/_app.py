@@ -139,6 +139,7 @@ async def chat(
                     console.print(await commands.execute_async(text), markup=False)
                 except Exception as exc:  # noqa: BLE001 -- command failures must not exit the interactive shell.
                     console.print(str(exc), style='red', markup=False)
+                console.print()
                 _reset_status(text, status)
                 if text == '/exit':
                     return
@@ -195,6 +196,7 @@ async def _run_prompt(
                 break
         if not renderer.rendered_text or not isinstance(result.output, str):
             console.print(str(result.output), markup=False)
+            console.print()
     except asyncio.CancelledError:
         await renderer.abort()
         raise
@@ -202,6 +204,7 @@ async def _run_prompt(
         await renderer.finish()
         console.print(f'{type(exc).__name__}: {exc}', style='red', markup=False)
         console.print('Turn not saved. External tool side effects may already have occurred.', style='dim')
+        console.print()
     finally:
         status.activity = 'ready'
         session.on_context_usage = None

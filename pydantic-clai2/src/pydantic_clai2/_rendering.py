@@ -65,7 +65,7 @@ class StreamRenderer:
                 self._feed(event.delta.content_delta)
             elif isinstance(event.delta, ThinkingPartDelta):
                 self._feed(event.delta.content_delta or '')
-        elif isinstance(event, PartEndEvent) and event.index == self._index:
+        elif isinstance(event, PartStartEvent) or isinstance(event, PartEndEvent) and event.index == self._index:
             await self.finish()
         elif isinstance(event, (FunctionToolCallEvent, FunctionToolResultEvent)):
             await self.finish()
@@ -103,9 +103,8 @@ class StreamRenderer:
 
     def _feed(self, content: str) -> None:
         if content and not self._heading_printed:
-            self.console.print(
-                'Thinking' if self._thinking else 'CLAI', style='dim cyan' if self._thinking else 'bold magenta'
-            )
+            if self._thinking:
+                self.console.print('Thinking', style='dim cyan')
             self._heading_printed = True
         if self._thinking:
             if self._thinking_writer is not None:
@@ -130,13 +129,16 @@ class StreamRenderer:
             self._renderer.render_all(self._parser.finalize())
         writer, self._writer = self._writer, None
         thinking_writer, self._thinking_writer = self._thinking_writer, None
-        thinking_visible = self._thinking and self._heading_printed
+        visible = self._heading_printed
+        thinking_visible = self._thinking and visible
         self._reset()
         if writer is not None:
             await writer.close()
         if thinking_writer is not None:
             await thinking_writer.close()
         if thinking_visible:
+            self.console.print()
+        if visible:
             self.console.print()
         self.console.file.flush()
 

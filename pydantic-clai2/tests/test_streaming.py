@@ -16,6 +16,19 @@ def anyio_backend() -> str:
     return 'asyncio'
 
 
+async def test_intermediate_text_flushes_before_tool_arguments() -> None:
+    output = io.StringIO()
+    renderer = StreamRenderer(Console(file=output), stop_loading=lambda: None)
+    await renderer.on_stream_event(PartStartEvent(index=0, part=TextPart(content='Working on it.')))
+    await renderer.on_stream_event(PartStartEvent(index=1, part=ToolCallPart(tool_name='shell', args='')))
+    assert 'Working on it.' in output.getvalue()
+    assert output.getvalue().endswith('\n\n')
+    assert 'CLAI' not in output.getvalue()
+    before = output.getvalue()
+    await renderer.finish()
+    assert output.getvalue() == before
+
+
 async def test_tools_have_one_line_and_one_blank_separator() -> None:
     output = io.StringIO()
     renderer = StreamRenderer(Console(file=output), stop_loading=lambda: None)

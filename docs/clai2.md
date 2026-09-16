@@ -121,6 +121,11 @@ Thinking signatures without text cannot be shown. A supplied agent's existing
 stream handler is preserved. Custom renderer integrations must await `finish()`
 and use `await abort()` on cancellation.
 
+Response and thinking parts end with a blank separator line; responses have no
+repeated CLAI heading. Intermediate text is flushed when a tool-call part begins,
+before the tool's arguments finish streaming. Incomplete lines within a text part
+still wait for a newline or part boundary, as in Code Puppy's Markdown path.
+
 Tool calls print once with a filled-circle marker and the tool name, followed by one blank line. Long names
 are truncated to one terminal row. Completion activity remains in the footer
 rather than adding a separate `Finished:` line to the transcript.
