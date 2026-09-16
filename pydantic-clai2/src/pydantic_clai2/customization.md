@@ -274,10 +274,13 @@ agent = Agent(model, capabilities=[Coder(), customization_guide()])
 asyncio.run(chat(agent, deps=None))
 ```
 
-A launcher gets no built-in plugins unless it passes them: chat(agent,
+Coder() here restricts file tools to the workspace, unlike the stock CLI's
+unrestricted Coder. A launcher gets no built-in plugins unless it passes them.
+Choose one source of coding tools, never both: either keep Coder() in
+capabilities as above, or drop it from capabilities and call chat(agent,
 deps=None, builtin_plugins=DEFAULT_PLUGINS) with DEFAULT_PLUGINS from
-pydantic_clai2 gives it the stock coder plugin instead of the Coder() above. Coder() here restricts file tools to the workspace, unlike the stock
-CLI's unrestricted Coder. A fully custom protocol belongs in a Pydantic AI Model and
+pydantic_clai2, which supplies the stock coder plugin and lets /plugins manage
+it. Passing both loads two sets of coding tools. A fully custom protocol belongs in a Pydantic AI Model and
 Provider implementation, not a terminal plugin. See
 https://pydantic.dev/docs/ai/models/overview/ and inspect installed core abstract
 classes for required methods. Supply that Model instance to Agent as above.
