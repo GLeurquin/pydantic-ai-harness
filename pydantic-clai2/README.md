@@ -140,6 +140,24 @@ Unknown slash commands are not sent to the model. Up/down recall saved prompt
 history. Ctrl-D exits. Ctrl-C at input clears the line; during a run it cancels
 the turn and returns to input. No cancelled run is automatically retried.
 
+## Ask CLAI to customize itself
+
+Ask, for example, "Create a plugin with a custom menu" or "Use my model provider".
+The default agent has a `read_clai_customization_guide` tool and a short instruction
+to read it before advising on CLAI customization. The guide is bundled with the
+installed package and loaded only when the tool is called, not included in every
+prompt. No network access or source checkout is needed to read it.
+
+It covers plugin installation and reload, hooks, tools, settings, commands,
+rendering, custom TUI menus, and model/provider launchers. It distinguishes plugin
+APIs from UI changes that currently need a CLAI source change. This is guidance,
+not an automatic installer or a permission boundary: plugins execute trusted Python
+as your user. Review generated plugins before enabling them.
+
+Custom agents are unchanged. To offer the same guide, add
+`customization_guide()` from `pydantic_clai2.customization` to their capabilities.
+See [PLUGINS.md](PLUGINS.md) for the plugin contract.
+
 ## Bring an agent
 
 ```python

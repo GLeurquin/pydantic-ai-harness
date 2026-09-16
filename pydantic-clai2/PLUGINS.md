@@ -8,6 +8,24 @@ Everything a plugin can do goes through one object, the `PluginHost`. There is n
 global registry to import and no magic file to name. You get a `host`, you tell it
 what you want, you're done.
 
+## On-demand authoring help
+
+The default CLAI agent exposes `read_clai_customization_guide`. When you ask for
+customization, its instructions tell it to read this guide first. Only the short
+hint and tool description are present initially; the bundled text is read on tool
+invocation. Reading it needs neither a checkout nor a network connection.
+
+The [bundled guide](src/pydantic_clai2/customization.md) includes examples for
+commands, hooks, settings, renderers, custom Termflow menus, and custom model
+launchers. It also names current limits: PluginHost does not register providers,
+replace the prompt editor, or alter the built-in model catalog. Those need a
+custom agent launcher or a source change, as explained in the guide.
+
+Custom agents can opt in with `customization_guide()` from
+`pydantic_clai2.customization`. The tool only returns documentation; it does not
+write files, activate plugins, or grant permission to execute generated code.
+Keep the bundled guide aligned with this contract when changing plugin APIs.
+
 ## Where plugins live
 
 Plugins are trusted Python code. Drop-in files execute automatically at startup;
