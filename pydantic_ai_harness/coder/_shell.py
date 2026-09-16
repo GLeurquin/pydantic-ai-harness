@@ -29,7 +29,7 @@ async def shell(
     *,
     mode: Literal['foreground', 'background'] = 'foreground',
     timeout: float = 270,
-    ctx: RunContext[AgentDepsT] | None = None,
+    ctx: RunContext[AgentDepsT],
 ) -> str:
     """Run a shell command, returning durable PID, output and exit-status paths."""
     if '\0' in command:
@@ -62,8 +62,7 @@ async def shell(
     events = ShellOutput(directory / 'output.log', ctx)
 
     try:
-        if ctx is not None:
-            await ctx.emit(ShellStartedEvent(tool_call_id=ctx.tool_call_id, command=command, pid=process.pid))
+        await ctx.emit(ShellStartedEvent(tool_call_id=ctx.tool_call_id, command=command, pid=process.pid))
         if mode == 'foreground':
             with anyio.move_on_after(timeout):
                 while not status_path.exists() or json.loads(status_path.read_text())['exit_code'] is None:

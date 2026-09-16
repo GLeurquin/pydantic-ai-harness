@@ -11,6 +11,5 @@ def input_history(path: Path) -> FileHistory:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
     os.close(descriptor)
-    if os.name != 'nt':
-        path.chmod(0o600)
+    path.chmod(0o600)
     return FileHistory(str(path))

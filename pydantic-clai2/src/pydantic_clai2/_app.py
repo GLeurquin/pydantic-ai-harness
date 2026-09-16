@@ -189,7 +189,7 @@ def _reset_status(command: str, status: Status) -> None:
 
 def _model_label(agent: AbstractAgent[DepsT, OutputT]) -> str:
     model = agent.model
-    if isinstance(model, str):
+    if isinstance(model, str):  # pragma: no cover -- concrete Agent resolves string models before chat.
         return model
     return model.model_name if model else 'agent default'
 
@@ -223,7 +223,7 @@ async def _run_prompt(
             result = await session.prompt(text)
             await renderer.finish()
         status.output_tokens = result.usage.output_tokens
-        for message in reversed(result.all_messages()):
+        for message in reversed(result.all_messages()):  # pragma: no branch -- successful runs contain a response.
             if isinstance(message, ModelResponse):
                 status.context_tokens = message.usage.total_tokens or None
                 break

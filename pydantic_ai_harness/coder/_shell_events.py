@@ -21,7 +21,7 @@ def count_lines(path: Path) -> int:
     with path.open('rb') as source:
         while remaining:
             chunk = source.read(min(65536, remaining))
-            if not chunk:
+            if not chunk:  # pragma: no cover -- log externally truncated during the snapshot scan.
                 break
             remaining -= len(chunk)
             count += chunk.count(b'\n')
@@ -37,14 +37,14 @@ class CommandStatus(BaseModel):
 class ShellOutput(Generic[AgentDepsT]):
     """Read at most 16 KB per tool call without affecting its returned output."""
 
-    def __init__(self, path: Path, ctx: RunContext[AgentDepsT] | None) -> None:
+    def __init__(self, path: Path, ctx: RunContext[AgentDepsT]) -> None:
         self.path = path
         self.ctx = ctx
         self.offset = 0
         self.decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
 
     async def emit(self) -> bool:
-        if self.ctx is None or self.offset >= 16000 or not self.path.exists():
+        if self.offset >= 16000 or not self.path.exists():
             return False
         with self.path.open('rb') as source:
             source.seek(self.offset)
@@ -59,8 +59,6 @@ class ShellOutput(Generic[AgentDepsT]):
             pass
 
     async def finish(self, *, pid: int, status_path: Path) -> None:
-        if self.ctx is None:
-            return
         tail = self.decoder.decode(b'', final=True)
         if tail:
             await self.ctx.emit(ShellOutputEvent(text=tail))

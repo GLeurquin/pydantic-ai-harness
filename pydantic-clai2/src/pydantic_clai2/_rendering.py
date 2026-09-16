@@ -135,8 +135,8 @@ class StreamRenderer:
             self._line(line)
 
     def _line(self, line: str) -> None:
-        if self._parser is not None and self._renderer is not None:
-            self._renderer.render_all(self._parser.parse_line(line))
+        assert self._parser is not None and self._renderer is not None
+        self._renderer.render_all(self._parser.parse_line(line))
 
     async def finish(self) -> None:
         """Drain rendered Markdown before the next part, tool, or prompt appears."""

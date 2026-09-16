@@ -153,6 +153,22 @@ class TestCoder:
         local.write_text('local match\n')
         assert 'local match' in await call(workspace, 'grep', {'path': 'local.txt', 'pattern': 'match'})
 
+    async def test_listing_rejects_file(self, tmp_path: Path) -> None:
+        path = tmp_path / 'file'
+        path.write_text('content')
+        assert 'existing directory' in await call(tmp_path, 'list_files', {'path': 'file'})
+
+    async def test_shell_partial_utf8_preview(self, tmp_path: Path) -> None:
+        events: list[str] = []
+
+        class Observer(AbstractCapability[None]):
+            @on_event(ShellOutputEvent)
+            async def output(self, ctx: RunContext[None], event: ShellOutputEvent) -> None:
+                events.append(event.text)
+
+        await call(tmp_path, 'shell', {'command': "printf '\\342\\202'"}, capabilities=[Observer()])
+        assert ''.join(events) == '\ufffd'
+
     async def test_shell_events(self, tmp_path: Path) -> None:
         events: list[ShellStartedEvent | ShellOutputEvent | ShellFinishedEvent] = []
 

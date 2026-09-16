@@ -4,8 +4,8 @@ import asyncio
 import io
 
 import pytest
-from pydantic_ai import PartDeltaEvent, PartStartEvent
-from pydantic_ai.messages import TextPart, ToolCallPartDelta
+from pydantic_ai import FunctionToolCallEvent, FunctionToolResultEvent, PartDeltaEvent, PartStartEvent
+from pydantic_ai.messages import NativeToolCallPart, TextPart, ToolCallPart, ToolCallPartDelta, ToolReturnPart
 from rich.console import Console
 
 from pydantic_clai2.status import Status, StatusLine
@@ -26,6 +26,24 @@ def test_estimate_includes_tool_argument_deltas() -> None:
     status.output_tokens = 20
     assert 'context: 1,000 tokens' in status.text()
     assert '20 output tokens' in status.text()
+
+
+def test_tool_status_transitions() -> None:
+    status = Status()
+    status.observe(PartStartEvent(index=0, part=NativeToolCallPart('web_search', {})))
+    call = ToolCallPart('shell', {})
+    status.observe(PartStartEvent(index=0, part=call))
+    assert status.activity == 'tool: shell'
+    status.observe(PartDeltaEvent(index=0, delta=ToolCallPartDelta(args_delta={})))
+    status.observe(FunctionToolCallEvent(part=call))
+    assert status.activity == 'running: shell'
+    status.observe(FunctionToolResultEvent(part=ToolReturnPart('shell', 'done')))
+    assert status.activity == 'working'
+
+
+async def test_tiny_terminal() -> None:
+    async with StatusLine(Console(file=io.StringIO(), force_terminal=True, height=2), Status()):
+        await asyncio.sleep(0)
 
 
 async def test_redirected_output_has_no_footer() -> None:

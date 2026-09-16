@@ -67,5 +67,34 @@ async def test_failed_login_does_not_save(monkeypatch: pytest.MonkeyPatch) -> No
     assert keyring.get_password('pydantic-clai2', 'openai-codex') is None
 
 
+async def test_auth_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    keyring.set_password('pydantic-clai2', 'openai-codex', 'not json')
+    source = CodexCredentials()
+    with pytest.raises(UserError, match='invalid'):
+        await source.load()
+
+    def discard(service: str, account: str, value: str) -> None:
+        pass
+
+    monkeypatch.setattr(keyring, 'set_password', discard)
+    with pytest.raises(UserError, match='did not retain'):
+        await source.save(OpenAICodexCredentials(access_token='test', refresh_token='test', account_id='test'))
+    auth = CodexAuth(Console(file=io.StringIO()))
+    with pytest.raises(ValueError, match='Usage'):
+        await auth.login(['invalid'])
+
+    async def timeout(self: OpenAICodexOAuthFlow) -> OpenAICodexCredentials:
+        raise TimeoutError
+
+    monkeypatch.setattr(OpenAICodexOAuthFlow, 'exchange_code_from_callback', timeout)
+    monkeypatch.setattr('webbrowser.open', fake_browser)
+    with pytest.raises(UserError, match='timed out'):
+        await auth.login([])
+    assert auth.model('openai-codex:test').model_name == 'test'
+    provider = auth.provider
+    auth.model('openai-codex:test')
+    assert auth.provider is provider
+
+
 def test_default_model() -> None:
     assert Settings().model == 'openai-codex:gpt-6-astra'

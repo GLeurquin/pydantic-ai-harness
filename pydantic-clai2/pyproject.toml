@@ -52,6 +52,7 @@ extend-select = ['BLE001']
 
 [tool.coverage.run]
 branch = true
+patch = ['subprocess']
 relative_files = true
 source = ['src/pydantic_clai2']
 
