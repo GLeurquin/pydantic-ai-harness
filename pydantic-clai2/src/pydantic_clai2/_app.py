@@ -32,7 +32,7 @@ OutputT = TypeVar('OutputT')
 
 def create_agent(model: str | None = None) -> Agent[None, str]:
     """Build the default coding agent; custom agents need not use `Coder`."""
-    return Agent(model, capabilities=[Coder()])
+    return Agent(model, capabilities=[Coder(unrestricted_filesystem=True)])
 
 
 async def chat(

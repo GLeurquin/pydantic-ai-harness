@@ -5,6 +5,17 @@ It is a regular combined capability: Coder-specific tools and argument repair co
 
 > While Pydantic AI Harness is on 0.x releases, the API may change between minor releases; when it does, deprecation warnings and release-note migration guidance tell you (or your agent) exactly how to upgrade. See the [version policy](https://pydantic.dev/docs/ai/harness/#version-policy).
 
+## Filesystem scope
+
+File tools are workspace-scoped by default. For trusted local use,
+`Coder(unrestricted_filesystem=True)` roots file access at the workspace drive's
+filesystem root and disables protected-file patterns. Relative paths still resolve
+from the workspace; shell working directory and repository context are unchanged.
+On POSIX this permits paths such as `/tmp/example.py`; on Windows this covers the
+workspace drive, not other drives. OS permissions and file-change event listeners
+still apply. This permits modifying secrets and repository metadata: use it only
+when you trust the agent and its inputs. Shell commands were already unrestricted.
+
 ## Shell progress events
 
 Coder emits `ShellStartedEvent`, `ShellOutputEvent`, and `ShellFinishedEvent`

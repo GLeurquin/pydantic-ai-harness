@@ -21,6 +21,7 @@ async def call(
     arguments: dict[str, object],
     *,
     capabilities: Sequence[AbstractCapability[None]] = (),
+    unrestricted_filesystem: bool = False,
 ) -> str:
     calls = 0
 
@@ -42,7 +43,7 @@ async def call(
     result = await Agent(
         FunctionModel(respond, stream_function=stream),
         deps_type=type(None),
-        capabilities=[Coder(tmp_path), *capabilities],
+        capabilities=[Coder(tmp_path, unrestricted_filesystem=unrestricted_filesystem), *capabilities],
     ).run('Use the tool')
     return '\n'.join(
         str(part.content)
@@ -122,6 +123,22 @@ class TestCoder:
     )
     async def test_search_errors(self, tmp_path: Path, name: str, arguments: dict[str, object]) -> None:
         assert await call(tmp_path, name, arguments)
+
+    async def test_unrestricted_files_keep_workspace_relative_paths(self, tmp_path: Path) -> None:
+        workspace = tmp_path / 'workspace'
+        workspace.mkdir()
+        outside = tmp_path / '.env'
+        outside.write_text('before')
+        await call(
+            workspace,
+            'edit_file',
+            {'path': str(outside), 'old_text': 'before', 'new_text': 'after'},
+            unrestricted_filesystem=True,
+        )
+        assert outside.read_text() == 'after'
+        await call(workspace, 'write_file', {'path': 'local.txt', 'content': 'local'}, unrestricted_filesystem=True)
+        assert (workspace / 'local.txt').read_text() == 'local'
+        assert 'after' in await call(workspace, 'read_file', {'path': '../.env'}, unrestricted_filesystem=True)
 
     async def test_shell_events(self, tmp_path: Path) -> None:
         events: list[ShellStartedEvent | ShellOutputEvent | ShellFinishedEvent] = []

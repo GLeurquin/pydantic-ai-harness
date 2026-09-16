@@ -24,7 +24,7 @@ class ToolOutput:
         if isinstance(event, ShellStartedEvent):
             self.console.print(f'$ {terminal_text(event.command)}', style='cyan', markup=False, highlight=False)
         elif isinstance(event, ShellOutputEvent):
-            self.console.print(terminal_text(event.text), end='', markup=False, highlight=False)
+            self.console.print(terminal_text(event.text), style='dim', end='', markup=False, highlight=False)
         elif isinstance(event, ShellFinishedEvent):
             self.console.print()
             state = f'exit {event.exit_code}' if event.exit_code is not None else 'running in background'

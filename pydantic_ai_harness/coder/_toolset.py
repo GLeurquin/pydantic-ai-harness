@@ -36,10 +36,15 @@ class Replacement:
 class CoderToolset(FunctionToolset[AgentDepsT]):
     """Focused local coding tools. Shell access requires a trusted workspace."""
 
-    def __init__(self, workspace: Path) -> None:
+    def __init__(self, workspace: Path, *, unrestricted_filesystem: bool = False) -> None:
         super().__init__(id='coder')
         self.workspace = workspace.resolve()
-        filesystem = FileSystem[AgentDepsT](self.workspace).get_toolset()
+        self.unrestricted_filesystem = unrestricted_filesystem
+        root = Path(self.workspace.anchor) if unrestricted_filesystem else self.workspace
+        capability = FileSystem[AgentDepsT](root)
+        if unrestricted_filesystem:
+            capability.protected_patterns = []
+        filesystem = capability.get_toolset()
         assert isinstance(filesystem, FileSystemToolset)
         self.filesystem = filesystem
         self.add_function(self.read_file)
@@ -49,6 +54,9 @@ class CoderToolset(FunctionToolset[AgentDepsT]):
         self.add_function(self.grep)
         self.add_function(self.shell)
 
+    def _file_path(self, path: str) -> str:
+        return str(self.workspace / path) if self.unrestricted_filesystem else path
+
     async def read_file(
         self, ctx: RunContext[AgentDepsT], path: str, *, offset: int = 0, limit: int | None = None
     ) -> str:
@@ -57,7 +65,7 @@ class CoderToolset(FunctionToolset[AgentDepsT]):
             raise ModelRetry('offset must be non-negative and limit positive.')
         limit = min(limit or 2000, 2000)
         try:
-            resolved = self.filesystem._safe_resolve(path)  # pyright: ignore[reportPrivateUsage]
+            resolved = self.filesystem._safe_resolve(self._file_path(path))  # pyright: ignore[reportPrivateUsage]
             flags = os.O_RDONLY | (os.O_BINARY if os.name == 'nt' else os.O_NONBLOCK | os.O_NOFOLLOW)
             descriptor = os.open(resolved, flags)
             with os.fdopen(descriptor, 'rb') as source:
@@ -88,7 +96,7 @@ class CoderToolset(FunctionToolset[AgentDepsT]):
 
     async def write_file(self, ctx: RunContext[AgentDepsT], path: str, content: str) -> str:
         """Write a complete file. Create missing parent directories with shell mkdir first."""
-        result = await self.filesystem._write_file(ctx, path, content)  # pyright: ignore[reportPrivateUsage]
+        result = await self.filesystem._write_file(ctx, self._file_path(path), content)  # pyright: ignore[reportPrivateUsage]
         return re.sub(r' \[hash:[0-9a-f]+\]', '', result)
 
     async def edit_file(
@@ -111,7 +119,7 @@ class CoderToolset(FunctionToolset[AgentDepsT]):
         elif old_text is not None or new_text is not None or not replacements:
             raise ModelRetry('Use either old_text/new_text or a non-empty replacements list, not both.')
         try:
-            resolved = self.filesystem._safe_resolve(path, write=True)  # pyright: ignore[reportPrivateUsage]
+            resolved = self.filesystem._safe_resolve(self._file_path(path), write=True)  # pyright: ignore[reportPrivateUsage]
             flags = os.O_RDONLY | (os.O_BINARY if os.name == 'nt' else os.O_NONBLOCK | os.O_NOFOLLOW)
             descriptor = os.open(resolved, flags)
             with os.fdopen(descriptor, 'rb') as source:
