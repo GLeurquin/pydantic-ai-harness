@@ -95,13 +95,21 @@ failed or cancelled turns leave the previous history intact, though external too
 side effects may already have occurred. History is in memory only. Structured
 outputs are supported and displayed after completion.
 
-Text and available thinking content are parsed line-by-line with Termflow and
-paced through its `SmoothWriter`, preserving ANSI sequences during typewriter output.
-A part drains before the next heading, tool status, or input prompt appears.
-The catch-up window defaults to 1.2 seconds; `/set display.smooth_seconds 2.0`
-slows it further (allowed range: 0.1 to 5 seconds). This is a backlog catch-up
-window, not a guaranteed duration for each response. Empty thinking parts show
-no heading. The CLI disables core's first-run observability banner.
+Streaming matches Code Puppy's separate output and thinking paths:
+
+- Markdown uses Termflow `SmoothWriter`: 12 ms ticks, 0.5-second catch-up,
+  minimum one visible character per tick. Markdown is parsed line-by-line.
+- Thinking deltas feed `StreamSmoother` immediately: 20 ms ticks, 0.4-second
+  catch-up, minimum two characters per tick. They display as dim literal text,
+  without waiting for newlines or interpreting Markdown.
+- Smoothing applies only to interactive terminal output. Redirected output is
+  written directly. Parts drain before the next heading, tool status, or prompt.
+
+`/set display.smooth_seconds 0.5` restores the Code Puppy response catch-up
+window if you previously saved a slower preference. This response-only setting
+accepts 0.1 to 5 seconds; thinking retains its separate 0.4-second window.
+Empty thinking parts show no heading. The CLI disables core's first-run
+observability banner.
 Cancellation discards queued output. Incomplete Markdown lines are still buffered
 until a newline or part end; smoothing does not remove that parsing delay.
 Thinking signatures without text cannot be shown. A supplied agent's existing

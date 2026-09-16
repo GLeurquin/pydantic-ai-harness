@@ -18,7 +18,7 @@ from pydantic_ai import (
 from rich.console import Console
 from termflow import Parser, Renderer  # pyright: ignore[reportMissingTypeStubs]
 from termflow.render.style import RenderFeatures  # pyright: ignore[reportMissingTypeStubs]
-from termflow.stream import SmoothWriter  # pyright: ignore[reportMissingTypeStubs]
+from termflow.stream import SmoothWriter, StreamSmoother  # pyright: ignore[reportMissingTypeStubs]
 
 
 class StreamRenderer:
@@ -30,7 +30,7 @@ class StreamRenderer:
         *,
         stop_loading: Callable[[], None],
         show_thinking: bool = True,
-        smooth_seconds: float = 1.2,
+        smooth_seconds: float = 0.5,
     ) -> None:
         self.console = console
         self.smooth_seconds = smooth_seconds
@@ -39,6 +39,7 @@ class StreamRenderer:
         self.show_thinking = show_thinking
         self.stop_loading = stop_loading
         self._writer: SmoothWriter | None = None
+        self._thinking_writer: StreamSmoother | None = None
         self._parser: Parser | None = None
         self._renderer: Renderer | None = None
         self._buffer = ''
@@ -55,15 +56,7 @@ class StreamRenderer:
                 return
             self._thinking = thinking
             self._index = event.index
-            self._parser = Parser()
-            self._writer = SmoothWriter(self.console.file, tick_interval=0.025, catch_up_seconds=self.smooth_seconds)
-            self._writer.start()
-            self._renderer = Renderer(
-                output=self._writer,  # pyright: ignore[reportArgumentType]
-                width=self.console.width,
-                dim=thinking,
-                features=RenderFeatures(clipboard=False, hyperlinks=False, images=False),
-            )
+            self._start_part()
             self._feed(event.part.content)
             if not thinking:
                 self.rendered_text = True
@@ -83,12 +76,41 @@ class StreamRenderer:
                 markup=False,
             )
 
+    def _start_part(self) -> None:
+        if self._thinking:
+            if self.console.is_terminal:
+                self._thinking_writer = StreamSmoother(
+                    self._emit_thinking, tick_interval=0.02, catch_up_seconds=0.4, min_chars_per_tick=2
+                )
+                self._thinking_writer.start()
+            return
+        self._parser = Parser()
+        if self.console.is_terminal:
+            self._writer = SmoothWriter(
+                self.console.file, tick_interval=0.012, catch_up_seconds=self.smooth_seconds, min_chars_per_tick=1
+            )
+            self._writer.start()
+        self._renderer = Renderer(
+            output=self._writer or self.console.file,  # pyright: ignore[reportArgumentType]
+            width=self.console.width,
+            features=RenderFeatures(clipboard=False, hyperlinks=False, images=False),
+        )
+
+    def _emit_thinking(self, content: str) -> None:
+        self.console.print(content, style='dim', end='', markup=False, highlight=False)
+
     def _feed(self, content: str) -> None:
         if content and not self._heading_printed:
             self.console.print(
                 'Thinking' if self._thinking else 'CLAI', style='dim cyan' if self._thinking else 'bold magenta'
             )
             self._heading_printed = True
+        if self._thinking:
+            if self._thinking_writer is not None:
+                self._thinking_writer.feed(content)
+            else:
+                self._emit_thinking(content)
+            return
         self._buffer += content
         while '\n' in self._buffer:
             line, self._buffer = self._buffer.split('\n', 1)
@@ -105,18 +127,27 @@ class StreamRenderer:
         if self._parser is not None and self._renderer is not None:
             self._renderer.render_all(self._parser.finalize())
         writer, self._writer = self._writer, None
+        thinking_writer, self._thinking_writer = self._thinking_writer, None
+        thinking_visible = self._thinking and self._heading_printed
         self._reset()
         if writer is not None:
             await writer.close()
+        if thinking_writer is not None:
+            await thinking_writer.close()
+        if thinking_visible:
+            self.console.print()
         self.console.file.flush()
 
     async def abort(self) -> None:
         """Discard pending output on cancellation and let the drainer terminate."""
         writer, self._writer = self._writer, None
+        thinking_writer, self._thinking_writer = self._thinking_writer, None
         self._reset()
         if writer is not None:
             writer.abort()
-            await asyncio.sleep(0)
+        if thinking_writer is not None:
+            thinking_writer.abort()
+        await asyncio.sleep(0)
 
     def _reset(self) -> None:
         self._heading_printed = False
