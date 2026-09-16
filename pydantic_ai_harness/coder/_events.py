@@ -29,4 +29,5 @@ class ShellFinishedEvent(CapabilityEvent, namespace='coder', name='shell_finishe
     status_path: str
     exit_code: int | None
     truncated: bool
-    total_lines: int = 0
+    total_lines: int | None = 0
+    """Logical lines in logs up to 1 MiB; `None` for larger logs to bound scan work."""

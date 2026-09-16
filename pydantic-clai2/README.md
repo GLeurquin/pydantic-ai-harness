@@ -61,11 +61,17 @@ authorization code with PKCE, state validation, and a callback at
 `http://localhost:1455/auth/callback`. It times out after five minutes. The browser
 must be able to reach that callback on the machine running CLAI.
 
-Tokens live in the configured OS keyring under service `pydantic-clai2`, not in
-SQLite or `~/.codex/auth.json`. Core owns token refresh and writes rotated tokens
-through CLAI's `OpenAICodexCredentialSource`. A functioning OS credential backend
-is required; CLAI does not fall back to a plaintext token file. Tests mock keyring,
+Tokens live in the configured Python `keyring` backend under service `pydantic-clai2`,
+not in SQLite or `~/.codex/auth.json`. Choose an OS-backed credential store: CLAI
+uses the configured backend and does not enforce its encryption or storage policy.
+Installing or selecting a plaintext backend can store tokens in plaintext. Core owns
+token refresh through CLAI's `OpenAICodexCredentialSource`. Tests mock keyring,
 the browser, and OAuth exchange and do not access real credentials.
+
+The default Coder shell runs under your OS identity, without a sandbox. Commands
+can read files and access credential backends available to that identity, including
+CLAI's tokens. Keyring is storage, not isolation from model-controlled commands.
+Use a separate OS account or isolated environment for untrusted repositories.
 
 The requested default does not guarantee model availability for a subscription.
 Custom agents supplied to `chat` retain their model unless settings explicitly
@@ -76,8 +82,10 @@ an awaitable string.
 
 Preferences live in `$XDG_CONFIG_HOME/pydantic-clai2/config.db`, falling back to
 `~/.config/pydantic-clai2/config.db`. Use `--database PATH` to select another database.
-There is no automatic repository config loading. API keys and conversation messages
-are not written to the settings database.
+There is no automatic repository config loading. Conversation messages and CLAI's
+Codex tokens are not written to the settings database. Plugin settings are arbitrary
+JSON stored in plaintext in this database, including secrets if you put them there.
+Pass secret references or use plugin-owned credential storage instead of embedding keys.
 
 ```text
 /set

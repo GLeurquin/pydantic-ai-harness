@@ -72,6 +72,7 @@ async def shell(
                     await anyio.sleep(0.05)
         if mode == 'foreground':
             await events.drain()
+        await events.finish(pid=process.pid, status_path=status_path)
     except BaseException:
         # A cancelled call cannot return handles. Terminate its process group
         # instead of leaving an unreachable command behind.
@@ -97,5 +98,4 @@ async def shell(
         with output.open('rb') as source:
             source.seek(max(0, output.stat().st_size - 16000))
             handles += source.read(16000).decode('utf-8', errors='replace')
-    await events.finish(pid=process.pid, status_path=status_path)
     return handles

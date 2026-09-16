@@ -18,8 +18,9 @@ when you trust the agent and its inputs. Shell commands were already unrestricte
 
 `grep` accepts a regular file or directory. Both `grep` and `list_files` honor
 `unrestricted_filesystem`; scoped agents still reject paths outside the workspace.
-Shell finished events include a logical line count from a bounded-memory scan of
-the log snapshot, allowing UIs to report how many lines their preview omitted.
+Shell finished events include a logical line count for log snapshots up to 1 MiB.
+Larger logs report `total_lines=None` instead of scanning the entire file, bounding
+both memory and scan work. UIs can show a generic truncation notice in that case.
 
 ## Shell progress events
 

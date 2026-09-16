@@ -1,4 +1,6 @@
 import os
+import shlex
+import sys
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 
@@ -124,7 +126,8 @@ class TestCoder:
     async def test_search_errors(self, tmp_path: Path, name: str, arguments: dict[str, object]) -> None:
         assert await call(tmp_path, name, arguments)
 
-    async def test_unrestricted_files_keep_workspace_relative_paths(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize('relative', [False, True])
+    async def test_unrestricted_files_keep_workspace_relative_paths(self, tmp_path: Path, relative: bool) -> None:
         workspace = tmp_path / 'workspace'
         workspace.mkdir()
         outside = tmp_path / '.env'
@@ -132,7 +135,7 @@ class TestCoder:
         await call(
             workspace,
             'edit_file',
-            {'path': str(outside), 'old_text': 'before', 'new_text': 'after'},
+            {'path': '../.env' if relative else str(outside), 'old_text': 'before', 'new_text': 'after'},
             unrestricted_filesystem=True,
         )
         assert outside.read_text() == 'after'
@@ -168,6 +171,24 @@ class TestCoder:
 
         await call(tmp_path, 'shell', {'command': "printf '\\342\\202'"}, capabilities=[Observer()])
         assert ''.join(events) == '\ufffd'
+
+    async def test_large_sparse_log_does_not_scan(self, tmp_path: Path) -> None:
+        finished: list[ShellFinishedEvent] = []
+
+        class Observer(AbstractCapability[None]):
+            @on_event(ShellFinishedEvent)
+            async def finish(self, ctx: RunContext[None], event: ShellFinishedEvent) -> None:
+                finished.append(event)
+
+        script = 'import os; os.ftruncate(1, 1 << 32)'
+        await call(
+            tmp_path,
+            'shell',
+            {'command': f'{shlex.quote(sys.executable)} -c {shlex.quote(script)}'},
+            capabilities=[Observer()],
+        )
+        assert finished[0].total_lines is None
+        assert finished[0].truncated
 
     async def test_shell_events(self, tmp_path: Path) -> None:
         events: list[ShellStartedEvent | ShellOutputEvent | ShellFinishedEvent] = []

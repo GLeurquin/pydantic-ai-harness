@@ -12,10 +12,12 @@ from pydantic_ai.tools import AgentDepsT
 from ._events import ShellFinishedEvent, ShellOutputEvent
 
 
-def count_lines(path: Path) -> int:
+def count_lines(path: Path) -> int | None:
     if not path.exists():
         return 0
     remaining = path.stat().st_size
+    if remaining > 1_048_576:
+        return None
     count = 0
     last = b''
     with path.open('rb') as source:

@@ -1,8 +1,3 @@
----
-title: Coder
-description: Autonomous coding with six tools and context management.
----
-
 # Coder
 
 `Coder` gives a Pydantic AI agent tools and guidance for investigating, editing, and testing a local codebase.
@@ -23,8 +18,9 @@ when you trust the agent and its inputs. Shell commands were already unrestricte
 
 `grep` accepts a regular file or directory. Both `grep` and `list_files` honor
 `unrestricted_filesystem`; scoped agents still reject paths outside the workspace.
-Shell finished events include a logical line count from a bounded-memory scan of
-the log snapshot, allowing UIs to report how many lines their preview omitted.
+Shell finished events include a logical line count for log snapshots up to 1 MiB.
+Larger logs report `total_lines=None` instead of scanning the entire file, bounding
+both memory and scan work. UIs can show a generic truncation notice in that case.
 
 ## Shell progress events
 
@@ -44,15 +40,23 @@ tool execution.
 
 ## Benchmarking
 
-See the [Terminal-Bench 2.1 playbook](https://github.com/pydantic/pydantic-ai-harness/blob/main/pydantic_ai_harness/coder/TERMINAL_BENCH.md)
-for running Coder inside Harbor, pinning the adapter and harness, and inspecting trial results.
+See the [Terminal-Bench 2.1 playbook](TERMINAL_BENCH.md) for running Coder
+inside Harbor, pinning the adapter and harness, and inspecting trial results.
 
 ## Usage
 
 Install the Coder extra to include ripgrep (`rg`) for file listing and search:
 
+uv:
+
 ```bash
-pip/uv-add "pydantic-ai-harness[coder]"
+uv add "pydantic-ai-harness[coder]"
+```
+
+pip:
+
+```bash
+pip install "pydantic-ai-harness[coder]"
 ```
 
 The extra installs `ripgrep==14.1.0` except on Android, where `rg` must be supplied separately on `PATH`.
@@ -168,7 +172,3 @@ Each attempt emits a `coder.repair_tool_arguments` span through `ctx.tracer`, wi
 contents. Other Coder operations rely on core tool spans. Writes and edits emit filesystem change-request and completion events. Bounded reads do not compute whole-file hashes or emit hash-bearing read events.
 
 See the [source](https://github.com/pydantic/pydantic-ai-harness/tree/main/pydantic_ai_harness/coder/).
-
-## API reference
-
-::: pydantic_ai_harness.coder.Coder

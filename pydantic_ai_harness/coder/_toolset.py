@@ -142,7 +142,7 @@ class CoderToolset(FunctionToolset[AgentDepsT]):
             new=content,
         )
         refusal = await self.filesystem._request(  # pyright: ignore[reportPrivateUsage]
-            ctx, change, path=path, resolved=resolved
+            ctx, change, path=self._file_path(path), resolved=resolved
         )
         if refusal is not None:
             return refusal

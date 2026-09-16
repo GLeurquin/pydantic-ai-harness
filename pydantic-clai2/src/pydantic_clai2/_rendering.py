@@ -82,6 +82,8 @@ class StreamRenderer:
         elif isinstance(event, (FunctionToolCallEvent, FunctionToolResultEvent)):
             await self.finish()
             self.stop_loading()
+            if isinstance(event, FunctionToolResultEvent):
+                self._tool_output.discard_call(event.part.tool_call_id)
             if self._grep_output.render(event):
                 return
             if isinstance(event, FunctionToolCallEvent):

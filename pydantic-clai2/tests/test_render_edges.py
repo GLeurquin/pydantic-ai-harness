@@ -72,6 +72,33 @@ async def test_render_edge_events() -> None:
     assert 'write_file' in output.getvalue()
 
 
+async def test_refused_write_releases_diff() -> None:
+    output = io.StringIO()
+    renderer = StreamRenderer(Console(file=output), stop_loading=lambda: None)
+    for call_id in ('refused', 'pending'):
+        await renderer.on_stream_event(
+            FileChangeRequestEvent(
+                path='file',
+                root_dir='/tmp',
+                operation='write',
+                diff='sentinel proposed diff',
+                truncated=False,
+                tool_call_id=call_id,
+            )
+        )
+    await renderer.on_stream_event(
+        FunctionToolResultEvent(part=ToolReturnPart('write_file', 'refused', tool_call_id='refused'))
+    )
+    await renderer.on_stream_event(
+        FileWrittenEvent(path='file', root_dir='/tmp', content_hash='hash', tool_call_id='refused')
+    )
+    assert 'sentinel proposed diff' not in output.getvalue()
+    await renderer.on_stream_event(
+        FileWrittenEvent(path='file', root_dir='/tmp', content_hash='hash', tool_call_id='pending')
+    )
+    assert 'sentinel proposed diff' in output.getvalue()
+
+
 async def test_thinking_deltas_and_abort() -> None:
     renderer = StreamRenderer(Console(file=io.StringIO(), force_terminal=True), stop_loading=lambda: None)
     await renderer.on_stream_event(PartStartEvent(index=0, part=ThinkingPart('start')))

@@ -2,6 +2,7 @@
 
 import asyncio
 import signal
+import threading
 import time
 from collections.abc import Awaitable, Callable
 from types import FrameType
@@ -25,6 +26,9 @@ class Interrupts:
 
     async def run(self, operation: Awaitable[None]) -> bool:
         """Return false for user cancellation; propagate external task cancellation."""
+        if threading.current_thread() is not threading.main_thread():
+            await operation
+            return True
 
         async def invoke() -> None:
             await operation

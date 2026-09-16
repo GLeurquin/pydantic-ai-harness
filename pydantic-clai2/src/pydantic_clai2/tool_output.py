@@ -160,6 +160,10 @@ class ToolOutput:
             self.console.print('Diff truncated.', style='dim')
         self.console.print()
 
+    def discard_call(self, tool_call_id: str) -> None:
+        """Release proposed diffs after a tool result, including refusals and retries."""
+        self._writes = {key: value for key, value in self._writes.items() if key[0] != tool_call_id}
+
     def render(self, event: AgentStreamEvent) -> bool:
         """Return whether this event belongs to the specialized tool display."""
         if isinstance(event, ShellStartedEvent):
@@ -174,7 +178,7 @@ class ToolOutput:
             preview = self._shells.pop(event.tool_call_id, ShellPreview())
             if preview.pending and preview.completed_lines < self.shell_lines:
                 self._shell_line(preview)
-            omitted = max(0, event.total_lines - preview.shown)
+            omitted = max(0, event.total_lines - preview.shown) if event.total_lines is not None else 0
             if omitted:
                 self.console.print(f'Truncated {omitted} lines', style='dim')
             state = f'exit {event.exit_code}' if event.exit_code is not None else 'running in background'
