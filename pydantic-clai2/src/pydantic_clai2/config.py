@@ -11,6 +11,7 @@ class Settings(BaseModel):
     request_limit: int = Field(default=10000, gt=0)
     thinking: bool = True
     splash: bool = True
+    smooth_seconds: float = Field(default=1.2, ge=0.1, le=5, allow_inf_nan=False)
 
 
 SETTING_FIELDS = {
@@ -18,6 +19,7 @@ SETTING_FIELDS = {
     'run.request_limit': 'request_limit',
     'display.thinking': 'thinking',
     'display.splash': 'splash',
+    'display.smooth_seconds': 'smooth_seconds',
 }
 
 

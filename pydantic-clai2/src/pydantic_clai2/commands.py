@@ -139,7 +139,7 @@ def set_completions(args: list[str]) -> Iterable[str]:
         names = known_model_names()
         providers = sorted({name.partition(':')[0] + ':' for name in names} | {'openai-codex:'})
         return (*providers, 'openai-codex:gpt-6-astra', *names)
-    if len(args) == 2 and args[0].startswith('display.'):
+    if len(args) == 2 and args[0] in ('display.thinking', 'display.splash'):
         return ('true', 'false')
     return ()
 
@@ -150,8 +150,8 @@ def config_completions(args: list[str]) -> Iterable[str]:
         return ('show', 'get', 'set', 'reset')
     if len(args) == 2 and args[0] in ('get', 'set', 'reset'):
         return SETTING_FIELDS
-    if len(args) == 3 and args[0] == 'set' and args[1].startswith('display.'):
-        return ('true', 'false')
+    if len(args) == 3 and args[0] == 'set':
+        return set_completions(args[1:])
     return ()
 
 

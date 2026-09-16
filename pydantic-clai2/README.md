@@ -98,6 +98,10 @@ outputs are supported and displayed after completion.
 Text and available thinking content are parsed line-by-line with Termflow and
 paced through its `SmoothWriter`, preserving ANSI sequences during typewriter output.
 A part drains before the next heading, tool status, or input prompt appears.
+The catch-up window defaults to 1.2 seconds; `/set display.smooth_seconds 2.0`
+slows it further (allowed range: 0.1 to 5 seconds). This is a backlog catch-up
+window, not a guaranteed duration for each response. Empty thinking parts show
+no heading. The CLI disables core's first-run observability banner.
 Cancellation discards queued output. Incomplete Markdown lines are still buffered
 until a newline or part end; smoothing does not remove that parsing delay.
 Thinking signatures without text cannot be shown. A supplied agent's existing

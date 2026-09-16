@@ -4,7 +4,7 @@ import asyncio
 import io
 
 import pytest
-from pydantic_ai import PartStartEvent, TextPart
+from pydantic_ai import PartStartEvent, TextPart, ThinkingPart
 from rich.console import Console
 
 from pydantic_clai2 import StreamRenderer
@@ -13,6 +13,14 @@ from pydantic_clai2 import StreamRenderer
 @pytest.fixture
 def anyio_backend() -> str:
     return 'asyncio'
+
+
+async def test_empty_thinking_does_not_print_heading() -> None:
+    output = io.StringIO()
+    renderer = StreamRenderer(Console(file=output), stop_loading=lambda: None)
+    await renderer.on_stream_event(PartStartEvent(index=0, part=ThinkingPart(content='', signature='signature')))
+    await renderer.finish()
+    assert 'Thinking' not in output.getvalue()
 
 
 async def test_burst_is_queued_then_drained() -> None:

@@ -146,7 +146,9 @@ async def chat(
 
 
 async def _run_prompt(session: Session[DepsT, OutputT], text: str, *, console: Console, settings: Settings) -> None:
-    renderer = StreamRenderer(console, stop_loading=lambda: None, show_thinking=settings.thinking)
+    renderer = StreamRenderer(
+        console, stop_loading=lambda: None, show_thinking=settings.thinking, smooth_seconds=settings.smooth_seconds
+    )
     session.on_stream_event = renderer.on_stream_event
     try:
         result = await session.prompt(text)

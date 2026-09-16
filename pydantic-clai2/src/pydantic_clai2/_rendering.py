@@ -24,8 +24,18 @@ from termflow.stream import SmoothWriter  # pyright: ignore[reportMissingTypeStu
 class StreamRenderer:
     """Render text and thinking separately, flushing Markdown at part boundaries."""
 
-    def __init__(self, console: Console, *, stop_loading: Callable[[], None], show_thinking: bool = True) -> None:
+    def __init__(
+        self,
+        console: Console,
+        *,
+        stop_loading: Callable[[], None],
+        show_thinking: bool = True,
+        smooth_seconds: float = 1.2,
+    ) -> None:
         self.console = console
+        self.smooth_seconds = smooth_seconds
+        self._thinking = False
+        self._heading_printed = False
         self.show_thinking = show_thinking
         self.stop_loading = stop_loading
         self._writer: SmoothWriter | None = None
@@ -43,10 +53,10 @@ class StreamRenderer:
             thinking = isinstance(event.part, ThinkingPart)
             if thinking and not self.show_thinking:
                 return
-            self.console.print('Thinking' if thinking else 'CLAI', style='dim cyan' if thinking else 'bold magenta')
+            self._thinking = thinking
             self._index = event.index
             self._parser = Parser()
-            self._writer = SmoothWriter(self.console.file)
+            self._writer = SmoothWriter(self.console.file, tick_interval=0.025, catch_up_seconds=self.smooth_seconds)
             self._writer.start()
             self._renderer = Renderer(
                 output=self._writer,  # pyright: ignore[reportArgumentType]
@@ -74,6 +84,11 @@ class StreamRenderer:
             )
 
     def _feed(self, content: str) -> None:
+        if content and not self._heading_printed:
+            self.console.print(
+                'Thinking' if self._thinking else 'CLAI', style='dim cyan' if self._thinking else 'bold magenta'
+            )
+            self._heading_printed = True
         self._buffer += content
         while '\n' in self._buffer:
             line, self._buffer = self._buffer.split('\n', 1)
@@ -104,6 +119,7 @@ class StreamRenderer:
             await asyncio.sleep(0)
 
     def _reset(self) -> None:
+        self._heading_printed = False
         self._buffer = ''
         self._parser = None
         self._renderer = None
