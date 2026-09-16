@@ -85,11 +85,12 @@ Plugins load and unload while CLAI runs. The rules that make that safe:
 3. Fire it from exactly one place in the shell.
 4. Document it in `PLUGINS.md` in the table it belongs to.
 
-## The `/plugins` menu
+## The `/plugins` and `/set` menus
 
-Built on termflow's `MenuBuilder`, exactly like Code Puppy's `/agent` and `/mcp`
-menus: alternate screen, `[x]`/`[ ]` rows, a `.preview` panel on the right,
-`.on_key` for Space/R/D, `.footer_hint` for the key legend.
+Built on termflow's `MenuBuilder` (and `TextInputBuilder` for typed values),
+exactly like Code Puppy's `/agent`, `/mcp`, and `/set` menus: alternate screen,
+a `.preview` panel on the right, `.on_key` for single-key actions,
+`.footer_hint` for the key legend, `markdown_style()` for colours.
 
 - Split it in two: a pure `build_plugins_menu(...)` that returns the menu (so
   tests drive it headless, no terminal), and a thin async runner that owns the
@@ -101,6 +102,9 @@ menus: alternate screen, `[x]`/`[ ]` rows, a `.preview` panel on the right,
 - Esc and Ctrl-C close cleanly. They are not errors.
 - Adding a plugin is not in the menu. It needs free text, so it stays
   `/plugins add`.
+- `/set` edits go through `CommandContext.set_setting` / `reset_setting`, the
+  same path as the typed command, so validation lives in one place. The menu
+  loop (`run_flow`) takes its widget runners as parameters; tests script them.
 
 ## Rendering
 
@@ -131,7 +135,8 @@ the pydantic.dev `pydantic-visual-identity` skill's `brand-identity.md`.
 | `_rendering.py` | streaming Markdown and thinking |
 | `plugins.py` | `PluginHost`, hook names, event dataclasses |
 | `plugin_loader.py` | discovery, load, unload, reload; the `/plugins` subcommands |
-| `plugin_menu.py` | the `/plugins` full-screen menu (`build_plugins_menu` plus its runner) |
+| `plugin_menu.py` | the `/plugins` full-screen menu (`PluginMenu` plus its runner) |
+| `set_menu.py` | the `/set` full-screen menu (`SettingsMenu`, `run_flow`, its runner) |
 | `commands.py` | `Command`, the registry, completion |
 | `config.py` | `Settings`, `PluginSettings` |
 | `settings_store.py` | the SQLite store under `$XDG_CONFIG_HOME/pydantic-clai2/` |

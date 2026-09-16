@@ -7,13 +7,27 @@ class Settings(BaseModel):
     """An immutable snapshot; storage contains only explicit overrides."""
 
     model_config = ConfigDict(extra='forbid', frozen=True, strict=True)
-    model: str | None = Field(default='openai-codex:gpt-6-astra', min_length=1)
-    request_limit: int = Field(default=10000, gt=0)
-    thinking: bool = True
-    splash: bool = True
-    shell_lines: int = Field(default=20, ge=0, le=1000)
-    grep_lines: int = Field(default=20, ge=0, le=1000)
-    smooth_seconds: float = Field(default=0.5, ge=0.1, le=5, allow_inf_nan=False)
+    model: str | None = Field(
+        default='openai-codex:gpt-6-astra',
+        min_length=1,
+        description='Provider-qualified model for every turn. Overrides the model baked into the agent.',
+    )
+    request_limit: int = Field(
+        default=10000, gt=0, description='Most model requests one prompt may make before the turn stops.'
+    )
+    thinking: bool = Field(default=True, description="Show the model's thinking as it streams.")
+    splash: bool = Field(default=True, description='Animate the startup splash. Takes effect next start.')
+    shell_lines: int = Field(
+        default=20, ge=0, le=1000, description='Lines of shell output to preview before truncating.'
+    )
+    grep_lines: int = Field(default=20, ge=0, le=1000, description='Grep result lines to preview before truncating.')
+    smooth_seconds: float = Field(
+        default=0.5,
+        ge=0.1,
+        le=5,
+        allow_inf_nan=False,
+        description='Catch-up window for smoothed response streaming, 0.1 to 5 seconds.',
+    )
 
 
 SETTING_FIELDS = {

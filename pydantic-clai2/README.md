@@ -94,6 +94,14 @@ Pass secret references or use plugin-owned credential storage instead of embeddi
 /set run.request_limit 10000
 ```
 
+`/set` on its own opens a full-screen menu, the same kind Code Puppy uses: the
+settings on the left, details for the highlighted one on the right (current
+value, default, what it does). Type to filter. Enter edits: booleans and the
+model get a picker (the model list is searchable, with "Type a value..." for
+anything not listed), everything else a typed input that validates as you go.
+An empty value resets. `R` resets the highlighted setting. Esc closes. Every
+edit saves and applies immediately, the same as `/set KEY VALUE`.
+
 Tab completes setting names, boolean values, and model names from Pydantic AI's
 built-in catalog without network access. Provider prefixes include `openai-codex:`,
 which core supports but does not currently include in that model catalog. Complete

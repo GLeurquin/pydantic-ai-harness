@@ -28,6 +28,7 @@ from .interrupts import Interrupts
 from .plugin_loader import PluginError, PluginLoader
 from .plugin_menu import open_plugins_menu
 from .plugins import Renderer, SessionEndReason, SessionStart, TurnEnd, TurnStart
+from .set_menu import open_settings_menu
 from .settings_store import SettingsStore
 from .status import Status, StatusLine
 
@@ -89,8 +90,8 @@ async def chat(
     commands.register(
         Command(
             name='set',
-            description='View or change settings; Tab completes names and values',
-            handler=context.set_setting,
+            description='Change settings; no arguments opens the menu',
+            handler=lambda args: context.set_setting(args) if args else open_settings_menu(context),
             complete=set_completions,
         )
     )
