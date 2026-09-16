@@ -95,6 +95,11 @@ failed or cancelled turns leave the previous history intact, though external too
 side effects may already have occurred. History is in memory only. Structured
 outputs are supported and displayed after completion.
 
+CLAI uses Termflow's Dracula palette for Markdown (purple headings, pink markers,
+cyan links). This is local to the renderer; it does not change terminal colors or
+Termflow defaults in other applications. Code syntax highlighting retains Termflow's
+Monokai default.
+
 Streaming matches Code Puppy's separate output and thinking paths:
 
 - Markdown uses Termflow `SmoothWriter`: 12 ms ticks, 0.5-second catch-up,

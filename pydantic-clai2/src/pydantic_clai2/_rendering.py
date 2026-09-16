@@ -17,7 +17,7 @@ from pydantic_ai import (
 )
 from rich.console import Console
 from termflow import Parser, Renderer  # pyright: ignore[reportMissingTypeStubs]
-from termflow.render.style import RenderFeatures  # pyright: ignore[reportMissingTypeStubs]
+from termflow.render.style import RenderFeatures, RenderStyle  # pyright: ignore[reportMissingTypeStubs]
 from termflow.stream import SmoothWriter, StreamSmoother  # pyright: ignore[reportMissingTypeStubs]
 
 
@@ -93,6 +93,7 @@ class StreamRenderer:
         self._renderer = Renderer(
             output=self._writer or self.console.file,  # pyright: ignore[reportArgumentType]
             width=self.console.width,
+            style=RenderStyle.dracula(),
             features=RenderFeatures(clipboard=False, hyperlinks=False, images=False),
         )
 

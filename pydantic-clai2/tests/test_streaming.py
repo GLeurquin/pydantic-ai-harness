@@ -15,6 +15,16 @@ def anyio_backend() -> str:
     return 'asyncio'
 
 
+async def test_markdown_uses_clai_dracula_palette() -> None:
+    output = io.StringIO()
+    renderer = StreamRenderer(Console(file=output, force_terminal=False), stop_loading=lambda: None)
+    await renderer.on_stream_event(PartStartEvent(index=0, part=TextPart(content='# Heading\n')))
+    await renderer.finish()
+    assert '\x1b[38;2;189;147;249m' in output.getvalue()
+    assert 'Heading' in output.getvalue()
+    assert '\x1b]4;' not in output.getvalue()
+
+
 async def test_empty_thinking_does_not_print_heading() -> None:
     output = io.StringIO()
     renderer = StreamRenderer(Console(file=output, force_terminal=True), stop_loading=lambda: None)
