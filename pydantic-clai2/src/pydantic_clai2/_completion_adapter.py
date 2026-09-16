@@ -5,12 +5,10 @@ from collections.abc import Iterable
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.styles import Style
-
 from termflow.tui.completion import CompleteEvent as TermflowEvent  # pyright: ignore[reportMissingTypeStubs]
 from termflow.tui.completion import Document as TermflowDocument  # pyright: ignore[reportMissingTypeStubs]
 
 from .commands import Commands
-
 
 COMPLETION_STYLE = Style.from_dict(
     {
@@ -23,6 +21,7 @@ COMPLETION_STYLE = Style.from_dict(
         'scrollbar.button': 'bg:default #708999',
     }
 )
+
 
 class PromptCompleter(Completer):
     """Keep prompt-toolkit types out of the command and plugin interfaces."""
