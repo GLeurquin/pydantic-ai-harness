@@ -216,9 +216,10 @@ class PluginLoader(Generic[DepsT]):
         """Unload the plugin and forget its saved declaration."""
         entry = self._entry(name)
         await self.unload(name)
-        self._store.delete_plugin(name)
         if entry.path is not None:
-            return f'Forgot saved settings for {name}. Delete {entry.path} to remove the plugin itself.'
+            self._store.save_plugin(entry.declaration.model_copy(update={'enabled': False}))
+            return f'Disabled {name}. Delete {entry.path} to remove the plugin itself.'
+        self._store.delete_plugin(name)
         return f'Removed {name}.'
 
     async def reload(self, name: str) -> None:
@@ -236,6 +237,8 @@ class PluginLoader(Generic[DepsT]):
             )
         action, *rest = args
         if action == 'add':
+            if rest and any(entry.name == rest[0] for entry in self.entries()):
+                raise ValueError(f'Plugin {rest[0]} already exists; remove its declaration before replacing it.')
             plugins_command(self._store, args)
             await self.load(rest[0])
             return f'Added and loaded {rest[0]}.'

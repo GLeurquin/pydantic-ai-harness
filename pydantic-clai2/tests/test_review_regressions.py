@@ -6,8 +6,10 @@ import os
 from pathlib import Path
 
 import pytest
-from pydantic_ai import PartDeltaEvent, PartStartEvent
+from pydantic_ai import Agent, PartDeltaEvent, PartStartEvent, RunContext
+from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import TextPart, TextPartDelta, ThinkingPart
+from pydantic_ai.models.test import TestModel
 from rich.console import Console
 from test_plugin_loader import Harness
 
@@ -65,6 +67,8 @@ async def test_explicit_source_wins(tmp_path: Path) -> None:
     harness.store.save_plugin(PluginSettings(id='old-id', factory='pydantic_ai.capabilities:AbstractCapability'))
     await harness.loader.load_all()
     assert len(harness.loader.capabilities()) == 2
+    with pytest.raises(ValueError, match='already exists'):
+        await harness.loader.command(['add', 'collision', 'missing.module'])
     assert 'collision started' not in harness.text
 
 
@@ -123,6 +127,19 @@ def test_reset_preserves_other_runtime_overrides(tmp_path: Path) -> None:
     context.reset_setting('display.thinking')
     assert context.settings.model == 'test'
     assert context.settings.request_limit == 999
+
+
+async def test_capability_factory_is_resolved_by_core() -> None:
+    host: PluginHost[None] = PluginHost(console=Console(file=io.StringIO()), name='test', settings={})
+    called: list[bool] = []
+
+    def factory(ctx: RunContext[None]) -> AbstractCapability[None] | None:
+        called.append(True)
+        return None
+
+    host.add(factory)
+    await Agent(TestModel(), deps_type=type(None)).run('hi', capabilities=host.capabilities)
+    assert called == [True]
 
 
 def test_integral_float_settings() -> None:

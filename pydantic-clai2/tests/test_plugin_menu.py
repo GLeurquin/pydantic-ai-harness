@@ -62,7 +62,7 @@ def test_rows_details_and_keys(tmp_path: Path) -> None:
     assert fake.redraws[-1][0].label.startswith('[ ] alpha')
     assert 'state   disabled' in menu.details(alpha)
     menu.remove(fake, alpha)
-    assert 'state   enabled, not loaded' in menu.details(alpha)
+    assert 'state   disabled' in menu.details(alpha)
     assert menu.details(MenuItem('stray', value=None)) == ''
     assert menu.details(MenuItem('typed', value=0)) == ''
     assert len(fake.redraws) == 4

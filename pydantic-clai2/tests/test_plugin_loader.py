@@ -201,9 +201,9 @@ async def test_enable_disable_reload_persist_and_refresh_module(tmp_path: Path) 
     assert await harness.loader.command(['reload', 'counter']) == 'Reloaded counter.'
     assert harness.text.count('counter started') == 3
     message = await harness.loader.command(['remove', 'counter'])
-    assert message.startswith('Forgot saved settings for counter. Delete ')
-    assert harness.store.plugins() == []
-    assert harness.loader.entries()[0].state == 'enabled, not loaded'
+    assert message.startswith('Disabled counter. Delete ')
+    assert not harness.store.plugins()[0].enabled
+    assert harness.loader.entries()[0].state == 'disabled'
 
 
 async def test_fire_reports_observers_and_fails_closed_on_turn_start(tmp_path: Path) -> None:

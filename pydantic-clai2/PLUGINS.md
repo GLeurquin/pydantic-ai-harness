@@ -68,7 +68,7 @@ CLAI does the same thing:
 |---|---|
 | `/plugins list` | show every plugin and whether it is on |
 | `/plugins add NAME module[:attr] [JSON]` | save it and load it now |
-| `/plugins remove NAME` | unload it and forget it |
+| `/plugins remove NAME` | forget an installed declaration; persistently disable a drop-in (delete its file yourself to remove it) |
 | `/plugins enable NAME` / `disable NAME` | load or unload, remembered across restarts |
 | `/plugins reload NAME` | re-import the file and load it again (for editing a plugin while CLAI runs) |
 
