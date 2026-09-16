@@ -35,8 +35,10 @@ then one command, no file:
 /plugins add exa pydantic_ai_harness.exa:ExaSearch '{"num_results": 8}'
 ```
 
-The JSON supplies constructor keyword arguments; read the capability's
-signature in the installed source to know which exist. Other capabilities
+The JSON supplies constructor keyword arguments, so only values JSON can
+express work there; read the capability's signature in the installed source to
+know which exist. Options that take Python objects, such as ExaSearch's client,
+need a drop-in file that constructs the capability in code. Other capabilities
 register the same way: YouSearch from pydantic_ai_harness.youdotcom, core's
 WebSearch, or a user-written AbstractCapability subclass.
 
@@ -220,7 +222,7 @@ def activate(host: PluginHost[None]) -> None:
         await run_worker(lambda: build_menu().run())
         return ''
 
-    host.commands.register(Command(name='my-menu', description='Open my menu', handler=show_menu))
+    host.commands.register(Command(name='my_menu', description='Open my menu', handler=show_menu))
 ```
 
 Termflow owns the alternate screen. Do not print while it is open. Put errors and

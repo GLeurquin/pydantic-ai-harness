@@ -115,8 +115,9 @@ export EXA_API_KEY=...
 /plugins add exa pydantic_ai_harness.exa:ExaSearch '{"num_results": 8}'
 ```
 
-The JSON is passed to the constructor, so any keyword `ExaSearch` accepts works
-here. Ask the agent something that needs the web on the next prompt and it has
+The JSON is passed to the constructor, so any keyword `ExaSearch` accepts that
+JSON can express works here; an option that takes a Python object, like
+`client`, needs the file form below. Ask the agent something that needs the web on the next prompt and it has
 the tools. `/plugins disable exa` takes them away again.
 
 The same thing as a plugin file, `~/.config/pydantic-clai2/plugins/search.py`,

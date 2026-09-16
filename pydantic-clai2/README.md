@@ -292,7 +292,13 @@ or cancellation. No model requests or telemetry are added for status reporting.
 
 Everything beyond the prompt loop is a plugin, including the default coding
 tools. Any Pydantic AI capability is a plugin as it is; give the agent web
-search from Pydantic AI Harness without writing code:
+search from Pydantic AI Harness without writing code. Install the `exa` extra
+and set `EXA_API_KEY` first:
+
+```sh
+pip install 'pydantic-ai-harness[exa]'
+export EXA_API_KEY=...
+```
 
 ```text
 /plugins add exa pydantic_ai_harness.exa:ExaSearch '{"num_results": 8}'
