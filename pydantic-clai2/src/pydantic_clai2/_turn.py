@@ -5,6 +5,7 @@ import contextlib
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TypeVar
 
+from anyio import CancelScope
 from pydantic_ai import AgentStreamEvent
 from pydantic_ai.agent import AbstractAgent
 from pydantic_ai.capabilities import AgentCapability
@@ -84,7 +85,9 @@ async def run_turn(
             try:
                 ended = await run(start.text)
             except asyncio.CancelledError:
-                await loader.fire(TurnEnd(text=start.text, outcome='cancelled'))
+                # Shielded so a still-cancelled scope cannot cut the handlers off at their first await.
+                with CancelScope(shield=True):
+                    await loader.fire(TurnEnd(text=start.text, outcome='cancelled'))
                 raise
     await loader.fire(ended)
     return ended

@@ -39,8 +39,7 @@ def run() -> None:
             overrides['run.request_limit'] = args.request_limit
         settings = resolve_settings(overrides)
         usage_limits = UsageLimits(request_limit=settings.request_limit)
-        prompt = read_prompt(args.prompt, stdin=sys.stdin)
-        if prompt is None:
+        if args.prompt is None and sys.stdin.isatty():
             if args.output_format is not None:
                 parser.error('--output-format needs -p/--prompt or a prompt on stdin')
             asyncio.run(
@@ -54,7 +53,11 @@ def run() -> None:
                 )
             )
             return
+        # Reading stdin is part of the one-shot turn: Ctrl-C while a pipe is still filling exits 130 too.
         try:
+            prompt = read_prompt(args.prompt, stdin=sys.stdin)
+            if prompt is None:
+                parser.error('stdin is empty; pass -p/--prompt or pipe a prompt')
             code = asyncio.run(
                 one_shot(
                     create_agent(),

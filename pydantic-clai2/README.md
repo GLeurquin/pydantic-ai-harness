@@ -69,9 +69,9 @@ cat notes.md | clai2 -p "Summarise this in three bullets"
 ```
 
 `-p` (long form `--prompt`) is the prompt. With no `-p`, everything on a piped
-stdin is the prompt. With both, the piped text is appended to the prompt inside
-a fenced block, so the model sees your instruction first and the material after
-it. Plugins load exactly as in the shell, including the built-in `coder` tools,
+stdin is the prompt; an empty pipe is an error (exit `2`), not an empty turn.
+With both, the piped text is appended to the prompt inside a fenced block, so
+the model sees your instruction first and the material after it. Plugins load exactly as in the shell, including the built-in `coder` tools,
 so the model can read and change files and run commands. The splash, prompt,
 and status row are skipped.
 

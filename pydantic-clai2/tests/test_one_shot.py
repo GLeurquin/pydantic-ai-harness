@@ -38,6 +38,8 @@ class Pipe(io.StringIO):
 
 
 RECORDER = """
+import anyio
+
 from pydantic_clai2.plugins import PluginHost, SessionEnd, SessionStart, TurnEnd, TurnStart
 
 def activate(host: PluginHost) -> None:
@@ -51,6 +53,7 @@ def activate(host: PluginHost) -> None:
 
     @host.on('turn_end')
     async def after(event: TurnEnd) -> None:
+        await anyio.sleep(0)  # A real handler awaits; a cancelled turn must still reach the print.
         host.console.print('plugin: turn_end ' + event.outcome)
 
     @host.on('session_end')
@@ -297,6 +300,28 @@ def test_cli_output_format_needs_a_prompt(monkeypatch: pytest.MonkeyPatch, tmp_p
     with pytest.raises(SystemExit) as exit_info:
         run()
     assert exit_info.value.code == 2
+
+
+def test_cli_empty_stdin_is_not_a_prompt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    cli(monkeypatch, tmp_path, stdin=Pipe(' \n'))
+    with pytest.raises(SystemExit) as exit_info:
+        run()
+    assert exit_info.value.code == 2
+    assert 'stdin is empty' in capsys.readouterr().err
+
+
+class InterruptedPipe(Pipe):
+    def read(self, size: int | None = -1, /) -> str:
+        raise KeyboardInterrupt
+
+
+def test_cli_interrupt_while_reading_stdin_exits_130(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    cli(monkeypatch, tmp_path, '-p', 'hello', stdin=InterruptedPipe())
+    with pytest.raises(SystemExit) as exit_info:
+        run()
+    assert exit_info.value.code == 130
 
 
 def test_cli_interrupt_exits_130(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
