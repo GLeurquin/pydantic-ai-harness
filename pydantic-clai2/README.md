@@ -23,16 +23,12 @@ and completed tool side effects cannot be undone.
 
 ## Steering a turn
 
-Text you send while a turn is running does not have to wait for it, and does
-not cancel it. `/steer <text>` hands the text to the running turn as a user
-message, delivered before its next model request; tool calls already in flight
-finish first. If the turn was about to end, it gets one more model request to
-answer you. Text that arrives after the turn's last model request starts a
-follow-up run in the same turn instead of being dropped. This uses Pydantic AI's
-`RunContext.enqueue`, so the steered message is a normal part of the
-conversation history. With no turn running, `/steer` tells you to type the text
-as a prompt instead. Sending text during a turn without `/steer` is coming in a
-separate change to the prompt loop.
+`/steer <text>` adds a user message to the running turn without cancelling it.
+The message reaches the model at the turn's next request, after tool calls
+already in flight finish, or in one more request if the turn was about to end.
+It is delivered through Pydantic AI's `RunContext.enqueue`, so it is a normal
+part of the conversation history. With no turn running, `/steer` tells you to
+type the text as a prompt instead.
 
 ## Input history
 
