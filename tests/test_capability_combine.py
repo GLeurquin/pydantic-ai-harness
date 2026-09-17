@@ -79,7 +79,8 @@ pytestmark = pytest.mark.anyio
 
 
 async def _decline(request: AskUserRequest) -> AskUserResponse:
-    return AskUserResponse(cancelled=True)
+    """Only here to construct `AskUser`; the combine tests never call a tool."""
+    return AskUserResponse(cancelled=True)  # pragma: no cover
 
 
 _TMP_A = Path(tempfile.mkdtemp(prefix='combine-a-'))
