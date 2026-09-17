@@ -195,6 +195,11 @@ def test_settings_store_renames_legacy_display_keys(tmp_path: Path) -> None:
     assert not store.load().show_thinking and store.load().tool_output_lines == 3
     with sqlite3.connect(path) as connection:
         assert connection.execute('PRAGMA user_version').fetchone()[0] == 2
+        # A legacy 0 hid output; it must not become 'unlimited' under the new key.
+        connection.execute('PRAGMA user_version = 1')
+        connection.execute('DELETE FROM settings')
+        connection.execute('INSERT INTO settings VALUES (?, ?)', ('display.shell_lines', '0'))
+    assert SettingsStore(path).overrides() == {}
 
 
 def test_completion_uses_registry(tmp_path: Path) -> None:

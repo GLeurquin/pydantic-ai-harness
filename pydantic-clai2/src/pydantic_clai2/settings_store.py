@@ -34,9 +34,12 @@ class SettingsStore:
             )
             if version < 2:
                 # Version 2 renamed display keys. The first legacy key wins when two map to one new key;
-                # a value already saved under the new key is kept.
+                # a value already saved under the new key is kept. A stored 0 meant 'hide output' for the
+                # old line limits but means 'unlimited' for the new one, so it is dropped, not carried over.
                 for old, new in RENAMED_SETTINGS.items():
-                    connection.execute('UPDATE OR IGNORE settings SET key = ? WHERE key = ?', (new, old))
+                    connection.execute(
+                        "UPDATE OR IGNORE settings SET key = ? WHERE key = ? AND value_json != '0'", (new, old)
+                    )
                     connection.execute('DELETE FROM settings WHERE key = ?', (old,))
             connection.execute('PRAGMA user_version = 2')
 

@@ -91,7 +91,7 @@ class StreamRenderer:
             return
         if isinstance(event, CapabilityEvent):
             await self.finish()
-            if self._tool_output.render(event):
+            if self._tool_output.render(event) or self._grep_output.render(event):
                 return
         if isinstance(event, PartStartEvent) and isinstance(event.part, (TextPart, ThinkingPart)):
             await self.finish()

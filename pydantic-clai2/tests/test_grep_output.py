@@ -5,6 +5,7 @@ import io
 import pytest
 from pydantic_ai import FunctionToolCallEvent, FunctionToolResultEvent
 from pydantic_ai.messages import ToolCallPart, ToolReturnPart
+from pydantic_ai_harness.filesystem import FilesSearchedEvent
 from rich.console import Console
 
 from pydantic_clai2 import StreamRenderer
@@ -32,8 +33,17 @@ async def test_grep_preview(tool_truncated: bool) -> None:
     )
     assert "grep 'needle' in '/tmp/example'" in output.getvalue()
     result = 'example:1:first\nexample:2:second\nexample:3:third'
-    if tool_truncated:
-        result += '\n[truncated; narrow the search]'
+    await renderer.on_stream_event(
+        FilesSearchedEvent(
+            path='/tmp/example',
+            root_dir='/tmp',
+            pattern='needle',
+            search='grep',
+            match_count=3,
+            truncated=tool_truncated,
+            tool_call_id='search',
+        )
+    )
     await renderer.on_stream_event(
         FunctionToolResultEvent(
             part=ToolReturnPart(

@@ -220,10 +220,10 @@ full, header and all; `/expand 3` reprints the third most recent. The last ten
 folded outputs are kept, across turns, until CLAI exits. Folding is display
 only: the model still receives the original tool result.
 
-Grep calls display the expression and path. If the tool itself capped the
-search, a separate notice states that the additional result count is unknown,
-since those lines were never returned and cannot be expanded. No matches is
-shown explicitly.
+Grep calls display the expression and path. When the file-system capability
+reports that its own result cap stopped the search (`FilesSearchedEvent`), a
+separate notice says the additional result count is unknown, since those lines
+were never returned and cannot be expanded. No matches is shown explicitly.
 
 Shell output is rendered one completed line at a time. Carriage-return progress
 updates replace the buffered line rather than printing control-code text; the last
@@ -237,9 +237,10 @@ Full output remains in the log; display formatting does not alter model results.
 Shell output folds like any other tool output, counting logical lines including
 an unterminated final one. The capability only streams the first 16 KB of a
 command's log to the terminal, so `/expand` can show at most that much. When the
-log is longer, the command's footer says so: `Output truncated by the event
-budget; N more lines are only in the command log`, with the count taken from the
-log snapshot at that time. Full output remains in the displayed log path.
+log is longer, the command's footer says `Output truncated by the event budget`
+and, if the log snapshot at that time counted more lines than were streamed,
+adds `N more lines are only in the command log`; otherwise it says the rest is
+only in the command log. Full output remains in the displayed log path.
 Background commands can keep writing after the snapshot; those future lines are
 not included in its count.
 

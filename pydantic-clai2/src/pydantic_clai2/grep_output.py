@@ -1,8 +1,9 @@
 """Grep invocation and bounded result previews from native tool events."""
 
 from pydantic import BaseModel, ValidationError
-from pydantic_ai import FunctionToolCallEvent, FunctionToolResultEvent
+from pydantic_ai import AgentStreamEvent, FunctionToolCallEvent, FunctionToolResultEvent
 from pydantic_ai.messages import ToolReturnPart
+from pydantic_ai_harness.filesystem import FilesSearchedEvent
 from rich.console import Console
 from rich.text import Text
 
@@ -25,9 +26,14 @@ class GrepOutput:
         self.console = console
         self.folder = Folder(console, lines=lines, folds=folds)
         self._calls: dict[str, str] = {}
+        self._capped: dict[str | None, bool] = {}
 
-    def render(self, event: FunctionToolCallEvent | FunctionToolResultEvent) -> bool:
+    def render(self, event: AgentStreamEvent) -> bool:
         """Return false for unrelated or unsupported tool calls."""
+        if isinstance(event, FilesSearchedEvent):
+            # The capability reports its own result cap here, before the tool result arrives.
+            self._capped[event.tool_call_id] = event.truncated
+            return True
         if isinstance(event, FunctionToolCallEvent):
             if event.part.tool_name != 'grep':
                 return False
@@ -40,7 +46,10 @@ class GrepOutput:
             self.console.print(f'● {terminal_text(label)}', style=theme.MUTED, markup=False, highlight=False)
             self.console.print()
             return True
+        if not isinstance(event, FunctionToolResultEvent):
+            return False
         label = self._calls.pop(event.part.tool_call_id, None)
+        tool_truncated = self._capped.pop(event.part.tool_call_id, False)
         if label is None:
             return False
         if not isinstance(event.part, ToolReturnPart) or not isinstance(event.part.content, str):
@@ -50,9 +59,6 @@ class GrepOutput:
             self.console.print()
             return True
         rows = event.part.content.splitlines()
-        tool_truncated = bool(rows and rows[-1] == '[truncated; narrow the search]')
-        if tool_truncated:
-            rows.pop()
         self.console.print(f'Results: {terminal_text(label)}', style=theme.MUTED, markup=False, highlight=False)
         self.folder.show(label=terminal_text(label), lines=[Text(terminal_text(row)) for row in rows])
         if tool_truncated:
