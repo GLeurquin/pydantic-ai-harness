@@ -9,8 +9,16 @@ or incomplete JSON. Use this capability on its own or through [Coder](../coder/)
 
 Install `pydantic-ai-harness`; no extra is required for repair. This example uses a local test model.
 
+uv:
+
 ```bash
 uv add pydantic-ai-harness
+```
+
+pip:
+
+```bash
+pip install pydantic-ai-harness
 ```
 
 ```python

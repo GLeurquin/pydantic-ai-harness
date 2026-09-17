@@ -1,3 +1,8 @@
+---
+title: Repair Tool Arguments
+description: Repair malformed JSON tool arguments before schema validation.
+---
+
 # Repair Tool Arguments
 
 Repair malformed JSON tool arguments when a model produces trailing commas, single-quoted keys,
@@ -10,7 +15,7 @@ or incomplete JSON. Use this capability on its own or through [Coder](coder.md),
 Install `pydantic-ai-harness`; no extra is required for repair. This example uses a local test model.
 
 ```bash
-uv add pydantic-ai-harness
+pip/uv-add pydantic-ai-harness
 ```
 
 ```python
