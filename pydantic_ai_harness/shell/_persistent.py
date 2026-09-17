@@ -13,6 +13,7 @@ from __future__ import annotations
 import codecs
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -175,10 +176,14 @@ async def run_persistent_command(
                     await anyio.sleep(_POLL_INTERVAL)
             await output.drain()
         await output.finish(pid=process.pid, status_path=status_path)
+    except ModelRetry:
+        # The supervisor already exited; its directory is what the message points at.
+        raise
     except BaseException:
         _kill_session(process)
         with anyio.CancelScope(shield=True):
             await run_sync(process.wait)
+            shutil.rmtree(directory, ignore_errors=True)
         raise
 
     # Handles last: `ShellToolset.call_tool` keeps the tail of an over-long

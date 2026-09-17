@@ -27,9 +27,7 @@ from pydantic_ai_harness.shell import (
 
 from .._tool_calls import call_tool, call_tools
 
-pytestmark = pytest.mark.anyio
-
-posix_only = pytest.mark.skipif(os.name == 'nt', reason='POSIX process groups')
+pytestmark = [pytest.mark.anyio, pytest.mark.skipif(os.name == 'nt', reason='POSIX shell commands and process groups')]
 
 
 @pytest.fixture
@@ -141,7 +139,6 @@ class TestShellTool:
         assert recorder.finished.total_lines is None
         assert recorder.finished.truncated
 
-    @posix_only
     async def test_output_arrives_before_command_exit(self, tmp_path: Path) -> None:
         release = tmp_path / 'release.pipe'
         os.mkfifo(release)
@@ -193,7 +190,6 @@ class TestShellTool:
         assert 'Shell supervisor exited' in await shell(tmp_path, {'command': 'echo hi'})
 
 
-@posix_only
 class TestLifecycle:
     @pytest.mark.parametrize('mode', ['foreground', 'background'])
     async def test_process_survives_run(self, tmp_path: Path, mode: str) -> None:
@@ -252,6 +248,7 @@ class TestLifecycle:
     ) -> None:
         entered = anyio.Event()
         pids: list[int] = []
+        directories: list[Path] = []
 
         async def block_line_count(function: Callable[..., object], *args: object) -> object:
             # Only the log scan is held open; the cancellation path's own `run_sync` must still run.
@@ -262,6 +259,7 @@ class TestLifecycle:
                 while not status.exists():
                     await anyio.sleep(0.01)
             pids.append(json.loads(status.read_text())['pid'])
+            directories.append(status.parent)
             entered.set()
             await anyio.sleep_forever()
 
@@ -278,6 +276,7 @@ class TestLifecycle:
         # The killed command is reparented and reaped by init, not by us, so it may
         # linger as a zombie for a moment after the tool call has unwound.
         await wait_for_exit(pids[0])
+        assert not directories[0].exists()
 
     async def test_cancelled_foreground_terminates_process(self, tmp_path: Path) -> None:
         connected = anyio.Event()

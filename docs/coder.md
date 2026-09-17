@@ -77,7 +77,7 @@ or allowlist commands.
 | `grep(pattern, ...)` | Ripgrep search with `path`, `glob`, `file_type`, `ignore_case`, `literal`, and `context` (0 to 20). |
 | `shell(command, mode='foreground', timeout=270)` | Unrestricted commands rooted at the workspace that outlive the run. |
 
-Results are bounded by `FileSystem`'s result caps (1,000 lines or files) and Coder's 64,000-character
+Results are bounded by `FileSystem`'s caps (2,000 lines per `read_file`, 1,000 lines or files per search or listing) and Coder's 64,000-character
 tool-output limit; a truncation marker means more output was omitted, so narrow the search rather than
 assuming it was complete. Use `shell` for `mkdir`, `find`, process inspection, and `kill`. File writes
 keep the standalone filesystem's protected-path rules (`.git`, `.env`, keys, and secrets); shell can bypass

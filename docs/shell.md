@@ -222,9 +222,9 @@ The command outlives the agent run, the event loop, and (once it has started)
 the calling interpreter, so a server the model starts keeps serving. Nothing
 wakes the agent when the command finishes; the model polls. A foreground call
 that is cancelled (a run cancellation, say) cannot hand back its handles, so it
-kills the supervisor's whole session instead. The log directory is a temp
-directory that is never rotated or deleted: the caller owns cleaning it up, and
-a verbose command should bound its own output. A supervisor that exits without
+kills the supervisor's whole session and removes the log directory instead. A
+log directory that was handed back is never rotated or deleted: the caller owns
+cleaning it up, and a verbose command should bound its own output. A supervisor that exits without
 publishing a status (a broken interpreter, say) surfaces as a retry naming the
 log directory.
 
@@ -243,9 +243,9 @@ show output as it arrives without parsing the tool result:
 | `CommandOutputEvent` | stream | `text`: a chunk of the combined log, decoded incrementally |
 | `CommandFinishedEvent` | stream | `pid`, `output_path`, `status_path`, `exit_code`, `truncated`, `total_lines` |
 
-Output events cover at most the first 16,000 bytes of the log per call, in
-chunks of up to 4,096 bytes, polled every 50 ms while a foreground call waits;
-a background call emits what has arrived by the time it returns. `finished`
+Output events are emitted while a foreground call waits: at most the first
+16,000 bytes of the log per call, in chunks of up to 4,096 bytes, polled every
+50 ms. A background call emits only the started and finished events. `finished`
 means the tool stopped waiting, not that the command exited: `exit_code` is
 `None` while no status has been published, and `truncated` says the log held
 more than the events showed. `total_lines` counts logical lines in logs up to
