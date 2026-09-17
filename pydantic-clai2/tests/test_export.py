@@ -146,6 +146,18 @@ def test_json_round_trips_through_core_adapter() -> None:
     assert [type(message) for message in restored] == [type(message) for message in messages]
 
 
+def test_json_survives_metadata_that_is_not_json() -> None:
+    class Opaque:
+        def __repr__(self) -> str:
+            return 'Opaque()'
+
+    messages = [
+        ModelRequest(parts=[ToolReturnPart(tool_name='t', content='x', tool_call_id='1', metadata={'o': Opaque()})])
+    ]
+    payload = json.loads(to_json(messages, model='m', now=NOW))
+    assert payload['messages'][0]['parts'][0]['metadata'] == {'o': 'Opaque()'}
+
+
 def test_export_session_paths_and_force(tmp_path: Path) -> None:
     messages = conversation()
     default = export_session([], messages=messages, model='m', workspace=tmp_path, now=NOW)

@@ -46,11 +46,11 @@ def export_session(
 
 
 def to_json(messages: Sequence[ModelMessage], *, model: str, now: datetime) -> str:
-    """A header plus the messages exactly as `ModelMessagesTypeAdapter` serializes them."""
+    """A header plus the messages as `ModelMessagesTypeAdapter` serializes them; odd metadata values become `repr`."""
     payload = {
         'model': model,
         'exported_at': now.isoformat(),
-        'messages': ModelMessagesTypeAdapter.dump_python(list(messages), mode='json'),
+        'messages': ModelMessagesTypeAdapter.dump_python(list(messages), mode='json', fallback=repr),
     }
     return json.dumps(payload, indent=2) + '\n'
 
