@@ -1,8 +1,7 @@
 """The built-in `compaction` plugin: Code Puppy's compaction chain from harness, `/compact`, and a context gauge.
 
 The chain is `FallbackCompaction` over `SummarizingCompaction` then `SlidingWindowCompaction`, so a
-failed or over-budget summary degrades to truncation instead of failing the run. `TieredCompaction`
-gives the chain its trigger; `compact_now` drives the same chain for `/compact`.
+failed or over-budget summary degrades to truncation. `compact_now` drives the chain for `/compact`.
 """
 
 from typing import Literal
@@ -17,7 +16,6 @@ from pydantic_ai_harness.compaction import (
     ReportContextUsage,
     SlidingWindowCompaction,
     SummarizingCompaction,
-    TieredCompaction,
     compact_now,
     estimate_token_count,
 )
@@ -39,7 +37,7 @@ class CompactionSettings(BaseModel):
         gt=0,
         le=1,
         allow_inf_nan=False,
-        description='Compact once the history fills this fraction of the context window.',
+        description='Warn once the history fills this fraction of the context window.',
     )
     protected_tokens: int = Field(
         default=50_000, ge=0, description='Tokens of the most recent messages that are never compacted.'
@@ -71,14 +69,13 @@ def build_chain(config: CompactionSettings) -> FallbackCompaction[None]:
 
 
 def activate(host: PluginHost[None]) -> None:
-    """Bind the chain per run, gauge usage before each request, and offer `/compact [focus]`.
+    """Gauge usage before each request and offer `/compact [focus]`.
 
     Typed for `None` deps because `compact_now` runs the chain on a context with no deps;
     the strategies never read them, so the plugin works with any agent.
     """
     config = host.settings(CompactionSettings)
     chain: CompactionStrategy[None] = build_chain(config)
-    host.add(TieredCompaction(tiers=[chain], target_fraction=config.threshold, context_window=config.context_window))
     host.add(ReportContextUsage(context_window=config.context_window))
 
     @host.on(ContextUsageEvent)

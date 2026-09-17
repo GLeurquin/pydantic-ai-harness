@@ -120,11 +120,14 @@ async def test_settings_are_validated_on_activation() -> None:
         make_host(compact_at=0.5)
 
 
-async def test_gauge_paints_the_status_row_when_still_over_the_threshold() -> None:
+async def test_gauge_warns_without_automatically_compacting() -> None:
     session = Session(Agent(TestModel()), deps=None)
-    host = make_host(session, context_window=10)
+    host = make_host(session, context_window=10, protected_tokens=0)
     session.plugins = host.capabilities
     await session.prompt('hello there, this is longer than ten tokens')
+    await session.prompt('another turn above the warning threshold')
+    assert len(session.messages) == 4
+    assert not any(isinstance(part, SystemPromptPart) for message in session.messages for part in message.parts)
     assert host.status.context_alert
     assert host.status.context_tokens is not None and host.status.context_tokens > 8, 'the figure is the gauge reading'
     roomy = make_host(session, context_window=100_000)

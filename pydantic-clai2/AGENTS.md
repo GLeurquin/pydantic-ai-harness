@@ -169,7 +169,7 @@ the pydantic.dev `pydantic-visual-identity` skill's `brand-identity.md`.
 | `model_menu.py` | `/model`: the picker, `ModelSettingsSource`, `run_model_flow` |
 | `model_catalog.py` | model sources (genai-prices today) merged by `catalog()` |
 | `model_settings.py` | `ModelSettingsForm`, the editable subset of `ModelSettings` |
-| `compaction.py` | the built-in `compaction` plugin: harness `TieredCompaction` over `FallbackCompaction([SummarizingCompaction, SlidingWindowCompaction])`, `/compact`, the context alert |
+| `compaction.py` | the built-in `compaction` plugin: harness `FallbackCompaction([SummarizingCompaction, SlidingWindowCompaction])`, `/compact`, the context alert |
 | `commands.py` | `Command`, the registry, completion |
 | `config.py` | `Settings`, `PluginSettings` |
 | `settings_store.py` | the SQLite store under `$XDG_CONFIG_HOME/pydantic-clai2/` |
