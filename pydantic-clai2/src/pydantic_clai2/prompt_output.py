@@ -2,6 +2,7 @@
 
 import asyncio
 import sys
+import threading
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -15,22 +16,30 @@ class PromptOutput:
     Rich and Termflow flush after every chunk. Honouring that would erase and redraw the
     prompt beside every partial line of streamed Markdown, so partial lines wait for their
     newline. Lines that arrive while a write is in progress share its redraw, and every
-    write happens on the event loop in order, so output cannot overtake the prompt exit.
+    write happens on the prompt's event loop in order, so output cannot overtake the prompt
+    exit. Tools and plugins running in worker threads can print too; their lines hop to
+    the loop.
     """
 
-    def __init__(self, output: Output) -> None:
+    def __init__(self, output: Output, *, loop: asyncio.AbstractEventLoop) -> None:
         """Write through the same prompt-toolkit output as the prompt so buffering stays consistent."""
         self._output = output
+        self._loop = loop
+        self._thread = threading.current_thread()
+        self._lock = threading.Lock()
         self._partial = ''
         self._ready = ''
         self._writer: asyncio.Task[None] | None = None
 
     def write(self, text: str) -> int:
         """Buffer until a newline, then schedule the completed lines."""
-        self._partial += text
-        if '\n' in self._partial:
+        with self._lock:
+            self._partial += text
+            if '\n' not in self._partial:
+                return len(text)
             lines, self._partial = self._partial.rsplit('\n', 1)
-            self._schedule(lines + '\n')
+            self._ready += lines + '\n'
+        self._wake()
         return len(text)
 
     def flush(self) -> None:
@@ -48,22 +57,29 @@ class PromptOutput:
 
     async def aclose(self) -> None:
         """Write whatever is still pending before the prompt reclaims the terminal."""
-        if self._partial:
-            self._schedule(self._partial)
+        with self._lock:
+            self._ready += self._partial
             self._partial = ''
+        self._start_writer()
         if self._writer is not None:
             await self._writer
 
-    def _schedule(self, text: str) -> None:
-        self._ready += text
-        if self._writer is None:
+    def _wake(self) -> None:
+        if threading.current_thread() is self._thread:
+            self._start_writer()
+        else:
+            self._loop.call_soon_threadsafe(self._start_writer)
+
+    def _start_writer(self) -> None:
+        if self._writer is None and self._ready:
             self._writer = asyncio.ensure_future(self._drain())
 
     async def _drain(self) -> None:
         try:
             while self._ready:
                 async with in_terminal():
-                    text, self._ready = self._ready, ''
+                    with self._lock:
+                        text, self._ready = self._ready, ''
                     self._output.write_raw(text)
                     self._output.flush()
         finally:
@@ -73,7 +89,7 @@ class PromptOutput:
 @asynccontextmanager
 async def output_above_prompt(output: Output) -> AsyncGenerator[None]:
     """Send `sys.stdout` and `sys.stderr` above the prompt while it is on screen."""
-    proxy = PromptOutput(output)
+    proxy = PromptOutput(output, loop=asyncio.get_running_loop())
     original = sys.stdout, sys.stderr
     sys.stdout = sys.stderr = proxy
     try:

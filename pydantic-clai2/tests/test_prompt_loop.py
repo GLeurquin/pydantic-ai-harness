@@ -1,5 +1,6 @@
 """The prompt stays open during a turn: queued input, Esc, and output above the prompt."""
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -81,6 +82,27 @@ async def test_escape_cancels_the_turn_and_keeps_the_draft(tmp_path: Path) -> No
     assert output.count('never') == 1
 
 
+async def test_escape_cancels_a_blocked_turn_start_hook(tmp_path: Path) -> None:
+    plugins = tmp_path / 'plugins'
+    plugins.mkdir()
+    (plugins / 'gate.py').write_text(
+        'import anyio\n'
+        'from pydantic_clai2.plugins import PluginHost, TurnEnd, TurnStart\n'
+        'def activate(host: PluginHost) -> None:\n'
+        "    @host.on('turn_start')\n"
+        '    async def block(event: TurnStart) -> None:\n'
+        '        await anyio.sleep_forever()\n'
+        "    @host.on('turn_end')\n"
+        '    async def ended(event: TurnEnd) -> None:\n'
+        "        host.console.print(f'turn {event.outcome}: {event.text}')\n"
+    )
+    with anyio.fail_after(10):
+        output = await run_chat(blocking_agent(started=anyio.Event()), tmp_path=tmp_path, text='run\n\x1bx\x03/exit\n')
+    assert 'Turn cancelled.' in output
+    assert 'turn cancelled: run' in output
+    assert 'never' not in output
+
+
 async def test_escape_at_idle_does_nothing(tmp_path: Path) -> None:
     output = await run_chat(blocking_agent(started=anyio.Event()), tmp_path=tmp_path, text='\x1bx\x03/exit\n')
     assert 'Turn cancelled' not in output
@@ -103,7 +125,7 @@ async def test_prompt_output_writes_whole_lines_above_the_prompt() -> None:
     with create_pipe_input() as pipe, create_app_session(input=pipe, output=terminal):
         async with anyio.create_task_group() as tasks:
             prompt = PromptSession[str]()
-            proxy = PromptOutput(prompt.output)
+            proxy = PromptOutput(prompt.output, loop=asyncio.get_running_loop())
             assert proxy.isatty()
             assert proxy.encoding == 'utf-8'
             proxy.write('partial')
@@ -111,9 +133,13 @@ async def test_prompt_output_writes_whole_lines_above_the_prompt() -> None:
             assert terminal.written == []
             tasks.start_soon(prompt.prompt_async, '> ')
             proxy.write(' line\nsecond\ntail')
-            proxy.write(' end')
+            proxy.write(' end\n')
+            await asyncio.to_thread(proxy.write, 'from a worker thread\n')
+            proxy.write('tail')
             await proxy.aclose()
-            assert 'partial line\nsecond\ntail end' in terminal.text
+            assert 'partial line\nsecond\ntail end\n' in terminal.text
+            assert terminal.text.index('tail end\n') < terminal.text.index('from a worker thread\n')
+            assert terminal.text.index('from a worker thread\n') < terminal.text.rindex('tail')
             pipe.send_text('\n')
 
 

@@ -340,37 +340,44 @@ class _Shell(Generic[DepsT, OutputT]):
 
     async def _turn(self, turn: _Turn) -> None:
         start = TurnStart(text=turn.text)
-        try:
-            await self.loader.fire(start)
-        except PluginError as exc:
-            self.console.print(str(exc), style=theme.ERROR, markup=False)
-            self.console.print()
-            await self.loader.fire(TurnEnd(text=start.text, outcome='failed', error=exc))
-            return
-        if start.cancelled:
-            self.console.print(
-                f'Turn cancelled by a plugin: {start.cancel_reason or "no reason given"}', style=theme.WARNING
-            )
-            self.console.print()
-            await self.loader.fire(TurnEnd(text=start.text, outcome='cancelled'))
-            return
-        self.session.plugins = (*self.plugins, *self.loader.capabilities())
-        self.session.model_settings = self.context.model_settings(self.session.model or _model_label(self.agent))
         ended: TurnEnd | None = None
         with turn.scope:
-            ended = await _run_prompt(
-                self.session,
-                start.text,
-                console=self.console,
-                settings=self.context.settings,
-                status=self.status,
-                renderers=self.loader.renderers(),
-            )
+            ended = await self._gate(start)
+            if ended is None:
+                ended = await self._run(start.text)
         if ended is None:
             self.console.print('Turn cancelled.', style=theme.MUTED)
             self.console.print()
             ended = TurnEnd(text=start.text, outcome='cancelled')
         await self.loader.fire(ended)
+
+    async def _gate(self, start: TurnStart) -> TurnEnd | None:
+        """Fire `turn_start`; return the ending for a turn that never reaches the agent."""
+        try:
+            await self.loader.fire(start)
+        except PluginError as exc:
+            self.console.print(str(exc), style=theme.ERROR, markup=False)
+            self.console.print()
+            return TurnEnd(text=start.text, outcome='failed', error=exc)
+        if start.cancelled:
+            self.console.print(
+                f'Turn cancelled by a plugin: {start.cancel_reason or "no reason given"}', style=theme.WARNING
+            )
+            self.console.print()
+            return TurnEnd(text=start.text, outcome='cancelled')
+        return None
+
+    async def _run(self, text: str) -> TurnEnd:
+        self.session.plugins = (*self.plugins, *self.loader.capabilities())
+        self.session.model_settings = self.context.model_settings(self.session.model or _model_label(self.agent))
+        return await _run_prompt(
+            self.session,
+            text,
+            console=self.console,
+            settings=self.context.settings,
+            status=self.status,
+            renderers=self.loader.renderers(),
+        )
 
 
 async def _execute_command(commands: Commands, text: str, *, console: Console, status: Status) -> None:
