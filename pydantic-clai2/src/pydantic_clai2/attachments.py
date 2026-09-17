@@ -16,8 +16,10 @@ IMAGE_MEDIA_TYPES = {
     '.gif': 'image/gif',
     '.webp': 'image/webp',
 }
-MAX_ATTACHMENT_BYTES = 1_000_000
-"""Larger files are left as plain text; the coding tools read those in pages."""
+MAX_TEXT_BYTES = 1_000_000
+"""Larger text files are left as plain text; the coding tools read those in pages."""
+MAX_IMAGE_BYTES = 10_000_000
+"""Applies to `@image` and `/paste`; a full-screen Retina screenshot is a few MB of PNG."""
 
 _REFERENCE = re.compile(r'(?<![\w@])@(?:"([^"\n]+)"|(\S+?))[.,;:!?)\]}"\']*(?=\s|$)')
 """`@path` or `@"path with spaces"`. An `@` after a word character is an email or handle, and punctuation
@@ -46,6 +48,8 @@ class Attachments:
         data = self.clipboard.image()
         if data is None:
             return 'No image on the clipboard.'
+        if len(data) > MAX_IMAGE_BYTES:
+            return f'Clipboard image not attached: {len(data)} bytes exceeds the {MAX_IMAGE_BYTES} byte limit.'
         self.pending.append(BinaryContent(data, media_type='image/png'))
         return f'Attached a {len(data) / 1024:.1f} KB PNG image to the next prompt ({len(self.pending)} queued).'
 
@@ -70,10 +74,11 @@ def _load(reference: str, path: Path) -> str | BinaryContent:
     """Read one reference; `ValueError` (including a decode error) or `OSError` says why it stays text."""
     if not path.is_file():
         raise ValueError('it is a directory' if path.is_dir() else 'no such file')
-    size = path.stat().st_size
-    if size > MAX_ATTACHMENT_BYTES:
-        raise ValueError(f'{size} bytes exceeds the {MAX_ATTACHMENT_BYTES} byte limit')
     media_type = IMAGE_MEDIA_TYPES.get(path.suffix.lower())
+    size = path.stat().st_size
+    limit = MAX_TEXT_BYTES if media_type is None else MAX_IMAGE_BYTES
+    if size > limit:
+        raise ValueError(f'{size} bytes exceeds the {limit} byte limit')
     if media_type is not None:
         return BinaryContent(path.read_bytes(), media_type=media_type)
     return _fenced(reference, path.read_text(encoding='utf-8'))

@@ -16,7 +16,7 @@ from rich.console import Console
 from test_app_edges import inputs
 
 from pydantic_clai2 import Session, chat
-from pydantic_clai2.attachments import MAX_ATTACHMENT_BYTES, Attachments
+from pydantic_clai2.attachments import MAX_IMAGE_BYTES, MAX_TEXT_BYTES, Attachments
 from pydantic_clai2.commands import Command, Commands
 from pydantic_clai2.prompt_input import PathReferenceCompleter, prompt_completer, prompt_key_bindings
 from pydantic_clai2.settings_store import SettingsStore
@@ -92,7 +92,9 @@ def test_resolve_references(tmp_path: Path) -> None:
     (tmp_path / 'notes.md').write_text('# Notes\n```py\nprint(1)\n```\n', encoding='utf-8')
     (tmp_path / 'shot.PNG').write_bytes(PNG)
     (tmp_path / 'binary.dat').write_bytes(b'\xff\xfe\x00')
-    (tmp_path / 'big.txt').write_bytes(b'x' * (MAX_ATTACHMENT_BYTES + 1))
+    (tmp_path / 'big.txt').write_bytes(b'x' * (MAX_TEXT_BYTES + 1))
+    (tmp_path / 'big.png').write_bytes(PNG + bytes(MAX_IMAGE_BYTES))
+    (tmp_path / 'mid.png').write_bytes(PNG + bytes(MAX_TEXT_BYTES))
     (tmp_path / 'sub').mkdir()
     (tmp_path / 'my notes.md').write_text('spaced  ', encoding='utf-8')
     attachments = Attachments(root=tmp_path, clipboard=FakeClipboard(None))
@@ -107,13 +109,14 @@ def test_resolve_references(tmp_path: Path) -> None:
     assert block == 'notes.md:\n````\n# Notes\n```py\nprint(1)\n```\n````'
     assert spaced == 'my notes.md:\n```\nspaced  \n```'
     assert resolved.warnings == []
-    problems = attachments.resolve('@missing.txt @sub @binary.dat @big.txt')
-    assert problems.content == '@missing.txt @sub @binary.dat @big.txt'
+    problems = attachments.resolve('@missing.txt @sub @binary.dat @big.txt @big.png @mid.png')
+    assert isinstance(problems.content, list) and len(problems.content) == 2
     assert [warning.split(':')[0] for warning in problems.warnings] == [
         '@missing.txt left as text',
         '@sub left as text',
         '@binary.dat left as text',
         '@big.txt left as text',
+        '@big.png left as text',
     ]
 
 
@@ -144,6 +147,9 @@ def test_paste_queues_until_next_prompt(tmp_path: Path) -> None:
     empty = Attachments(root=tmp_path, clipboard=FakeClipboard(None))
     assert empty.paste() == 'No image on the clipboard.'
     assert empty.pending == []
+    huge = Attachments(root=tmp_path, clipboard=FakeClipboard(PNG + bytes(MAX_IMAGE_BYTES)))
+    assert huge.paste().startswith('Clipboard image not attached: ')
+    assert huge.pending == []
     attachments = Attachments(root=tmp_path, clipboard=FakeClipboard(PNG))
     assert attachments.paste() == 'Attached a 0.0 KB PNG image to the next prompt (1 queued).'
     assert attachments.paste().endswith('(2 queued).')

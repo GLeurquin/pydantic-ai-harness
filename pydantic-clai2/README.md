@@ -33,13 +33,14 @@ completion adds the quotes for you. When the prompt is sent, each reference is
 attached after your text, in the order written: text files as a fenced block headed by the path, and `.png`, `.jpg`,
 `.jpeg`, `.gif`, and `.webp` files as images the model sees directly. The
 `@path` token itself stays in your text. A missing path, a directory, a file
-that is not UTF-8 text, a file over 1 MB, or one you cannot read prints a
-warning and is left as plain text. Punctuation closing the sentence, as in
+that is not UTF-8 text, a text file over 1 MB, an image over 10 MB, or one you
+cannot read prints a warning and is left as plain text. Punctuation closing the sentence, as in
 `see @notes.md.` or `(@shot.png)`, is not part of the path. An `@` inside a
 word, as in an email address, is not a reference.
 
 `/paste` attaches the image on the system clipboard to your next prompt and
-reports its size; run it more than once to attach several. macOS uses
+reports its size; run it more than once to attach several. The same 10 MB
+image limit applies. macOS uses
 `pngpaste` when installed, otherwise `osascript`. Linux uses `wl-paste` under
 Wayland or `xclip`. Other platforms, an empty clipboard, or a clipboard without
 an image report `No image on the clipboard.` Pasting an image with the
