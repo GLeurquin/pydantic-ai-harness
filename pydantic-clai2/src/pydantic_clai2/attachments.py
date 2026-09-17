@@ -19,7 +19,8 @@ IMAGE_MEDIA_TYPES = {
 MAX_ATTACHMENT_BYTES = 1_000_000
 """Larger files are left as plain text; the coding tools read those in pages."""
 
-_REFERENCE = re.compile(r'(?<!\S)@(\S+)')
+_REFERENCE = re.compile(r'(?<![\w@])@(\S+?)[.,;:!?)\]}"\']*(?=\s|$)')
+"""`@` after a word character is an email or handle; punctuation closing the sentence is not part of the path."""
 _FENCE = re.compile(r'`{3,}')
 
 

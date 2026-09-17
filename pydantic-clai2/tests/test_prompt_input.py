@@ -53,7 +53,7 @@ async def test_newline_keys_and_block_paste(keys: str, expected: str) -> None:
         assert await session.prompt_async('> ') == expected
 
 
-def test_path_completion(tmp_path: Path) -> None:
+def test_path_completion(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / 'file.py').touch()
     (tmp_path / 'other.txt').touch()
     (tmp_path / 'sub').mkdir()
@@ -70,6 +70,9 @@ def test_path_completion(tmp_path: Path) -> None:
     assert complete('@missing/') == []
     assert complete('/set @') == []
     assert complete('no reference') == []
+    assert complete(f'@{tmp_path}/oth') == ['er.txt']
+    monkeypatch.setenv('HOME', str(tmp_path))
+    assert complete('@~/sub/') == ['inner.md']
     commands = Commands()
     commands.register(Command(name='hello', description='hi', handler=lambda _: 'ok'))
     merged = prompt_completer(commands, root=tmp_path)
@@ -87,12 +90,13 @@ def test_resolve_references(tmp_path: Path) -> None:
     plain = attachments.resolve('nothing to attach, mail me@example.com')
     assert plain.content == 'nothing to attach, mail me@example.com'
     assert plain.warnings == []
-    resolved = attachments.resolve('read @notes.md and @shot.PNG')
+    resolved = attachments.resolve('read @notes.md, then (@shot.PNG).')
     assert isinstance(resolved.content, list)
     text, block, image = resolved.content
-    assert text == 'read @notes.md and @shot.PNG'
+    assert text == 'read @notes.md, then (@shot.PNG).'
     assert block == 'notes.md:\n````\n# Notes\n```py\nprint(1)\n```\n````'
     assert isinstance(image, BinaryContent) and image.media_type == 'image/png' and image.data == PNG
+    assert resolved.warnings == []
     problems = attachments.resolve('@missing.txt @sub @binary.dat @big.txt')
     assert problems.content == '@missing.txt @sub @binary.dat @big.txt'
     assert [warning.split(':')[0] for warning in problems.warnings] == [
@@ -101,6 +105,17 @@ def test_resolve_references(tmp_path: Path) -> None:
         '@binary.dat left as text',
         '@big.txt left as text',
     ]
+
+
+def test_resolve_home_and_absolute_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / 'home'
+    home.mkdir()
+    (home / 'notes.txt').write_text('at home', encoding='utf-8')
+    monkeypatch.setenv('HOME', str(home))
+    attachments = Attachments(root=tmp_path / 'elsewhere', clipboard=FakeClipboard(None))
+    resolved = attachments.resolve(f'@~/notes.txt and @{home}/notes.txt')
+    assert resolved.warnings == []
+    assert isinstance(resolved.content, list) and len(resolved.content) == 3
 
 
 def test_resolve_unreadable_file(tmp_path: Path) -> None:
