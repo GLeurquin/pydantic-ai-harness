@@ -25,7 +25,7 @@ from pydantic_ai_harness.shell import (
     Shell,
 )
 
-from .._tool_calls import call_tool
+from .._tool_calls import call_tool, call_tools
 
 pytestmark = pytest.mark.anyio
 
@@ -169,6 +169,21 @@ class TestShellTool:
         assert 'NUL' in await shell(tmp_path, {'command': 'echo \0'})
         capability = Shell[None](cwd=tmp_path, allowed_commands=['echo'], tools=['shell'])
         assert 'not in the allowed list' in await call_tool([capability], 'shell', {'command': 'printf hi'})
+
+    async def test_handles_survive_output_cap(self, tmp_path: Path) -> None:
+        output = await shell(tmp_path, {'command': 'yes | head -c 3000'}, max_output_chars=600)
+        assert output.startswith('[... output truncated')
+        assert 'PID: ' in output and 'Output: ' in output and 'Status: ' in output
+        assert '"exit_code": 0' in output.splitlines()[-1]
+
+    async def test_starts_in_configured_cwd_despite_persist_cwd(self, tmp_path: Path) -> None:
+        (tmp_path / 'child').mkdir()
+        capability = Shell[None](cwd=tmp_path, persist_cwd=True, tools=['run_command', 'shell'])
+        moved, listed = await call_tools(
+            [capability], [('run_command', {'command': 'cd child && pwd'}), ('shell', {'command': 'pwd'})]
+        )
+        assert moved.strip().endswith('child')
+        assert listed.splitlines()[0] == str(tmp_path.resolve())
 
     async def test_missing_working_directory(self, tmp_path: Path) -> None:
         assert 'no longer exists' in await shell(tmp_path / 'absent', {'command': 'echo hi'})

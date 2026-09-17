@@ -52,6 +52,9 @@ RIPGREP_TOOL_NAMES: tuple[str, ...] = ('list_files', 'grep')
 FILE_SYSTEM_TOOL_NAMES: tuple[str, ...] = (*DEFAULT_TOOL_NAMES, *RIPGREP_TOOL_NAMES)
 """Every tool `FileSystem` can register, in registration order."""
 
+_MAX_MATCH_COLUMNS = 4096
+"""Bytes of a matching or context line `grep` shows before ripgrep cuts it with an omission marker."""
+
 READ_ONLY_TOOL_NAMES: frozenset[str] = frozenset(
     {'read_file', 'list_directory', 'search_files', 'find_files', 'file_info', *RIPGREP_TOOL_NAMES}
 )
@@ -414,12 +417,6 @@ def _replacements(
     if old_text is not None or new_text is not None or not replacements:
         raise ModelRetry('Provide either old_text and new_text or a non-empty replacements list, not both.')
     return list(replacements)
-
-
-def _match_line(entry: str, text: str) -> str:
-    """Rebuild ripgrep's `path:line:text` (match) or `path-line-text` (context) line for an authorized path."""
-    digits = len(text) - len(text.lstrip('0123456789'))
-    return f'{entry}{text[digits : digits + 1]}{text}'
 
 
 def _apply_replacements(text: str, replacements: Sequence[Replacement], path: str) -> str:
@@ -852,6 +849,9 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
         resolved = self._safe_resolve(path, write=True)
         if not resolved.is_file():
             raise FileNotFoundError(f'File not found: {path}')
+        with resolved.open('rb') as f:
+            if _is_binary(f.read(8192)):
+                raise ValueError(f'{path} is a binary file; edit_file only edits text files.')
 
         # Reading and writing with `newline=''` disables universal-newline
         # translation, so the text is the canonical bytes-on-disk view that
@@ -1122,8 +1122,13 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
         if not resolved.is_dir():
             raise NotADirectoryError(f'Path {path!r} is not a directory.')
         arguments = ['--files', '--sort', 'path', *(['--glob', glob] if glob is not None else [])]
-        records, capped = await run_ripgrep(arguments, cwd=resolved, limit=self._max_find_results, listing=True)
-        results = [entry for record in records if (entry := self._ripgrep_entry(resolved, record)) is not None]
+        results, capped = await run_ripgrep(
+            arguments,
+            cwd=resolved,
+            limit=self._max_find_results,
+            listing=True,
+            accept=lambda record: self._ripgrep_entry(resolved, record),
+        )
         if ctx is not None:
             await ctx.emit(
                 self._searched(resolved, glob or '', search='find', match_count=len(results), truncated=capped)
@@ -1215,7 +1220,17 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
             cwd, target = resolved.parent, os.path.join('.', resolved.name)
         else:
             raise FileNotFoundError(f'Path {path!r} is not a file or directory.')
-        arguments = ['--line-number', '--with-filename', '--sort', 'path', '--context', str(context)]
+        arguments = [
+            '--line-number',
+            '--with-filename',
+            '--sort',
+            'path',
+            '--max-columns',
+            str(_MAX_MATCH_COLUMNS),
+            '--max-columns-preview',
+            '--context',
+            str(context),
+        ]
         if glob is not None:
             arguments.extend(['--glob', glob])
         if file_type is not None:
@@ -1225,12 +1240,12 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
         if literal:
             arguments.append('--fixed-strings')
         arguments.extend(['--regexp', pattern, '--', target])
-        records, capped = await run_ripgrep(arguments, cwd=cwd, limit=self._max_search_results)
-        results = [
-            _match_line(entry, record.text)
-            for record in records
-            if (entry := self._ripgrep_entry(cwd, record)) is not None
-        ]
+        results, capped = await run_ripgrep(
+            arguments,
+            cwd=cwd,
+            limit=self._max_search_results,
+            accept=lambda record: self._match_line(cwd, record),
+        )
         if ctx is not None:
             await ctx.emit(self._searched(resolved, pattern, search='grep', match_count=len(results), truncated=capped))
         if capped:
@@ -1248,6 +1263,14 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
             return None
         target = self._resolve_walk_entry(cwd / record.path)
         return None if target is None else self._relative_to_root(target)
+
+    def _match_line(self, cwd: Path, record: Record) -> str | None:
+        """Rebuild ripgrep's `path:line:text` (match) or `path-line-text` (context) line for an authorized path."""
+        entry = self._ripgrep_entry(cwd, record)
+        if entry is None:
+            return None
+        digits = len(record.text) - len(record.text.lstrip('0123456789'))
+        return f'{entry}{record.text[digits : digits + 1]}{record.text}'
 
     async def create_directory(self, path: str) -> str:
         """Create a directory directly, outside an agent run."""
@@ -1310,7 +1333,7 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
             raise FileNotFoundError(f'Path not found: {path}')
 
         # Check if the original (pre-resolve) path is a symlink
-        original = self._root / path
+        original = self._cwd / path
         is_link = original.is_symlink()
 
         stat = resolved.stat()

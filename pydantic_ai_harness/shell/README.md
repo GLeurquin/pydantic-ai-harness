@@ -163,11 +163,13 @@ command's combined stdout and stderr to an output log, publishes a JSON status
 file (`{"pid": ..., "exit_code": ...}`, with `exit_code` null until the command
 exits), and reaps the command. The tool returns the supervisor's PID and both
 paths, so the model reads progress with its other tools and stops the process
-with `kill -- -PID` (the process group). Foreground waits up to `timeout`
-seconds (default `default_timeout`, at most `MAX_FOREGROUND_WAIT`, 270) for the
-exit status, appends the last 16,000 bytes of the log to the result, and then
-returns the handles even if the command is still running; background returns
-them at once. The 270-second cap keeps a tool call shorter than typical provider
+with `kill -- -PID` on POSIX or `taskkill /PID <PID> /T /F` on Windows (the
+process group or tree; the result names the right one). Foreground waits up to
+`timeout` seconds (default `default_timeout`, at most `MAX_FOREGROUND_WAIT`,
+270) for the exit status and returns the last 16,000 bytes of the log followed
+by the handles, even if the command is still running; background returns the
+handles at once. The handles come last so that `max_output_chars`, which keeps
+the tail of an over-long result, cannot drop them. The 270-second cap keeps a tool call shorter than typical provider
 request timeouts, so a long build or test run does not stall the conversation:
 the model gets the handles back, does other work, and polls the status file.
 
@@ -183,9 +185,9 @@ log directory.
 
 `allowed_commands`, `denied_commands`, `denied_operators`, `allow_interactive`,
 `env`, and `denied_env_patterns` apply to `shell` exactly as to `run_command`.
-`persist_cwd` does not: every `shell` command starts in `cwd`. `max_output_chars`
-caps the returned tail. Commands and logs are host-local, not durable workflow
-activities, and are not replay-safe.
+`persist_cwd` does not: every `shell` command starts in the configured `cwd`,
+whatever `run_command` has tracked. Commands and logs are host-local, not durable
+workflow activities, and are not replay-safe.
 
 Each `shell` call emits progress events in the `shell` namespace, so a UI can
 show output as it arrives without parsing the tool result:

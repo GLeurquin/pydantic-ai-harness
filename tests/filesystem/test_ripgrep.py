@@ -1,6 +1,7 @@
 """The opt-in ripgrep-backed `list_files` and `grep` tools."""
 
 import os
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -101,6 +102,18 @@ class TestListFiles:
         listed = await toolset(workspace, max_find_results=1).list_files()
         assert listed.splitlines() == ['notes.txt', '[... truncated at 1 files]']
 
+    async def test_cap_counts_permitted_entries_only(self, workspace: Path) -> None:
+        listed = await toolset(workspace, max_find_results=1, denied_patterns=['notes.txt']).list_files()
+        assert listed == 'src/app.py'
+
+    async def test_oversized_record_stops_the_search(self, workspace: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = workspace / 'bin'
+        fake.mkdir()
+        (fake / 'rg').write_text(f'#!{sys.executable}\nimport sys\nsys.stdout.write("x" * 2_000_000)\n')
+        (fake / 'rg').chmod(0o755)
+        monkeypatch.setenv('PATH', f'{fake}{os.pathsep}{os.environ["PATH"]}')
+        assert await toolset(workspace).list_files() == '[... truncated at 1000 files]'
+
     async def test_event(self, workspace: Path) -> None:
         recorder = Recorder()
         await call(workspace, 'list_files', {'glob': '*.py'}, capabilities=[recorder])
@@ -130,6 +143,12 @@ class TestGrep:
         ]
         assert await built.grep('return os.name', literal=True, path='src') == 'src/app.py:5:    return os.name'
         assert await built.grep('nothing') == 'No matches found.'
+
+    async def test_long_lines_are_cut_by_ripgrep(self, workspace: Path) -> None:
+        (workspace / 'minified.js').write_text('x' * 5000 + 'needle' + 'y' * 5000 + '\n')
+        result = await toolset(workspace).grep('needle')
+        assert result.startswith('minified.js:1:xxxx') and result.endswith('[... omitted end of long line]')
+        assert len(result) < 5000
 
     async def test_file_target(self, workspace: Path) -> None:
         assert await toolset(workspace).grep('os', path='notes.txt') == 'notes.txt:2:os is a module'

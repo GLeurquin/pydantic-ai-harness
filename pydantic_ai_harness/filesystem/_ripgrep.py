@@ -2,17 +2,19 @@
 
 `rg` is invoked with `--null`, so every file path it prints ends in a NUL byte
 and cannot be confused with the `:`/`-` separators of the match text that
-follows it. Records are streamed and the process is stopped once the caller's
-limit is reached, so a search over a large tree does not buffer everything
-before the cap applies.
+follows it. Records are streamed through the caller's `accept` filter and the
+process is stopped once `limit` accepted records have been collected, so a
+search over a large tree neither buffers everything before the cap applies nor
+counts records the caller then drops.
 """
 
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeVar
 
 import anyio
 import anyio.abc
@@ -20,6 +22,11 @@ from pydantic_ai.exceptions import ModelRetry
 
 _SEPARATOR = b'--\n'
 """What `rg` prints between non-adjacent context groups; carries no path and is dropped."""
+
+_MAX_RECORD_BYTES = 1 << 20
+"""Longest record buffered while waiting for its terminator; `rg`'s own `--max-columns` keeps lines far shorter."""
+
+_T = TypeVar('_T')
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -33,15 +40,22 @@ class Record:
 
 
 async def run_ripgrep(
-    arguments: Sequence[str], *, cwd: Path, limit: int, listing: bool = False
-) -> tuple[list[Record], bool]:
-    """Run `rg --null` with `arguments` in `cwd`; return up to `limit` records and whether more were cut.
+    arguments: Sequence[str],
+    *,
+    cwd: Path,
+    limit: int,
+    listing: bool = False,
+    accept: Callable[[Record], _T | None],
+) -> tuple[list[_T], bool]:
+    """Run `rg --null` in `cwd`; return up to `limit` accepted records and whether more were cut.
 
-    `listing` reads `--files` output, where each record is a bare path. Raises
-    `ModelRetry` when `rg` is not installed or reports an error (an invalid
-    pattern, say), so the model can correct the call or use another tool.
+    `accept` maps a record to what the caller keeps, or `None` to drop it; only
+    kept records count towards `limit`. `listing` reads `--files` output, where
+    each record is a bare path. Raises `ModelRetry` when `rg` is not installed
+    or reports an error (an invalid pattern, say), so the model can correct the
+    call or use another tool.
     """
-    records: list[Record] = []
+    results: list[_T] = []
     truncated = False
     stderr = bytearray()
     terminator = b'\0' if listing else b'\n'
@@ -65,11 +79,15 @@ async def run_ripgrep(
                         line, pending = pending[: end + 1], pending[end + 1 :]
                         if line == _SEPARATOR:
                             continue
-                        if len(records) >= limit:
+                        kept = accept(_record(line, listing=listing))
+                        if kept is None:
+                            continue
+                        if len(results) >= limit:
                             truncated = True
                         else:
-                            records.append(_record(line, listing=listing))
-                    if truncated:
+                            results.append(kept)
+                    if truncated or len(pending) > _MAX_RECORD_BYTES:
+                        truncated = True
                         process.terminate()
                         break
             await process.wait()
@@ -78,7 +96,7 @@ async def run_ripgrep(
     if not truncated and process.returncode not in (0, 1):
         detail = stderr.decode('utf-8', errors='replace').strip()
         raise ModelRetry(f'ripgrep failed: {detail or f"exit code {process.returncode}"}')
-    return records, truncated
+    return results, truncated
 
 
 def _record(line: bytes, *, listing: bool) -> Record:

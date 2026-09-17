@@ -1,5 +1,6 @@
 """`FileSystem` options added for single-writer coding agents: `cwd`, `content_hashes`, and batch edits."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -105,6 +106,14 @@ class TestReplacements:
         assert message in await call(tmp_path, 'edit_file', {'path': 'f.txt', **arguments})
         assert path.read_text() == 'one x x'
 
+    async def test_binary_files_are_not_edited(self, tmp_path: Path) -> None:
+        path = tmp_path / 'blob.bin'
+        path.write_bytes(b'a\0b')
+        assert 'binary file' in await call(
+            tmp_path, 'edit_file', {'path': 'blob.bin', 'old_text': 'a', 'new_text': 'c'}
+        )
+        assert path.read_bytes() == b'a\0b'
+
     async def test_direct_method_keeps_single_pair(self, tmp_path: Path) -> None:
         (tmp_path / 'f.txt').write_text('one')
         assert (await toolset(tmp_path).edit_file('f.txt', 'one', 'two')).startswith('Edited f.txt.')
@@ -123,6 +132,16 @@ class TestCwd:
         assert 'outside the project' in await built.read_file('../shared.txt')
         assert 'outside the project' in await built.read_file(str(tmp_path / 'shared.txt'))
         assert await built.list_directory('.') == await built.list_directory('../project')
+
+    @pytest.mark.skipif(os.name == 'nt', reason='POSIX symlinks')
+    async def test_file_info_reports_the_symlink_at_cwd(self, tmp_path: Path) -> None:
+        project = tmp_path / 'project'
+        project.mkdir()
+        (tmp_path / 'target.txt').write_text('shared')
+        (project / 'link.txt').symlink_to(tmp_path / 'target.txt')
+        (tmp_path / 'link.txt').write_text('a regular file at the root with the same name')
+        info = await toolset(tmp_path, cwd=project).file_info('link.txt')
+        assert 'symlink' in info and 'target.txt' in info
 
     def test_cwd_must_be_inside_root(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match='outside root_dir'):

@@ -97,8 +97,8 @@ were already unrestricted.
 
 `shell` is the [`Shell`](shell.md) capability's persistent tool. Foreground waits at most 270 seconds
 (or a smaller positive `timeout`) and then returns handles for the same running process; background returns
-them immediately. Both report a PID, an absolute output log path, and an absolute JSON status path whose
-`exit_code` is `null` while the command runs. Commands outlive the agent run, so servers keep running; there
+them immediately. Both end with a PID, an absolute output log path, and an absolute JSON status path whose
+`exit_code` is `null` while the command runs; foreground puts the last 16,000 bytes of output before them. Commands outlive the agent run, so servers keep running; there
 is no completion notification or automatic wake-up after a final response. The Shell page covers the
 supervisor, cleanup, and the `CommandStartedEvent`, `CommandOutputEvent`, and `CommandFinishedEvent` progress
 events a UI can subscribe to.

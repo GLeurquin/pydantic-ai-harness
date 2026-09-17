@@ -435,7 +435,7 @@ class ShellToolset(FunctionToolset[AgentDepsT]):
         return await run_persistent_command(
             ctx,
             command,
-            cwd=self._cwd,
+            cwd=self._initial_cwd,
             env=self._resolve_env(),
             mode=mode,
             timeout=self._default_timeout if timeout is None else timeout,

@@ -181,14 +181,20 @@ async def run_persistent_command(
             await run_sync(process.wait)
         raise
 
-    handles = (
-        f'PID: {process.pid} (supervisor/session leader; use kill -- -{process.pid} to stop the process group)\n'
-        f'Output: {output_path}\nStatus: {status_path}\n'
-    )
-    if status_path.exists():
-        handles += f'{status_path.read_text()}\n'
+    # Handles last: `ShellToolset.call_tool` keeps the tail of an over-long
+    # result, and the PID and paths are what the model must not lose.
+    result = ''
     if mode == 'foreground' and output_path.exists():
         with output_path.open('rb') as source:
             source.seek(max(0, output_path.stat().st_size - _OUTPUT_TAIL_BYTES))
-            handles += source.read(_OUTPUT_TAIL_BYTES).decode('utf-8', errors='replace')
-    return handles
+            result = source.read(_OUTPUT_TAIL_BYTES).decode('utf-8', errors='replace')
+            if result and not result.endswith('\n'):
+                result += '\n'
+    stop = f'taskkill /PID {process.pid} /T /F' if os.name == 'nt' else f'kill -- -{process.pid}'
+    result += (
+        f'PID: {process.pid} (supervisor/session leader; use `{stop}` to stop the whole process tree)\n'
+        f'Output: {output_path}\nStatus: {status_path}'
+    )
+    if status_path.exists():
+        result += f'\n{status_path.read_text()}'
+    return result
