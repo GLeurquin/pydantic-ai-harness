@@ -11,7 +11,7 @@ from pydantic_ai.exceptions import UserError
 from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, UserPromptPart
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
-from pydantic_ai.usage import UsageLimits
+from pydantic_ai.usage import RunUsage, UsageLimits
 
 DepsT = TypeVar('DepsT')
 OutputT = TypeVar('OutputT')
@@ -73,7 +73,8 @@ class Session(Generic[DepsT, OutputT]):
             result = await self._run(text)
             while self._steered:
                 # Steered text that missed the run's last model request gets its own run instead of being dropped.
-                result = await self._run('\n\n'.join(self._drain_steered()))
+                # Usage carries over so the prompt's limits cover the follow-up too.
+                result = await self._run('\n\n'.join(self._drain_steered()), usage=result.usage)
             return result
         finally:
             self._running = False
@@ -108,7 +109,7 @@ class Session(Generic[DepsT, OutputT]):
                 # The queue closed at the run's final model request; `prompt` sends the leftovers as a follow-up run.
                 self._steered.append(text)
 
-    async def _run(self, text: str) -> AgentRunResult[OutputT]:
+    async def _run(self, text: str, *, usage: RunUsage | None = None) -> AgentRunResult[OutputT]:
         model = self.resolve_model(self.model) if self.model is not None else None
         if isinstance(model, Awaitable):
             model = await model
@@ -122,6 +123,7 @@ class Session(Generic[DepsT, OutputT]):
                     message_history=self._messages,
                     capabilities=self.plugins,
                     usage_limits=self.usage_limits,
+                    usage=usage,
                     event_stream_handler=self._stream,
                 )
                 self._messages = result.all_messages()

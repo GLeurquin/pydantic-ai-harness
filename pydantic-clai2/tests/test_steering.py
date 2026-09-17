@@ -4,11 +4,12 @@ from collections.abc import Awaitable
 
 import anyio
 import pytest
-from pydantic_ai import Agent, AgentRunResult, ModelRequestContext, RunContext
+from pydantic_ai import Agent, AgentRunResult, ModelRequestContext, RunContext, UsageLimitExceeded
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import ModelMessage, ModelRequest, ToolReturnPart, UserPromptPart
 from pydantic_ai.models import Model
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.usage import UsageLimits
 
 from pydantic_clai2 import Session
 from pydantic_clai2.commands import steer_command
@@ -105,22 +106,23 @@ async def test_steer_before_the_run_streams_is_held_until_it_does() -> None:
     assert user_prompts(session.messages) == ['first', 'early']
 
 
+class Late(AbstractCapability[None]):
+    """Steer once the queue has closed but before `prompt` has returned."""
+
+    def __init__(self) -> None:
+        self.session: Session[None, str] | None = None
+        self.runs = 0
+
+    async def after_run(self, ctx: RunContext[None], *, result: AgentRunResult[str]) -> AgentRunResult[str]:
+        self.runs += 1
+        if self.runs == 1:
+            assert self.session is not None
+            await self.session.steer('late one')
+            await self.session.steer('late two')
+        return result
+
+
 async def test_steer_after_the_last_model_request_becomes_a_follow_up_run() -> None:
-    class Late(AbstractCapability[None]):
-        """Steer once the queue has closed but before `prompt` has returned."""
-
-        def __init__(self) -> None:
-            self.session: Session[None, str] | None = None
-            self.runs = 0
-
-        async def after_run(self, ctx: RunContext[None], *, result: AgentRunResult[str]) -> AgentRunResult[str]:
-            self.runs += 1
-            if self.runs == 1:
-                assert self.session is not None
-                await self.session.steer('late one')
-                await self.session.steer('late two')
-            return result
-
     late = Late()
     view = ModelView()
     session = Session(Agent(TestModel(custom_output_text='done')), deps=None, plugins=[late, view])
@@ -128,8 +130,23 @@ async def test_steer_after_the_last_model_request_becomes_a_follow_up_run() -> N
     result = await session.prompt('first')
     assert late.runs == 2
     assert result.output == 'done'
+    assert result.usage.requests == 2
     assert view.requests == [['first'], ['first', 'late one\n\nlate two']]
     assert user_prompts(session.messages) == ['first', 'late one\n\nlate two']
+
+
+async def test_follow_up_run_counts_against_the_prompt_limits() -> None:
+    late = Late()
+    session = Session(
+        Agent(TestModel(custom_output_text='done')),
+        deps=None,
+        plugins=[late],
+        usage_limits=UsageLimits(request_limit=1),
+    )
+    late.session = session
+    with pytest.raises(UsageLimitExceeded):
+        await session.prompt('first')
+    assert not session.running
 
 
 async def test_steer_while_idle_is_a_normal_prompt() -> None:
