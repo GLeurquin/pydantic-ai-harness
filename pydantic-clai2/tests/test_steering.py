@@ -1,10 +1,11 @@
 """Steering: user text delivered into a running turn at its next model request."""
 
-from collections.abc import Awaitable
+from collections.abc import AsyncIterable, Awaitable
 
 import anyio
 import pytest
-from pydantic_ai import Agent, AgentRunResult, ModelRequestContext, RunContext, UsageLimitExceeded
+from pydantic_ai import Agent, AgentRunResult, AgentStreamEvent, ModelRequestContext, RunContext, UsageLimitExceeded
+from pydantic_ai.agent import EventStreamHandler
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import ModelMessage, ModelRequest, ToolReturnPart, UserPromptPart
 from pydantic_ai.models import Model
@@ -133,6 +134,45 @@ async def test_steer_after_the_last_model_request_becomes_a_follow_up_run() -> N
     assert result.usage.requests == 2
     assert view.requests == [['first'], ['first', 'late one\n\nlate two']]
     assert user_prompts(session.messages) == ['first', 'late one\n\nlate two']
+
+
+async def test_steer_into_a_context_that_cannot_enqueue_becomes_a_follow_up_run() -> None:
+    """A durable step hands over a context whose `enqueue` raises; the text must not be retried in a loop."""
+    started = anyio.Event()
+    release = anyio.Event()
+
+    async def strip_queue(ctx: RunContext[None], events: AsyncIterable[AgentStreamEvent]) -> None:
+        ctx.pending_messages = None
+        async for _ in events:
+            pass
+
+    class GuardedAgent(Agent[None, str]):
+        @property
+        def event_stream_handler(self) -> EventStreamHandler[None]:
+            return strip_queue
+
+    agent = GuardedAgent(TestModel(custom_output_text='done'), deps_type=type(None))
+
+    @agent.tool_plain
+    async def wait() -> str:
+        started.set()
+        await release.wait()
+        return 'ok'
+
+    view = ModelView()
+    session = Session(agent, deps=None, plugins=[view])
+
+    async def turn() -> None:
+        await session.prompt('first')
+
+    async with anyio.create_task_group() as tasks:
+        tasks.start_soon(turn)
+        await started.wait()
+        await session.steer('also this')
+        release.set()
+
+    assert view.requests == [['first'], ['first'], ['first', 'also this']]
+    assert user_prompts(session.messages) == ['first', 'also this']
 
 
 async def test_follow_up_run_counts_against_the_prompt_limits() -> None:

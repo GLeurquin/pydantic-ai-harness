@@ -99,15 +99,19 @@ class Session(Generic[DepsT, OutputT]):
         return texts
 
     def _flush_steered(self) -> None:
-        """Enqueue buffered text once the run has handed over its context, keeping it if the run has already ended."""
-        if self._run_context is None:
-            return
-        for text in self._drain_steered():
+        """Enqueue held text once the run has handed over a context that accepts it.
+
+        `enqueue` raises `UserError` when the queue closed after the run's final model request
+        or when the context cannot take messages at all (a durable step). The text stays held
+        for the follow-up run `prompt` starts, and this context is not tried again.
+        """
+        while self._run_context is not None and self._steered:
             try:
-                self._run_context.enqueue(text)
+                self._run_context.enqueue(self._steered[0])
             except UserError:
-                # The queue closed at the run's final model request; `prompt` sends the leftovers as a follow-up run.
-                self._steered.append(text)
+                self._run_context = None
+            else:
+                del self._steered[0]
 
     async def _run(self, text: str, *, usage: RunUsage | None = None) -> AgentRunResult[OutputT]:
         model = self.resolve_model(self.model) if self.model is not None else None
