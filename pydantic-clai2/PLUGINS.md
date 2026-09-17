@@ -358,7 +358,9 @@ async def choose(host: PluginHost[None]) -> str:
 ```
 
 Between turns nothing is streaming, so it is a no-op there. It only settles the
-screen; drawing, and restoring the terminal afterwards, is the widget's job.
+screen; drawing, and restoring the terminal afterwards, is the widget's job. One
+widget owns the screen at a time: a second `full_screen()` (from a parallel tool
+call, say) waits for the first block to exit. Do not nest it inside itself.
 
 ### Read your settings: `host.settings(Model)`
 

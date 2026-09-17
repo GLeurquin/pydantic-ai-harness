@@ -1,5 +1,6 @@
 """Taking the whole terminal mid-run: `Screen`, `StatusLine.paused`, and `PluginHost.full_screen`."""
 
+import asyncio
 import io
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -43,6 +44,37 @@ async def test_screen_is_free_between_prompts_and_bound_during_one() -> None:
     async with screen.full():
         log.append('free again')
     assert log == ['free', 'taken', 'inside', 'released', 'free again']
+
+
+async def test_one_widget_owns_the_screen_at_a_time() -> None:
+    log: list[str] = []
+    screen = Screen()
+    release = asyncio.Event()
+
+    @asynccontextmanager
+    async def take() -> AsyncGenerator[None]:
+        log.append('taken')
+        yield
+        log.append('released')
+
+    async def first() -> None:
+        async with screen.full():
+            log.append('first in')
+            await release.wait()
+
+    async def second() -> None:
+        async with screen.full():
+            log.append('second in')
+
+    with screen.bound(take):
+        one = asyncio.create_task(first())
+        await asyncio.sleep(0)
+        two = asyncio.create_task(second())
+        await asyncio.sleep(0.05)
+        assert log == ['taken', 'first in']
+        release.set()
+        await asyncio.gather(one, two)
+    assert log == ['taken', 'first in', 'released', 'taken', 'second in', 'released']
 
 
 async def test_host_defaults_to_a_bare_screen() -> None:

@@ -5,6 +5,7 @@ so tests script it. Swap the answerer for something else (a web form, a scripted
 constructing `AskUser` yourself; see PLUGINS.md.
 """
 
+import asyncio
 from dataclasses import dataclass
 from functools import partial
 
@@ -81,18 +82,23 @@ def build_question_menu(question: Question, *, position: int, total: int) -> Men
 
 
 class TerminalAnswerer:
-    """Ask each question in turn on the alternate screen; Esc or Ctrl-C on any of them declines the lot."""
+    """Ask each question in turn on the alternate screen; Esc or Ctrl-C on any of them declines the lot.
+
+    There is one terminal, so requests are answered one at a time: when the model calls the tool
+    twice in parallel, the second request's menus open after the first request is fully answered.
+    """
 
     def __init__(self, *, full_screen: FullScreen, runners: Runners = TERMINAL) -> None:
         """`full_screen` settles the shell's output first; `runners` shows the menus."""
         self._full_screen = full_screen
         self._runners = runners
+        self._terminal = asyncio.Lock()
 
     async def __call__(self, request: AskUserRequest, /) -> AskUserResponse:
         """Answer every question or report the user declined; never raise for a cancel."""
         answers: list[AskUserAnswer] = []
         total = len(request.questions)
-        async with self._full_screen():
+        async with self._terminal, self._full_screen():
             for position, question in enumerate(request.questions, start=1):
                 menu = build_question_menu(question, position=position, total=total)
                 result = await run_worker(partial(self._runners.run_choice, menu))

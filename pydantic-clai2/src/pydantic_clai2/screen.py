@@ -1,5 +1,6 @@
 """Who has to step aside when a plugin takes the whole terminal mid-run."""
 
+import asyncio
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
 
@@ -11,11 +12,16 @@ class Screen:
 
     Plugin hosts are created once at load time, but what has to stop before a widget can draw
     changes every prompt. Hosts hold `screen.full`; the prompt loop binds what it means.
+
+    One widget owns the screen at a time: a second `full()` (a parallel tool call, say) waits for
+    the first to exit. It is not re-entrant; a widget that opens another widget does so inside
+    its own block, not through a nested `full()`.
     """
 
     def __init__(self) -> None:
         """Start unbound: between prompts nothing is streaming, so taking the screen is free."""
         self._take: FullScreen = bare_screen
+        self._owner = asyncio.Lock()
 
     @contextmanager
     def bound(self, take: FullScreen) -> Generator[None]:
@@ -29,5 +35,5 @@ class Screen:
     @asynccontextmanager
     async def full(self) -> AsyncGenerator[None]:
         """Own the terminal until the block exits. Give this to `PluginHost` as its `full_screen`."""
-        async with self._take():
+        async with self._owner, self._take():
             yield

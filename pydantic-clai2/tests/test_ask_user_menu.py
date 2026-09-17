@@ -1,5 +1,6 @@
 """The built-in `ask_user` plugin, driven headless."""
 
+import asyncio
 import io
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -26,6 +27,7 @@ from termflow.tui.menu import Menu, MenuResult  # pyright: ignore[reportMissingT
 
 from pydantic_clai2 import DEFAULT_PLUGINS
 from pydantic_clai2.ask_user_menu import QuestionMenu, TerminalAnswerer, activate, build_question_menu, render_answer
+from pydantic_clai2.field_menu import TERMINAL, Runners
 from pydantic_clai2.plugins import PluginHost
 
 
@@ -37,12 +39,12 @@ def anyio_backend() -> str:
 APPROACH = Question(
     header='Approach',
     question='How should we do it?',
-    options=[QuestionOption(label='Refactor', description='Rewrite the module'), QuestionOption(label='Patch')],
+    options=(QuestionOption(label='Refactor', description='Rewrite the module'), QuestionOption(label='Patch')),
 )
 TARGETS = Question(
     header='Targets',
     question='Which files?',
-    options=[QuestionOption(label='api.py'), QuestionOption(label='db.py')],
+    options=(QuestionOption(label='api.py'), QuestionOption(label='db.py')),
     multi_select=True,
 )
 
@@ -98,6 +100,30 @@ async def test_answers_every_question_on_a_settled_screen() -> None:
     )
     assert script.opened == ['choice', 'choice']
     assert screen.events == ['taken', 'released']
+
+
+async def test_parallel_requests_take_the_terminal_one_at_a_time() -> None:
+    screen = ScreenLog()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    def slow_choice(menu: Menu) -> MenuResult:
+        started.set()
+        asyncio.run_coroutine_threadsafe(release.wait(), loop).result()
+        return chosen('Patch')
+
+    loop = asyncio.get_running_loop()
+    runners = Runners(run_list=slow_choice, run_choice=slow_choice, run_text=TERMINAL.run_text)
+    answerer = TerminalAnswerer(full_screen=screen, runners=runners)
+    first = asyncio.create_task(answerer(AskUserRequest(questions=(APPROACH,))))
+    await started.wait()
+    second = asyncio.create_task(answerer(AskUserRequest(questions=(APPROACH,))))
+    await asyncio.sleep(0.05)
+    assert screen.events == ['taken']
+    release.set()
+    assert (await first).answers == (AskUserAnswer(header='Approach', selected=('Patch',)),)
+    assert (await second).answers == (AskUserAnswer(header='Approach', selected=('Patch',)),)
+    assert screen.events == ['taken', 'released', 'taken', 'released']
 
 
 async def test_escape_declines_the_whole_request() -> None:
