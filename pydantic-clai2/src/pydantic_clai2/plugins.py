@@ -1,7 +1,7 @@
 """Everything a plugin can register, recorded on one host per plugin."""
 
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Generic, Literal, Never, Protocol, TypeVar, get_args, overload
 
 from pydantic import BaseModel, JsonValue
@@ -77,16 +77,22 @@ class Conversation(Protocol):
         ...
 
 
-@dataclass(kw_only=True)
 class Transcript:
     """An in-memory `Conversation` for hosts built outside the shell, such as in a plugin's tests."""
 
-    messages: list[ModelMessage] = field(default_factory=list[ModelMessage])
-    model: Model | str | None = None
+    def __init__(self, *, messages: Sequence[ModelMessage] = (), model: Model | str | None = None) -> None:
+        """Start with `messages` retained and `model` as what `resolved_model` reports."""
+        self._messages = list(messages)
+        self.model = model
+
+    @property
+    def messages(self) -> list[ModelMessage]:
+        """A snapshot of the retained messages, like `Session.messages`; edit through `replace_messages`."""
+        return list(self._messages)
 
     def replace_messages(self, messages: Sequence[ModelMessage]) -> None:
         """Swap the retained history."""
-        self.messages = list(messages)
+        self._messages = list(messages)
 
     async def resolved_model(self) -> Model | str | None:
         """The `model` given at construction."""
