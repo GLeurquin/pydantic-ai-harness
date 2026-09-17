@@ -88,3 +88,23 @@ async def test_grep_no_matches() -> None:
         )
     )
     assert 'No matches.' in output.getvalue()
+
+
+async def test_abort_forgets_grep_calls_awaiting_results() -> None:
+    output = io.StringIO()
+    renderer = StreamRenderer(Console(file=output), stop_loading=lambda: None)
+    await renderer.on_stream_event(
+        FunctionToolCallEvent(part=ToolCallPart(tool_name='grep', args={'pattern': 'x'}, tool_call_id='search'))
+    )
+    await renderer.on_stream_event(
+        FilesSearchedEvent(
+            path='.', root_dir='/tmp', pattern='x', search='grep', match_count=1, truncated=True, tool_call_id='search'
+        )
+    )
+    await renderer.abort()
+    output.truncate(0)
+    output.seek(0)
+    await renderer.on_stream_event(
+        FunctionToolResultEvent(part=ToolReturnPart(tool_name='grep', content='late', tool_call_id='search'))
+    )
+    assert 'Results' not in output.getvalue() and 'truncated' not in output.getvalue()

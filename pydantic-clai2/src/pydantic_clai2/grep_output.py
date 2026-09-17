@@ -28,6 +28,11 @@ class GrepOutput:
         self._calls: dict[str, str] = {}
         self._capped: dict[str | None, bool] = {}
 
+    def abort(self) -> None:
+        """Forget calls whose results will never arrive because the run was cancelled."""
+        self._calls.clear()
+        self._capped.clear()
+
     def render(self, event: AgentStreamEvent) -> bool:
         """Return false for unrelated or unsupported tool calls."""
         if isinstance(event, FilesSearchedEvent):
