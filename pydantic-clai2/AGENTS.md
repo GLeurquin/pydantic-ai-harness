@@ -127,8 +127,9 @@ actions, `.footer_hint` for the key legend, `markdown_style()` for colours.
 
 ## Rendering
 
-`StreamRenderer` owns text and thinking. It knows nothing about any specific
-tool. Tool-specific output (shell previews, diffs, grep) is registered through
+`StreamRenderer` owns text and thinking. Text goes to its `console`; thinking
+and tool output go to `aside`, which defaults to the same console and is stderr
+in one-shot mode. It knows nothing about any specific tool. Tool-specific output (shell previews, diffs, grep) is registered through
 `host.render` by the plugin that owns the event. Match on event classes, never
 on `tool_name` strings. Always flush the stream before printing anything else;
 the host does this for renderers, so do not call `console.print` from inside an
@@ -148,8 +149,10 @@ the pydantic.dev `pydantic-visual-identity` skill's `brand-identity.md`.
 
 | File | Holds |
 |---|---|
-| `_cli.py` | argument parsing, startup, `--agent` |
+| `_cli.py` | argument parsing, startup, `--agent`, `-p` |
 | `_app.py` | the prompt loop and built-in `/commands` |
+| `_turn.py` | one turn, shared by the loop and one-shot mode: session setup, `turn_start`/`turn_end`, the streamed run |
+| `_one_shot.py` | `clai2 -p`, piped stdin, `--output-format json`; no prompt loop, no status row |
 | `_session.py` | conversation state; `agent.run` with per-run plugins |
 | `_rendering.py` | streaming Markdown and thinking |
 | `plugins.py` | `PluginHost`, hook names, event dataclasses |

@@ -1,24 +1,22 @@
 """Interactive terminal shell around a capability-independent session."""
 
-import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Generic, TypeVar
 
 from prompt_toolkit import PromptSession
-from pydantic_ai import Agent, AgentStreamEvent
+from pydantic_ai import Agent
 from pydantic_ai.agent import AbstractAgent
 from pydantic_ai.capabilities import AgentCapability
-from pydantic_ai.messages import ModelResponse
-from pydantic_ai.models import Model
 from pydantic_ai.usage import UsageLimits
 from rich.console import Console
 
-from . import openrouter, theme, vllm
+from . import theme
 from ._branding import print_banner
 from ._completion_adapter import COMPLETION_STYLE, PromptCompleter
 from ._rendering import StreamRenderer
 from ._session import Session
+from ._turn import create_session, model_label, run_prompt, run_turn
 from .auth import CodexAuth
 from .command_context import CommandContext, CommandProvider
 from .commands import Command, Commands, config_command, config_completions, set_completions
@@ -27,12 +25,12 @@ from .customization import customization_guide
 from .input_history import input_history
 from .interrupts import Interrupts
 from .model_menu import open_model_menu
-from .plugin_loader import PluginError, PluginLoader
+from .plugin_loader import PluginLoader
 from .plugin_menu import open_plugins_menu
-from .plugins import Renderer, SessionEndReason, SessionStart, TurnEnd, TurnStart
+from .plugins import SessionEndReason, SessionStart, TurnEnd
 from .set_menu import open_settings_menu
 from .settings_store import SettingsStore
-from .status import Status, StatusLine
+from .status import Status
 
 DepsT = TypeVar('DepsT')
 OutputT = TypeVar('OutputT')
@@ -72,18 +70,8 @@ async def chat(
     console.print('/new clears history; /exit quits. Ctrl-C interrupts a turn.', style=theme.MUTED)
     settings = settings or Settings(model=None)
     store = store or SettingsStore()
-    session = Session(agent, deps=deps, plugins=plugins, usage_limits=usage_limits)
-    session.model = settings.model
     auth = CodexAuth(console)
-
-    async def resolve_model(name: str) -> Model | str:
-        if name.startswith('openrouter:'):
-            return await asyncio.to_thread(openrouter.model, name)
-        if name.startswith('vllm:'):
-            return await asyncio.to_thread(vllm.model, name)
-        return auth.model(name) if name.startswith('openai-codex:') else name
-
-    session.resolve_model = resolve_model
+    session = create_session(agent, deps=deps, plugins=plugins, usage_limits=usage_limits, settings=settings, auth=auth)
     if session.model is None and agent.model is None:
         console.print('Choose a model with /set model <Tab>.', style=theme.INFO)
 
@@ -203,7 +191,7 @@ class _Shell(Generic[DepsT, OutputT]):
     async def run(self) -> SessionEndReason:
         while True:
             try:
-                self.status.model = self.session.model or _model_label(self.agent)
+                self.status.model = self.session.model or model_label(self.agent)
                 text = (await self.prompt.prompt_async('> ')).strip()
             except KeyboardInterrupt:
                 if self.interrupts.press():
@@ -229,46 +217,33 @@ class _Shell(Generic[DepsT, OutputT]):
                 return 'exit'
 
     async def _turn(self, text: str) -> bool:
-        start = TurnStart(text=text)
-        try:
-            await self.loader.fire(start)
-        except PluginError as exc:
-            self.console.print(str(exc), style=theme.ERROR, markup=False)
-            self.console.print()
-            await self.loader.fire(TurnEnd(text=start.text, outcome='failed', error=exc))
-            return False
-        if start.cancelled:
-            self.console.print(
-                f'Turn cancelled by a plugin: {start.cancel_reason or "no reason given"}', style=theme.WARNING
-            )
-            self.console.print()
-            await self.loader.fire(TurnEnd(text=start.text, outcome='cancelled'))
-            return False
-        self.session.plugins = (*self.plugins, *self.loader.capabilities())
-        self.session.model_settings = self.context.model_settings(self.session.model or _model_label(self.agent))
-        ended: TurnEnd | None = None
-
-        async def run_prompt() -> None:
-            nonlocal ended
-            ended = await _run_prompt(
-                self.session,
-                start.text,
-                console=self.console,
-                settings=self.context.settings,
-                status=self.status,
-                renderers=self.loader.renderers(),
-            )
-
-        completed = await self.interrupts.run(run_prompt())
-        _report_interrupt(completed, self.console)
-        await self.loader.fire(ended or TurnEnd(text=start.text, outcome='cancelled'))
+        await run_turn(text, loader=self.loader, console=self.console, run=self._interruptible_prompt)
         return self.interrupts.exit_requested
 
+    async def _interruptible_prompt(self, text: str) -> TurnEnd:
+        """Ctrl-C cancels the run and reports it; the turn counts as cancelled rather than propagating."""
+        self.session.plugins = (*self.plugins, *self.loader.capabilities())
+        self.session.model_settings = self.context.model_settings(self.session.model or model_label(self.agent))
+        settings = self.context.settings
+        renderer = StreamRenderer(
+            self.console,
+            stop_loading=lambda: None,
+            show_thinking=settings.thinking,
+            smooth_seconds=settings.smooth_seconds,
+            shell_lines=settings.shell_lines,
+            grep_lines=settings.grep_lines,
+            renderers=self.loader.renderers(),
+        )
+        ended: TurnEnd | None = None
 
-def _report_interrupt(completed: bool, console: Console) -> None:
-    if not completed:
-        console.print('Turn cancelled. Press Ctrl-C again within 2 seconds to exit.', style=theme.MUTED)
-        console.print()
+        async def prompt() -> None:
+            nonlocal ended
+            ended = await run_prompt(self.session, text, renderer=renderer, console=self.console, status=self.status)
+
+        if not await self.interrupts.run(prompt()):
+            self.console.print('Turn cancelled. Press Ctrl-C again within 2 seconds to exit.', style=theme.MUTED)
+            self.console.print()
+        return ended or TurnEnd(text=text, outcome='cancelled')
 
 
 async def _execute_command(commands: Commands, text: str, *, console: Console, status: Status) -> None:
@@ -285,69 +260,3 @@ def _reset_status(command: str, status: Status) -> None:
         status.context_tokens = None
         status.output_tokens = None
         status.streamed_chars = 0
-
-
-def _model_label(agent: AbstractAgent[DepsT, OutputT]) -> str:
-    model = agent.model
-    if isinstance(model, str):  # pragma: no cover -- concrete Agent resolves string models before chat.
-        return model
-    return model.model_name if model else 'agent default'
-
-
-async def _run_prompt(
-    session: Session[DepsT, OutputT],
-    text: str,
-    *,
-    console: Console,
-    settings: Settings,
-    status: Status,
-    renderers: Sequence[Renderer[AgentStreamEvent]] = (),
-) -> TurnEnd:
-    renderer = StreamRenderer(
-        console,
-        stop_loading=lambda: None,
-        show_thinking=settings.thinking,
-        smooth_seconds=settings.smooth_seconds,
-        shell_lines=settings.shell_lines,
-        grep_lines=settings.grep_lines,
-        renderers=renderers,
-    )
-    status.streamed_chars = 0
-    status.output_tokens = None
-    status.activity = 'waiting'
-
-    async def observe(event: AgentStreamEvent) -> None:
-        status.observe(event)
-        await renderer.on_stream_event(event)
-
-    def context_usage(tokens: int) -> None:
-        status.context_tokens = tokens
-
-    session.on_context_usage = context_usage
-    session.on_stream_event = observe
-    try:
-        async with StatusLine(console, status):
-            result = await session.prompt(text)
-            await renderer.finish()
-        status.output_tokens = result.usage.output_tokens
-        for message in reversed(result.all_messages()):  # pragma: no branch -- successful runs contain a response.
-            if isinstance(message, ModelResponse):
-                status.context_tokens = message.usage.total_tokens or None
-                break
-        if not renderer.rendered_text or not isinstance(result.output, str):
-            console.print(str(result.output), markup=False)
-            console.print()
-        return TurnEnd(text=text, outcome='completed', result=result)
-    except asyncio.CancelledError:
-        await renderer.abort()
-        raise
-    except Exception as exc:  # noqa: BLE001 -- interactive boundary reports plugin/provider failures.
-        await renderer.finish()
-        console.print(f'{type(exc).__name__}: {exc}', style=theme.ERROR, markup=False)
-        console.print('Turn not saved. External tool side effects may already have occurred.', style=theme.MUTED)
-        console.print()
-        return TurnEnd(text=text, outcome='failed', error=exc)
-    finally:
-        status.activity = 'ready'
-        session.on_context_usage = None
-        await renderer.finish()

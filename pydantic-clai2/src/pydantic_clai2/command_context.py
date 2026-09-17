@@ -53,7 +53,7 @@ class CommandContext:
 
     def model_settings(self, model: str) -> ModelSettings | None:
         """Saved overrides for `model`, ready for `agent.run`; `None` when there are none."""
-        return model_settings_from_json(self.store.model_settings(model)).to_model_settings()
+        return saved_model_settings(self.store, model)
 
     def reset_setting(self, key: str) -> str:
         """Forget the saved override and apply the default now."""
@@ -71,3 +71,8 @@ class CommandContext:
     @staticmethod
     def _when(key: str) -> str:
         return 'Applies at next startup.' if key == 'display.splash' else 'Applied.'
+
+
+def saved_model_settings(store: SettingsStore, model: str) -> ModelSettings | None:
+    """Saved overrides for `model`, ready for `agent.run`; `None` when there are none."""
+    return model_settings_from_json(store.model_settings(model)).to_model_settings()

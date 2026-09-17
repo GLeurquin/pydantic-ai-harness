@@ -42,13 +42,18 @@ def markdown_style() -> RenderStyle:
 
 
 class StreamRenderer:
-    """Render text and thinking separately, flushing Markdown at part boundaries."""
+    """Render text and thinking separately, flushing Markdown at part boundaries.
+
+    Text goes to `console`; thinking and tool output go to `aside`, which defaults to the
+    same console. One-shot mode uses the split to keep stdout pipeable.
+    """
 
     def __init__(
         self,
         console: Console,
         *,
         stop_loading: Callable[[], None],
+        aside: Console | None = None,
         show_thinking: bool = True,
         smooth_seconds: float = 0.5,
         shell_lines: int = 20,
@@ -56,9 +61,10 @@ class StreamRenderer:
         renderers: Sequence[Callable[[AgentStreamEvent], RenderableType | None]] = (),
     ) -> None:
         self.console = console
+        self.aside = aside or console
         self._renderers = tuple(renderers)
-        self._tool_output = ToolOutput(console, shell_lines=shell_lines)
-        self._grep_output = GrepOutput(console, lines=grep_lines)
+        self._tool_output = ToolOutput(self.aside, shell_lines=shell_lines)
+        self._grep_output = GrepOutput(self.aside, lines=grep_lines)
         self.smooth_seconds = smooth_seconds
         self._thinking = False
         self._heading_printed = False
@@ -117,10 +123,10 @@ class StreamRenderer:
             return
         if isinstance(event, FunctionToolCallEvent) and not self._tool_output.render_call(event):
             name = ''.join(char if char.isprintable() else ' ' for char in event.part.tool_name)
-            self.console.print(
+            self.aside.print(
                 f'● {name}', style=theme.MUTED, markup=False, highlight=False, overflow='ellipsis', no_wrap=True
             )
-            self.console.print()
+            self.aside.print()
 
     async def _render_with_plugins(self, event: AgentStreamEvent) -> bool:
         for renderer in self._renderers:
@@ -128,14 +134,14 @@ class StreamRenderer:
             if renderable is not None:
                 await self.finish()
                 self.stop_loading()
-                self.console.print(renderable)
-                self.console.print()
+                self.aside.print(renderable)
+                self.aside.print()
                 return True
         return False
 
     def _start_part(self) -> None:
         if self._thinking:
-            if self.console.is_terminal:
+            if self.aside.is_terminal:
                 self._thinking_writer = StreamSmoother(
                     self._emit_thinking, tick_interval=0.02, catch_up_seconds=0.4, min_chars_per_tick=2
                 )
@@ -155,13 +161,13 @@ class StreamRenderer:
         )
 
     def _emit_thinking(self, content: str) -> None:
-        self.console.print(content, style=theme.MUTED, end='', markup=False, highlight=False)
+        self.aside.print(content, style=theme.MUTED, end='', markup=False, highlight=False)
 
     def _feed(self, content: str) -> None:
         content = terminal_text(content)
         if content and not self._heading_printed:
             if self._thinking:
-                self.console.print('Thinking', style=theme.THINKING)
+                self.aside.print('Thinking', style=theme.THINKING)
             self._heading_printed = True
         if self._thinking:
             if self._thinking_writer is not None:
@@ -194,10 +200,12 @@ class StreamRenderer:
         if thinking_writer is not None:
             await thinking_writer.close()
         if thinking_visible:
-            self.console.print()
-        if visible:
+            self.aside.print()
+            self.aside.print()
+        elif visible:
             self.console.print()
         self.console.file.flush()
+        self.aside.file.flush()
 
     async def abort(self) -> None:
         """Discard pending output on cancellation and let the drainer terminate."""

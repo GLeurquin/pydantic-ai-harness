@@ -1,6 +1,7 @@
 """Exercise the installed entry point in isolated subprocesses."""
 
 import os
+import pty
 import subprocess
 import sys
 from pathlib import Path
@@ -12,11 +13,12 @@ from pydantic_clai2.settings_store import SettingsStore
 
 @pytest.mark.parametrize('args', [[], ['--model', 'test', '--request-limit', '12'], ['--request-limit', '0']])
 def test_cli_startup(tmp_path: Path, args: list[str]) -> None:
+    """An empty stdin is not a prompt: the shell starts and exits on EOF."""
     env = dict(os.environ, CLAI_NO_SPLASH='1')
     env.pop('CLAI_MODEL', None)
     result = subprocess.run(
         [sys.executable, '-m', 'pydantic_clai2', '--database', str(tmp_path / 'config.db'), *args],
-        input='/exit\n',
+        stdin=subprocess.DEVNULL,
         text=True,
         capture_output=True,
         env=env,
@@ -40,6 +42,7 @@ runpy.run_module('pydantic_clai2', run_name='__main__')
 """
     result = subprocess.run(
         [sys.executable, '-c', script, '--database', str(tmp_path / 'config.db')],
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         check=False,
@@ -59,12 +62,19 @@ def test_startup_saved_splash(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, s
         path.write_text('not sqlite')
     else:
         store.set('display.splash', state == 'enabled')
-    result = subprocess.run(
-        [sys.executable, '-m', 'pydantic_clai2'],
-        input='/exit\n',
-        text=True,
-        capture_output=True,
-        timeout=15,
-        check=False,
-    )
-    assert result.returncode == (1 if state == 'corrupt' else 0)
+    # The splash only consults the database when stdin is a terminal; a pty keeps the shell interactive.
+    leader, follower = pty.openpty()
+    os.write(leader, b'/exit\n')
+    try:
+        result = subprocess.run(
+            [sys.executable, '-m', 'pydantic_clai2'],
+            stdin=follower,
+            text=True,
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+    finally:
+        os.close(leader)
+        os.close(follower)
+    assert result.returncode == (1 if state == 'corrupt' else 0), result.stderr

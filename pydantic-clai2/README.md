@@ -55,8 +55,49 @@ in a workspace you trust. CLAI does not add a sandbox or approval layer.
 
 The startup splash adapts Code Puppy's stdlib-only, alternate-screen Pydantic
 pyramid, with CLAI lettering. The persistent `CLAI 2.0` banner uses `ansi_shadow`.
-The splash is disabled for redirected output, CLI arguments, small terminals,
-Windows, `NO_COLOR`, or `CLAI_NO_SPLASH=1`.
+The splash is disabled for redirected output or input, CLI arguments, small
+terminals, Windows, `NO_COLOR`, or `CLAI_NO_SPLASH=1`.
+
+## Scripting
+
+CLAI runs one turn and exits when you give it a prompt up front. Three shapes:
+
+```sh
+clai2 -p "What does this repository do?"
+git diff | clai2
+cat notes.md | clai2 -p "Summarise this in three bullets"
+```
+
+`-p` (long form `--prompt`) is the prompt. With no `-p`, everything on a piped
+stdin is the prompt. With both, the piped text is appended to the prompt inside
+a fenced block, so the model sees your instruction first and the material after
+it. Plugins load exactly as in the shell, including the built-in `coder` tools,
+so the model can read and change files and run commands. The splash, prompt,
+and status row are skipped.
+
+The exit code is `0` when the turn completed, `1` when it failed (a provider
+error, a plugin cancelling the turn, no model configured), and `130` on Ctrl-C.
+
+Progress goes to stderr: thinking, tool calls and their output, and errors.
+What goes to stdout depends on `--output-format`:
+
+- `text` (default): the answer. On a terminal it streams as rendered Markdown.
+  When stdout is a pipe or a file, the streamed answer joins the progress on
+  stderr and stdout receives the plain answer once, so `clai2 -p ... > out.md`
+  is clean text. Structured outputs are printed as `str(output)`.
+- `json`: one JSON object and nothing else. `text` is the answer, `usage` is
+  the run's request, tool-call, and token counts, `cost` is the run's USD cost
+  as priced by Pydantic AI (`null` when the model is not in the price catalog),
+  and `messages` is the full run history serialized with Pydantic AI's
+  `ModelMessagesTypeAdapter`, so it can be loaded back as a `message_history`.
+
+```sh
+cat notes.md | clai2 -p "Summarise" --output-format json | jq -r .text
+```
+
+From Python, `one_shot(agent, prompt, deps=..., output_format=..., message_history=...)`
+is the same runner behind the flag and returns the exit code. Resuming a saved
+conversation from the command line is not available yet.
 
 ## Codex authentication
 
