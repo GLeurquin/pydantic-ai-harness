@@ -17,13 +17,18 @@ from pydantic_ai import (
     ThinkingPartDelta,
 )
 from rich.console import Console, RenderableType
+from rich.control import Control
+from rich.segment import ControlType
 from termflow import Parser, Renderer  # pyright: ignore[reportMissingTypeStubs]
 from termflow.render.style import RenderFeatures, RenderStyle  # pyright: ignore[reportMissingTypeStubs]
 from termflow.stream import SmoothWriter, StreamSmoother  # pyright: ignore[reportMissingTypeStubs]
 
 from . import theme
 from .grep_output import GrepOutput
-from .tool_output import ToolOutput, terminal_text
+from .tool_output import FoldedOutputs, ToolOutput, terminal_text
+
+THINKING_PLACEHOLDER = 'thinking...'
+"""Shown in place of hidden thinking, then erased when the answer or a tool starts."""
 
 
 def markdown_style() -> RenderStyle:
@@ -51,16 +56,18 @@ class StreamRenderer:
         stop_loading: Callable[[], None],
         show_thinking: bool = True,
         smooth_seconds: float = 0.5,
-        shell_lines: int = 20,
-        grep_lines: int = 20,
+        tool_output_lines: int = 20,
+        folds: FoldedOutputs | None = None,
         renderers: Sequence[Callable[[AgentStreamEvent], RenderableType | None]] = (),
     ) -> None:
         self.console = console
         self._renderers = tuple(renderers)
-        self._tool_output = ToolOutput(console, shell_lines=shell_lines)
-        self._grep_output = GrepOutput(console, lines=grep_lines)
+        folds = FoldedOutputs() if folds is None else folds
+        self._tool_output = ToolOutput(console, lines=tool_output_lines, folds=folds)
+        self._grep_output = GrepOutput(console, lines=tool_output_lines, folds=folds)
         self.smooth_seconds = smooth_seconds
         self._thinking = False
+        self._placeholder = False
         self._heading_printed = False
         self.show_thinking = show_thinking
         self.stop_loading = stop_loading
@@ -91,6 +98,7 @@ class StreamRenderer:
             self.stop_loading()
             thinking = isinstance(event.part, ThinkingPart)
             if thinking and not self.show_thinking:
+                self._show_placeholder()
                 return
             self._thinking = thinking
             self._index = event.index
@@ -157,6 +165,19 @@ class StreamRenderer:
     def _emit_thinking(self, content: str) -> None:
         self.console.print(content, style=theme.MUTED, end='', markup=False, highlight=False)
 
+    def _show_placeholder(self) -> None:
+        """One terminal-only line for hidden thinking; `finish` erases it before anything else prints."""
+        if self._placeholder or not self.console.is_terminal:
+            return
+        self._placeholder = True
+        self.console.print(THINKING_PLACEHOLDER, style=theme.THINKING, end='', markup=False, highlight=False)
+        self.console.file.flush()
+
+    def _erase_placeholder(self) -> None:
+        if self._placeholder:
+            self._placeholder = False
+            self.console.control(Control.move_to_column(0), Control((ControlType.ERASE_IN_LINE, 2)))
+
     def _feed(self, content: str) -> None:
         content = terminal_text(content)
         if content and not self._heading_printed:
@@ -189,6 +210,7 @@ class StreamRenderer:
         visible = self._heading_printed
         thinking_visible = self._thinking and visible
         self._reset()
+        self._erase_placeholder()
         if writer is not None:
             await writer.close()
         if thinking_writer is not None:
@@ -205,6 +227,7 @@ class StreamRenderer:
         writer, self._writer = self._writer, None
         thinking_writer, self._thinking_writer = self._thinking_writer, None
         self._reset()
+        self._erase_placeholder()
         if writer is not None:
             writer.abort()
         if thinking_writer is not None:

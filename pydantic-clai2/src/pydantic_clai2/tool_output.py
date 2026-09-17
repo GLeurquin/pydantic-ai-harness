@@ -1,6 +1,8 @@
 """Render typed capability events without parsing model-facing tool results."""
 
 import re
+from collections import deque
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from pydantic import BaseModel
@@ -41,39 +43,114 @@ class DisplayArguments(BaseModel):
     recursive: bool = True
 
 
+@dataclass(kw_only=True, frozen=True)
+class FoldedOutput:
+    """A tool result the transcript showed only the head of."""
+
+    label: str
+    lines: tuple[Text, ...]
+
+
+class FoldedOutputs:
+    """The last few folded outputs, newest first, kept across turns for `/expand`."""
+
+    def __init__(self, *, keep: int = 10) -> None:
+        """Remember at most `keep` outputs; older ones are forgotten."""
+        self._kept: deque[FoldedOutput] = deque(maxlen=keep)
+
+    def __len__(self) -> int:
+        """How many outputs `/expand` can show."""
+        return len(self._kept)
+
+    def keep(self, output: FoldedOutput) -> None:
+        """Make `output` the one `/expand` shows next."""
+        self._kept.appendleft(output)
+
+    def expand(self, console: Console, args: list[str]) -> str:
+        """The `/expand [N]` handler: reprint the N-th most recent folded output in full."""
+        if len(args) > 1 or (args and not args[0].isdigit()):
+            raise ValueError('Usage: /expand [N] shows the N-th most recent folded output (default 1).')
+        if not self._kept:
+            return 'Nothing to expand: no tool output has been folded yet.'
+        position = int(args[0]) if args else 1
+        if not 1 <= position <= len(self._kept):
+            return f'Only {len(self._kept)} folded output(s) are kept; use /expand 1 to /expand {len(self._kept)}.'
+        output = self._kept[position - 1]
+        console.print(Text(f'● {output.label}', style=theme.MUTED), overflow='ellipsis', no_wrap=True)
+        for line in output.lines:
+            print_output_line(console, line)
+        return f'{len(output.lines)} lines.'
+
+
+def print_output_line(console: Console, line: Text) -> None:
+    """One muted row of tool output, clipped to the terminal width."""
+    console.print(line, style=theme.MUTED, markup=False, highlight=False, overflow='ellipsis', no_wrap=True)
+
+
+def summary(argument: str) -> str:
+    """The first line of a command or path, noting how many more lines it has."""
+    lines = argument.splitlines()
+    text = lines[0] if lines else ''
+    if len(lines) > 1:
+        text += f' (+{len(lines) - 1} command lines)'
+    return terminal_text(text)
+
+
+class Folder:
+    """Show the first `lines` rows of a tool result and keep the rest for `/expand`."""
+
+    def __init__(self, console: Console, *, lines: int = 20, folds: FoldedOutputs | None = None) -> None:
+        """`lines` is the visible head; 0 shows everything."""
+        self.console = console
+        self.lines = lines
+        self.folds = FoldedOutputs() if folds is None else folds
+
+    def visible(self, index: int) -> bool:
+        """Whether the zero-based row `index` belongs to the visible head."""
+        return self.lines == 0 or index < self.lines
+
+    def fold(self, *, label: str, lines: Sequence[Text]) -> None:
+        """After the head was printed: add the trailer and keep the whole output if any row was hidden."""
+        hidden = len(lines) - self.lines if self.lines else 0
+        if hidden <= 0:
+            return
+        self.folds.keep(FoldedOutput(label=label, lines=tuple(lines)))
+        self.console.print(f'... {hidden} more lines (/expand to show)', style=theme.MUTED)
+
+    def show(self, *, label: str, lines: Sequence[Text]) -> None:
+        """Print the visible head of a complete result, then fold the rest."""
+        for index, line in enumerate(lines):
+            if not self.visible(index):
+                break
+            print_output_line(self.console, line)
+        self.fold(label=label, lines=lines)
+
+
 @dataclass
 class ShellPreview:
-    """Count displayed logical lines across output chunks."""
+    """Collect logical lines across output chunks; the visible head is printed as it completes."""
 
-    completed_lines: int = 0
+    label: str = 'shell'
+    lines: list[Text] = field(default_factory=list[Text])
     pending: str = ''
     carriage_return: bool = False
     decoder: AnsiDecoder = field(default_factory=AnsiDecoder)
 
-    @property
-    def shown(self) -> int:
-        """Include a displayed unterminated line."""
-        return self.completed_lines
-
 
 class ToolOutput:
-    """Present bounded shell chunks and Termflow-highlighted file diffs."""
+    """Present folded shell output and Termflow-highlighted file diffs."""
 
-    def __init__(self, console: Console, *, shell_lines: int = 20) -> None:
+    def __init__(self, console: Console, *, lines: int = 20, folds: FoldedOutputs | None = None) -> None:
         """Use the conversation's output stream, not global stdout."""
         self.console = console
-        self.shell_lines = shell_lines
+        self.folder = Folder(console, lines=lines, folds=folds)
         self._shells: dict[str | None, ShellPreview] = {}
         self._headers: set[tuple[str | None, str]] = set()
         self._writes: dict[tuple[str | None, str, str], FileChangeRequestEvent] = {}
 
     def _header(self, name: str, argument: str) -> None:
-        lines = argument.splitlines()
-        summary = lines[0] if lines else ''
-        if len(lines) > 1:
-            summary += f' (+{len(lines) - 1} command lines)'
         text = Text(f'● {name} ', style=theme.MUTED)
-        text.append(terminal_text(summary), style=theme.ACCENT)
+        text.append(summary(argument), style=theme.ACCENT)
         self.console.print(text, overflow='ellipsis', no_wrap=True)
         self.console.print()
 
@@ -116,8 +193,6 @@ class ToolOutput:
     def _shell_chunk(self, event: CommandOutputEvent) -> None:
         preview = self._shells.setdefault(event.tool_call_id, ShellPreview())
         for char in event.text:
-            if preview.completed_lines >= self.shell_lines:
-                break
             if char == '\n':
                 self._shell_line(preview)
                 preview.carriage_return = False
@@ -131,16 +206,11 @@ class ToolOutput:
                 preview.pending += char
 
     def _shell_line(self, preview: ShellPreview) -> None:
-        self.console.print(
-            shell_text(preview.pending, preview.decoder),
-            style=theme.MUTED,
-            markup=False,
-            highlight=False,
-            overflow='ellipsis',
-            no_wrap=True,
-        )
+        line = shell_text(preview.pending, preview.decoder)
         preview.pending = ''
-        preview.completed_lines += 1
+        if self.folder.visible(len(preview.lines)):
+            print_output_line(self.console, line)
+        preview.lines.append(line)
 
     def _diff(self, diff: str, *, truncated: bool) -> None:
         safe_diff = terminal_text(diff)
@@ -162,6 +232,27 @@ class ToolOutput:
             self.console.print('Diff truncated.', style=theme.MUTED)
         self.console.print()
 
+    def _shell_finished(self, event: CommandFinishedEvent) -> None:
+        preview = self._shells.pop(event.tool_call_id, ShellPreview())
+        if preview.pending:
+            self._shell_line(preview)
+        self.folder.fold(label=preview.label, lines=preview.lines)
+        if event.truncated:
+            beyond = event.total_lines - len(preview.lines) if event.total_lines is not None else 0
+            rest = f'{beyond} more lines are' if beyond > 0 else 'the rest is'
+            self.console.print(
+                f'Output truncated by the event budget; {rest} only in the command log.', style=theme.MUTED
+            )
+        state = f'exit {event.exit_code}' if event.exit_code is not None else 'running in background'
+        self.console.print(f'{state} | PID {event.pid}', style=theme.MUTED, markup=False, highlight=False)
+        self.console.print(
+            f'Output: {terminal_text(event.output_path)}', style=theme.MUTED, markup=False, highlight=False
+        )
+        self.console.print(
+            f'Status: {terminal_text(event.status_path)}', style=theme.MUTED, markup=False, highlight=False
+        )
+        self.console.print()
+
     def abort(self) -> None:
         """Release pending events when a run ends without tool results."""
         self._writes.clear()
@@ -175,7 +266,7 @@ class ToolOutput:
     def render(self, event: AgentStreamEvent) -> bool:
         """Return whether this event belongs to the specialized tool display."""
         if isinstance(event, CommandStartedEvent):
-            self._shells[event.tool_call_id] = ShellPreview()
+            self._shells[event.tool_call_id] = ShellPreview(label=f'shell {summary(event.command)}')
             key = (event.tool_call_id, 'shell')
             if key not in self._headers:
                 self._header('shell', event.command)
@@ -183,23 +274,7 @@ class ToolOutput:
         elif isinstance(event, CommandOutputEvent):
             self._shell_chunk(event)
         elif isinstance(event, CommandFinishedEvent):
-            preview = self._shells.pop(event.tool_call_id, ShellPreview())
-            if preview.pending and preview.completed_lines < self.shell_lines:
-                self._shell_line(preview)
-            omitted = max(0, event.total_lines - preview.shown) if event.total_lines is not None else 0
-            if omitted:
-                self.console.print(f'Truncated {omitted} lines', style=theme.MUTED)
-            state = f'exit {event.exit_code}' if event.exit_code is not None else 'running in background'
-            self.console.print(f'{state} | PID {event.pid}', style=theme.MUTED, markup=False, highlight=False)
-            self.console.print(
-                f'Output: {terminal_text(event.output_path)}', style=theme.MUTED, markup=False, highlight=False
-            )
-            self.console.print(
-                f'Status: {terminal_text(event.status_path)}', style=theme.MUTED, markup=False, highlight=False
-            )
-            if event.truncated and not omitted:
-                self.console.print('Output preview truncated; full output is in the command log.', style=theme.MUTED)
-            self.console.print()
+            self._shell_finished(event)
         elif isinstance(event, FileChangeRequestEvent):
             if event.operation == 'write':
                 self._writes[event.tool_call_id, event.root_dir, event.path] = event

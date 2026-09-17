@@ -8,7 +8,7 @@ from pathlib import Path
 
 from pydantic import JsonValue, TypeAdapter
 
-from .config import SETTING_FIELDS, PluginSettings, Settings, resolve_settings
+from .config import RENAMED_SETTINGS, SETTING_FIELDS, PluginSettings, Settings, resolve_settings
 
 _JSON: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
 _JSON_OBJECT: TypeAdapter[dict[str, JsonValue]] = TypeAdapter(dict[str, JsonValue])
@@ -25,14 +25,20 @@ class SettingsStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             version = connection.execute('PRAGMA user_version').fetchone()[0]
-            if version not in (0, 1):
+            if version not in (0, 1, 2):
                 raise ValueError(f'Unsupported settings schema version: {version}')
             connection.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL)')
             connection.execute('CREATE TABLE IF NOT EXISTS plugins (id TEXT PRIMARY KEY, declaration TEXT NOT NULL)')
             connection.execute(
                 'CREATE TABLE IF NOT EXISTS model_settings (model TEXT PRIMARY KEY, settings_json TEXT NOT NULL)'
             )
-            connection.execute('PRAGMA user_version = 1')
+            if version < 2:
+                # Version 2 renamed display keys. The first legacy key wins when two map to one new key;
+                # a value already saved under the new key is kept.
+                for old, new in RENAMED_SETTINGS.items():
+                    connection.execute('UPDATE OR IGNORE settings SET key = ? WHERE key = ?', (new, old))
+                    connection.execute('DELETE FROM settings WHERE key = ?', (old,))
+            connection.execute('PRAGMA user_version = 2')
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:

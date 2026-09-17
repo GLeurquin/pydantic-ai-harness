@@ -4,9 +4,10 @@ from pydantic import BaseModel, ValidationError
 from pydantic_ai import FunctionToolCallEvent, FunctionToolResultEvent
 from pydantic_ai.messages import ToolReturnPart
 from rich.console import Console
+from rich.text import Text
 
 from . import theme
-from .tool_output import terminal_text
+from .tool_output import FoldedOutputs, Folder, terminal_text
 
 
 class GrepArguments(BaseModel):
@@ -19,10 +20,10 @@ class GrepArguments(BaseModel):
 class GrepOutput:
     """Keep concurrent grep results associated with their invocation."""
 
-    def __init__(self, console: Console, *, lines: int = 20) -> None:
+    def __init__(self, console: Console, *, lines: int = 20, folds: FoldedOutputs | None = None) -> None:
         """Limit display only, without changing the result sent to the model."""
         self.console = console
-        self.lines = lines
+        self.folder = Folder(console, lines=lines, folds=folds)
         self._calls: dict[str, str] = {}
 
     def render(self, event: FunctionToolCallEvent | FunctionToolResultEvent) -> bool:
@@ -53,11 +54,7 @@ class GrepOutput:
         if tool_truncated:
             rows.pop()
         self.console.print(f'Results: {terminal_text(label)}', style=theme.MUTED, markup=False, highlight=False)
-        for row in rows[: self.lines]:
-            self.console.print(terminal_text(row), style=theme.MUTED, markup=False, highlight=False)
-        hidden = max(0, len(rows) - self.lines)
-        if hidden:
-            self.console.print(f'Truncated {hidden} result lines', style=theme.MUTED)
+        self.folder.show(label=terminal_text(label), lines=[Text(terminal_text(row)) for row in rows])
         if tool_truncated:
             self.console.print('Tool also truncated the search; additional result count unknown.', style=theme.MUTED)
         elif not rows:

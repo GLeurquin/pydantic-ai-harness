@@ -148,7 +148,7 @@ def set_completions(args: list[str]) -> Iterable[str]:
         names = known_model_names()
         providers = sorted({name.partition(':')[0] + ':' for name in names} | {'openai-codex:'})
         return (*providers, 'openai-codex:gpt-6-astra', *names)
-    if len(args) == 2 and args[0] in ('display.thinking', 'display.splash'):
+    if len(args) == 2 and args[0] in ('display.show_thinking', 'display.splash'):
         return ('true', 'false')
     return ()
 

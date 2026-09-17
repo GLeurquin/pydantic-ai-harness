@@ -8,6 +8,7 @@ from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 from rich.console import Console
 
 from pydantic_clai2 import StreamRenderer
+from pydantic_clai2.tool_output import FoldedOutputs
 
 
 @pytest.fixture
@@ -18,7 +19,8 @@ def anyio_backend() -> str:
 @pytest.mark.parametrize('tool_truncated', [False, True])
 async def test_grep_preview(tool_truncated: bool) -> None:
     output = io.StringIO()
-    renderer = StreamRenderer(Console(file=output), stop_loading=lambda: None, grep_lines=1)
+    folds = FoldedOutputs()
+    renderer = StreamRenderer(Console(file=output), stop_loading=lambda: None, tool_output_lines=1, folds=folds)
     await renderer.on_stream_event(
         FunctionToolCallEvent(
             part=ToolCallPart(
@@ -43,9 +45,15 @@ async def test_grep_preview(tool_truncated: bool) -> None:
     )
     text = output.getvalue()
     assert 'example:1:first' in text and 'example:2:second' not in text
-    assert 'Truncated 2 result lines' in text
+    assert '... 2 more lines (/expand to show)' in text
     assert ('additional result count unknown' in text) == tool_truncated
     assert text.endswith('\n\n')
+    output.truncate(0)
+    output.seek(0)
+    assert folds.expand(Console(file=output, width=200), []) == '3 lines.'
+    assert (
+        output.getvalue() == "● grep 'needle' in '/tmp/example'\nexample:1:first\nexample:2:second\nexample:3:third\n"
+    )
 
 
 async def test_grep_no_matches() -> None:

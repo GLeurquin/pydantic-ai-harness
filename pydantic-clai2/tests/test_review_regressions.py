@@ -141,7 +141,7 @@ def test_reset_preserves_other_runtime_overrides(tmp_path: Path) -> None:
         clear_history=lambda: None,
         apply_setting=lambda key, settings: None,
     )
-    context.reset_setting('display.thinking')
+    context.reset_setting('display.show_thinking')
     assert context.settings.model == 'test'
     assert context.settings.request_limit == 999
 

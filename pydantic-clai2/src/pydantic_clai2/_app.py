@@ -33,6 +33,7 @@ from .plugins import Renderer, SessionEndReason, SessionStart, TurnEnd, TurnStar
 from .set_menu import open_settings_menu
 from .settings_store import SettingsStore
 from .status import Status, StatusLine
+from .tool_output import FoldedOutputs
 
 DepsT = TypeVar('DepsT')
 OutputT = TypeVar('OutputT')
@@ -121,6 +122,14 @@ async def chat(
         )
     )
     commands.register(Command(name='help', description='Show commands', handler=commands.help))
+    folds = FoldedOutputs()
+    commands.register(
+        Command(
+            name='expand',
+            description='Show the last folded tool output in full; /expand N shows the N-th most recent',
+            handler=lambda args: folds.expand(console, args),
+        )
+    )
     commands.register(
         Command(
             name='new',
@@ -175,6 +184,7 @@ async def chat(
         status=status,
         prompt=prompt,
         interrupts=Interrupts(),
+        folds=folds,
     )
     reason: SessionEndReason = 'error'
     try:
@@ -199,6 +209,7 @@ class _Shell(Generic[DepsT, OutputT]):
     status: Status
     prompt: PromptSession[str]
     interrupts: Interrupts
+    folds: FoldedOutputs
 
     async def run(self) -> SessionEndReason:
         while True:
@@ -257,6 +268,7 @@ class _Shell(Generic[DepsT, OutputT]):
                 settings=self.context.settings,
                 status=self.status,
                 renderers=self.loader.renderers(),
+                folds=self.folds,
             )
 
         completed = await self.interrupts.run(run_prompt())
@@ -302,14 +314,15 @@ async def _run_prompt(
     settings: Settings,
     status: Status,
     renderers: Sequence[Renderer[AgentStreamEvent]] = (),
+    folds: FoldedOutputs | None = None,
 ) -> TurnEnd:
     renderer = StreamRenderer(
         console,
         stop_loading=lambda: None,
-        show_thinking=settings.thinking,
+        show_thinking=settings.show_thinking,
         smooth_seconds=settings.smooth_seconds,
-        shell_lines=settings.shell_lines,
-        grep_lines=settings.grep_lines,
+        tool_output_lines=settings.tool_output_lines,
+        folds=folds,
         renderers=renderers,
     )
     status.streamed_chars = 0

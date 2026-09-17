@@ -37,19 +37,19 @@ def test_command_boundaries(tmp_path: Path) -> None:
         'plain',
     ):
         list(commands.get_completions(Document(text), CompleteEvent()))
-    assert list(config_completions(['set', 'display.thinking', ''])) == ['true', 'false']
+    assert list(config_completions(['set', 'display.show_thinking', ''])) == ['true', 'false']
     assert list(config_completions([]))
     assert not list(config_completions(['oops', 'a', 'b', 'c']))
     assert not list(set_completions(['oops', 'a', 'b']))
     store = SettingsStore(tmp_path / 'config.db')
     assert config_command(store, [])
-    assert config_command(store, ['get', 'display.thinking']) == 'true'
+    assert config_command(store, ['get', 'display.show_thinking']) == 'true'
     for args in (['get', 'missing'], ['bad']):
         with pytest.raises(ValueError):
             config_command(store, args)
-    config_command(store, ['set', 'display.thinking', 'false'])
-    config_command(store, ['reset', 'display.thinking'])
-    assert store.load().thinking
+    config_command(store, ['set', 'display.show_thinking', 'false'])
+    config_command(store, ['reset', 'display.show_thinking'])
+    assert store.load().show_thinking
     assert plugins_command(store, []) == 'No plugins.'
     plugins_command(store, ['add', 'one', 'module:Factory'])
     plugins_command(store, ['add', 'two', 'module:Factory', '{}'])

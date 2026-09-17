@@ -4,11 +4,24 @@ import asyncio
 import io
 
 import pytest
-from pydantic_ai import FunctionToolCallEvent, FunctionToolResultEvent, PartStartEvent, TextPart, ThinkingPart
+from pydantic_ai import (
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    PartDeltaEvent,
+    PartEndEvent,
+    PartStartEvent,
+    TextPart,
+    ThinkingPart,
+    ThinkingPartDelta,
+)
 from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 from rich.console import Console
+from rich.text import Text
 
 from pydantic_clai2 import StreamRenderer
+
+ERASE = '\x1b[1G\x1b[2K'
+"""Move to column 1 and erase the row: how the thinking placeholder is removed."""
 
 
 @pytest.fixture
@@ -137,3 +150,38 @@ async def test_cancel_during_drain_stops_writer() -> None:
         await task
     await renderer.abort()
     assert output.getvalue().count('x') < 10000
+
+
+async def test_hidden_thinking_shows_a_placeholder_until_text_starts() -> None:
+    output = io.StringIO()
+    console = Console(file=output, force_terminal=True, color_system='truecolor', width=80)
+    renderer = StreamRenderer(console, stop_loading=lambda: None, show_thinking=False)
+    await renderer.on_stream_event(PartStartEvent(index=0, part=ThinkingPart(content='secret plan')))
+    await renderer.on_stream_event(PartDeltaEvent(index=0, delta=ThinkingPartDelta(content_delta=' continues')))
+    await renderer.on_stream_event(PartEndEvent(index=0, part=ThinkingPart(content='secret plan continues')))
+    await renderer.on_stream_event(PartStartEvent(index=1, part=ThinkingPart(content='second thought')))
+    shown = output.getvalue()
+    assert 'secret' not in shown and 'second' not in shown and 'Thinking' not in shown
+    assert Text.from_ansi(shown).plain == 'thinking...thinking...'
+    assert shown.count(ERASE) == 1
+    await renderer.on_stream_event(PartStartEvent(index=2, part=TextPart(content='Answer\n')))
+    await renderer.finish()
+    shown = output.getvalue()
+    assert shown.count(ERASE) == 2 and shown.count('thinking...') == 2
+    assert Text.from_ansi(shown).plain.endswith('Answer\n\n')
+    assert shown.index('Answer') > shown.rindex(ERASE)
+
+
+async def test_hidden_thinking_placeholder_is_terminal_only_and_aborts_cleanly() -> None:
+    output = io.StringIO()
+    renderer = StreamRenderer(Console(file=output), stop_loading=lambda: None, show_thinking=False)
+    await renderer.on_stream_event(PartStartEvent(index=0, part=ThinkingPart(content='secret')))
+    await renderer.finish()
+    assert output.getvalue() == ''
+    terminal = Console(file=output, force_terminal=True, color_system='truecolor', width=80)
+    renderer = StreamRenderer(terminal, stop_loading=lambda: None, show_thinking=False)
+    await renderer.on_stream_event(PartStartEvent(index=0, part=ThinkingPart(content='secret')))
+    await renderer.abort()
+    assert output.getvalue().count(ERASE) == 1
+    await renderer.abort()
+    assert output.getvalue().count(ERASE) == 1

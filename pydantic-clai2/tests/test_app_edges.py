@@ -87,7 +87,7 @@ async def test_chat_boundaries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, 
 
 
 async def test_model_string_and_non_command_plugin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    inputs(monkeypatch, ['/set', '/set display.thinking', '/config show', '/plugins list', '/new', '/exit'])
+    inputs(monkeypatch, ['/set', '/set display.show_thinking', '/config show', '/plugins list', '/new', '/exit'])
 
     class Provider(AbstractCapability[None]):
         def get_commands(self, context: CommandContext) -> list[Command]:

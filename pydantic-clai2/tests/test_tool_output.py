@@ -11,6 +11,7 @@ from rich.console import Console
 from rich.text import Text
 
 from pydantic_clai2 import StreamRenderer
+from pydantic_clai2.tool_output import FoldedOutputs
 
 
 @pytest.fixture
@@ -102,28 +103,69 @@ async def test_shell_event_display() -> None:
     assert 'truncated' in output.getvalue()
 
 
-@pytest.mark.parametrize('limit', [0, 1, 2])
-async def test_shell_line_limit_across_chunks(limit: int) -> None:
+def _finished(tool_call_id: str, *, truncated: bool = False, total_lines: int | None = 0) -> CommandFinishedEvent:
+    return CommandFinishedEvent(
+        tool_call_id=tool_call_id,
+        pid=1,
+        output_path='/tmp/out',
+        status_path='/tmp/status',
+        exit_code=0,
+        truncated=truncated,
+        total_lines=total_lines,
+    )
+
+
+@pytest.mark.parametrize(('limit', 'shown'), [(0, 4), (1, 1), (3, 3), (4, 4), (5, 4)])
+async def test_shell_output_folds_after_limit(limit: int, shown: int) -> None:
     output = io.StringIO()
-    renderer = StreamRenderer(Console(file=output), stop_loading=lambda: None, shell_lines=limit)
+    folds = FoldedOutputs()
+    renderer = StreamRenderer(Console(file=output), stop_loading=lambda: None, tool_output_lines=limit, folds=folds)
     for chunk in ('fir', 'st\nsecond', '\nthird\nfourth'):
         await renderer.on_stream_event(CommandOutputEvent(tool_call_id='test', text=chunk))
-    await renderer.on_stream_event(
-        CommandFinishedEvent(
-            tool_call_id='test',
-            pid=1,
-            output_path='/tmp/out',
-            status_path='/tmp/status',
-            exit_code=0,
-            truncated=False,
-            total_lines=4,
-        )
-    )
+    await renderer.on_stream_event(_finished('test', total_lines=4))
     text = output.getvalue()
-    assert f'Truncated {4 - limit} lines' in text
-    assert ('first' in text) == (limit >= 1)
-    assert ('second' in text) == (limit >= 2)
-    assert 'third' not in text and 'fourth' not in text
+    rows = ['first', 'second', 'third', 'fourth']
+    assert [row for row in rows if row in text] == rows[:shown]
+    folded = shown < 4
+    assert (f'... {4 - shown} more lines (/expand to show)' in text) == folded
+    assert len(folds) == int(folded)
+
+
+async def test_expand_reprints_folded_outputs_newest_first() -> None:
+    output = io.StringIO()
+    console = Console(file=output, width=200)
+    folds = FoldedOutputs(keep=2)
+    assert folds.expand(console, []) == 'Nothing to expand: no tool output has been folded yet.'
+    renderer = StreamRenderer(console, stop_loading=lambda: None, tool_output_lines=1, folds=folds)
+    for call, command in (('one', 'seq 2'), ('two', 'seq 3\nseq 4'), ('three', 'seq 5')):
+        await renderer.on_stream_event(CommandStartedEvent(tool_call_id=call, command=command, pid=1))
+        await renderer.on_stream_event(CommandOutputEvent(tool_call_id=call, text=f'{call} a\n{call} b\n{call} c'))
+        await renderer.on_stream_event(_finished(call))
+    assert 'two b' not in output.getvalue() and len(folds) == 2
+    output.truncate(0)
+    output.seek(0)
+    assert folds.expand(console, []) == '3 lines.'
+    assert output.getvalue() == '● shell seq 5\nthree a\nthree b\nthree c\n'
+    output.truncate(0)
+    output.seek(0)
+    assert folds.expand(console, ['2']) == '3 lines.'
+    assert output.getvalue() == '● shell seq 3 (+1 command lines)\ntwo a\ntwo b\ntwo c\n'
+    assert folds.expand(console, ['3']) == 'Only 2 folded output(s) are kept; use /expand 1 to /expand 2.'
+    assert folds.expand(console, ['0']).startswith('Only 2')
+    with pytest.raises(ValueError, match='Usage: /expand'):
+        folds.expand(console, ['last'])
+    with pytest.raises(ValueError, match='Usage: /expand'):
+        folds.expand(console, ['1', '2'])
+
+
+@pytest.mark.parametrize(('total_lines', 'note'), [(9, '7 more lines are'), (None, 'the rest is'), (1, 'the rest is')])
+async def test_shell_reports_output_beyond_the_event_budget(total_lines: int | None, note: str) -> None:
+    output = io.StringIO()
+    renderer = StreamRenderer(Console(file=output), stop_loading=lambda: None)
+    await renderer.on_stream_event(CommandOutputEvent(tool_call_id='big', text='one\ntwo\n'))
+    await renderer.on_stream_event(_finished('big', truncated=True, total_lines=total_lines))
+    assert f'Output truncated by the event budget; {note} only in the command log.' in output.getvalue()
+    assert '/expand' not in output.getvalue()
 
 
 async def test_shell_progress_replaces_carriage_return_frames() -> None:

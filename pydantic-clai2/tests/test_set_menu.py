@@ -21,10 +21,12 @@ def test_rows_details_and_validation(tmp_path: Path) -> None:
     context, _ = make_context(tmp_path)
     menu = FieldMenu(SettingsSource(context))
     keys = [row.key for row in menu.rows]
-    assert keys[:3] == ['model', 'run.request_limit', 'display.thinking']
+    assert keys[:3] == ['model', 'run.request_limit', 'display.show_thinking']
+    folding = next(row for row in menu.rows if row.key == 'display.tool_output_lines')
+    assert folding.default == '20' and folding.choices == () and 'folding' in folding.description
     items = menu.items()
     assert items[0].label.startswith('model') and 'openai-codex:gpt-6-astra' in items[0].label
-    thinking = next(row for row in menu.rows if row.key == 'display.thinking')
+    thinking = next(row for row in menu.rows if row.key == 'display.show_thinking')
     model = menu.rows[0]
     assert thinking.choices == ('true', 'false')
     assert len(model.choices) > 8
@@ -52,7 +54,7 @@ def test_flow_edits_resets_and_reports(tmp_path: Path) -> None:
     menu = FieldMenu(SettingsSource(context))
     script = Script(
         lists=[
-            pick('display.thinking'),
+            pick('display.show_thinking'),
             pick('run.request_limit'),
             pick('run.request_limit'),
             menu.reset_marker(object(), MenuItem('run.request_limit', value='run.request_limit')),
@@ -74,18 +76,18 @@ def test_flow_edits_resets_and_reports(tmp_path: Path) -> None:
     )
     messages = run_flow(menu, script.runners)
     assert messages == [
-        'Saved display.thinking. Applied.',
+        'Saved display.show_thinking. Applied.',
         'Saved run.request_limit. Applied.',
         'run.request_limit: Invalid JSON: expected value at line 1 column 1',
         'Reset run.request_limit. Applied.',
         'Saved model. Applied.',
         'Reset model. Applied.',
     ]
-    assert not context.settings.thinking
+    assert not context.settings.show_thinking
     assert context.settings.request_limit == 10000
     assert context.settings.model == 'openai-codex:gpt-6-astra'
-    assert context.store.overrides() == {'display.thinking': False}
-    assert applied == ['display.thinking', 'run.request_limit', 'run.request_limit', 'model', 'model']
+    assert context.store.overrides() == {'display.show_thinking': False}
+    assert applied == ['display.show_thinking', 'run.request_limit', 'run.request_limit', 'model', 'model']
     assert script.opened.count('choice') == 5
 
 

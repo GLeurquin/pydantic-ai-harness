@@ -102,7 +102,8 @@ Pass secret references or use plugin-owned credential storage instead of embeddi
 ```text
 /set
 /set model <Tab>
-/set display.thinking false
+/set display.show_thinking false
+/set display.tool_output_lines 40
 /set run.request_limit 10000
 ```
 
@@ -150,7 +151,7 @@ Settings are validated before writes. `/set` updates the active settings snapsho
 legacy `/config` writes apply on restart; plugin changes apply on the next prompt.
 `--request-limit` controls the full prompt's model-request budget.
 
-Interactive commands: `/login`, `/set`, `/model`, `/help`, `/new`, `/exit`, `/config`, and `/plugins`.
+Interactive commands: `/login`, `/set`, `/model`, `/expand`, `/help`, `/new`, `/exit`, `/config`, and `/plugins`.
 Tab completion suggests commands, settings, boolean values, plugin identifiers,
 and paths after `@`. Path completion inserts a path; it does not attach file contents.
 Unknown slash commands are not sent to the model. Up/down recall saved prompt
@@ -214,6 +215,12 @@ Streaming matches Code Puppy's separate output and thinking paths:
 - Smoothing applies only to interactive terminal output. Redirected output is
   written directly. Parts drain before the next heading, tool status, or prompt.
 
+`/set display.show_thinking false` hides thinking. While the model is thinking,
+the transcript shows a single `thinking...` line in the thinking colour; it is
+erased in place when the answer or a tool call starts, so nothing of it remains
+in the scrollback. The line is terminal-only; redirected output shows nothing
+for hidden thinking. The setting applies from the next prompt.
+
 `/set display.smooth_seconds 0.5` restores the Code Puppy response catch-up
 window if you previously saved a slower preference. This response-only setting
 accepts 0.1 to 5 seconds; thinking retains its separate 0.4-second window.
@@ -234,14 +241,20 @@ Tool calls print once with a filled-circle marker and the tool name, followed by
 are truncated to one terminal row. Completion activity remains in the footer
 rather than adding a separate `Finished:` line to the transcript.
 
-## Grep previews
+## Tool output folding
 
-Grep calls display the expression and path. Results show the first 20 logical
-lines by default; `/set display.grep_lines 10` changes the next turn's preview
-(0 to 1000). `Truncated N result lines` counts returned lines hidden by the UI,
-including context lines. If the tool itself capped the search, a separate notice
-states that the additional result count is unknown. No matches is shown explicitly.
-The model still receives the original tool result.
+Long tool output (shell commands, grep results) shows its first 20 lines, then a
+trailer such as `... 143 more lines (/expand to show)`. `/set
+display.tool_output_lines 40` changes that head (0 to 1000; 0 shows everything)
+from the next prompt. `/expand` reprints the most recently folded output in
+full, header and all; `/expand 3` reprints the third most recent. The last ten
+folded outputs are kept, across turns, until CLAI exits. Folding is display
+only: the model still receives the original tool result.
+
+Grep calls display the expression and path. If the tool itself capped the
+search, a separate notice states that the additional result count is unknown,
+since those lines were never returned and cannot be expanded. No matches is
+shown explicitly.
 
 Shell output is rendered one completed line at a time. Carriage-return progress
 updates replace the buffered line rather than printing control-code text; the last
@@ -250,15 +263,16 @@ Long display lines are ellipsized to terminal width. Multiline commands show the
 first line and the number of additional command lines rather than dumping scripts.
 Full output remains in the log; display formatting does not alter model results.
 
-## Shell preview limit
+## Shell output beyond the fold
 
-Shell output defaults to the first 20 logical lines per command. Change it with
-`/set display.shell_lines 50` (0 to 1000; zero hides output). The setting applies
-to the next prompt. After the command returns, `Truncated N lines` reports omitted
-lines from the log snapshot at that time, including an unterminated final line.
-The capability's 16 KB event preview cap can shorten the preview further. Full
-output remains in the displayed log path. Background commands can keep writing
-after the snapshot; those future lines are not included in its count.
+Shell output folds like any other tool output, counting logical lines including
+an unterminated final one. The capability only streams the first 16 KB of a
+command's log to the terminal, so `/expand` can show at most that much. When the
+log is longer, the command's footer says so: `Output truncated by the event
+budget; N more lines are only in the command log`, with the count taken from the
+log snapshot at that time. Full output remains in the displayed log path.
+Background commands can keep writing after the snapshot; those future lines are
+not included in its count.
 
 Read headers show the path, zero-based offset, and effective line limit (Coder
 default and maximum: 2000). Listing headers show the directory, recursive mode,

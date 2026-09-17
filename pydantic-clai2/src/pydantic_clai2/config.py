@@ -15,12 +15,16 @@ class Settings(BaseModel):
     request_limit: int = Field(
         default=10000, gt=0, description='Most model requests one prompt may make before the turn stops.'
     )
-    thinking: bool = Field(default=True, description="Show the model's thinking as it streams.")
-    splash: bool = Field(default=True, description='Animate the startup splash. Takes effect next start.')
-    shell_lines: int = Field(
-        default=20, ge=0, le=1000, description='Lines of shell output to preview before truncating.'
+    show_thinking: bool = Field(
+        default=True, description="Show the model's thinking as it streams; off shows only 'thinking...'."
     )
-    grep_lines: int = Field(default=20, ge=0, le=1000, description='Grep result lines to preview before truncating.')
+    splash: bool = Field(default=True, description='Animate the startup splash. Takes effect next start.')
+    tool_output_lines: int = Field(
+        default=20,
+        ge=0,
+        le=1000,
+        description='Lines of tool output (shell, grep) to show before folding; 0 shows everything.',
+    )
     smooth_seconds: float = Field(
         default=0.5,
         ge=0.1,
@@ -33,12 +37,18 @@ class Settings(BaseModel):
 SETTING_FIELDS = {
     'model': 'model',
     'run.request_limit': 'request_limit',
-    'display.thinking': 'thinking',
+    'display.show_thinking': 'show_thinking',
     'display.splash': 'splash',
-    'display.shell_lines': 'shell_lines',
-    'display.grep_lines': 'grep_lines',
+    'display.tool_output_lines': 'tool_output_lines',
     'display.smooth_seconds': 'smooth_seconds',
 }
+
+RENAMED_SETTINGS = {
+    'display.thinking': 'display.show_thinking',
+    'display.shell_lines': 'display.tool_output_lines',
+    'display.grep_lines': 'display.tool_output_lines',
+}
+"""Keys earlier releases stored, and what they became. `SettingsStore` renames them on open."""
 
 
 def resolve_settings(overrides: dict[str, JsonValue]) -> Settings:

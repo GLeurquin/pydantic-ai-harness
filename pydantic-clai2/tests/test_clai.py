@@ -1,6 +1,7 @@
 """Public behavior of sessions, settings, plugins, completion, and rendering."""
 
 import io
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -157,15 +158,15 @@ async def test_renderer_flushes_and_hides_thinking() -> None:
 def test_settings_round_trip_and_validation(tmp_path: Path) -> None:
     store = SettingsStore(tmp_path / 'settings.db')
     assert store.load().request_limit == 10000
-    store.set('display.thinking', False)
-    assert not SettingsStore(store.path).load().thinking
+    store.set('display.show_thinking', False)
+    assert not SettingsStore(store.path).load().show_thinking
     with pytest.raises(ValidationError):
         store.set('run.request_limit', -1)
     with pytest.raises(ValueError):
         store.set('typo', True)
-    store.reset('display.thinking')
-    assert store.load().thinking
-    assert config_command(store, ['get', 'display.thinking']) == 'true'
+    store.reset('display.show_thinking')
+    assert store.load().show_thinking
+    assert config_command(store, ['get', 'display.show_thinking']) == 'true'
     config_command(store, ['set', 'model', 'test'])
     assert store.load().model == 'test'
     plugins_command(store, ['add', 'audit', 'missing.module:Plugin'])
@@ -173,6 +174,27 @@ def test_settings_round_trip_and_validation(tmp_path: Path) -> None:
     assert [plugin.enabled for plugin in store.plugins()] == [False]
     plugins_command(store, ['remove', 'audit'])
     assert store.plugins() == []
+
+
+def test_settings_store_renames_legacy_display_keys(tmp_path: Path) -> None:
+    path = tmp_path / 'legacy.db'
+    SettingsStore(path)
+    with sqlite3.connect(path) as connection:
+        connection.execute('PRAGMA user_version = 1')
+        connection.executemany(
+            'INSERT INTO settings VALUES (?, ?)',
+            [
+                ('display.thinking', 'false'),
+                ('display.shell_lines', '7'),
+                ('display.grep_lines', '9'),
+                ('display.tool_output_lines', '3'),
+            ],
+        )
+    store = SettingsStore(path)
+    assert store.overrides() == {'display.show_thinking': False, 'display.tool_output_lines': 3}
+    assert not store.load().show_thinking and store.load().tool_output_lines == 3
+    with sqlite3.connect(path) as connection:
+        assert connection.execute('PRAGMA user_version').fetchone()[0] == 2
 
 
 def test_completion_uses_registry(tmp_path: Path) -> None:
@@ -187,12 +209,12 @@ def test_completion_uses_registry(tmp_path: Path) -> None:
         )
     )
     assert [c.text for c in commands.get_completions(Document('/co'), CompleteEvent())] == ['config']
-    assert 'display.thinking' in [
+    assert 'display.show_thinking' in [
         c.text for c in commands.get_completions(Document('/config set display.'), CompleteEvent())
     ]
-    result = commands.execute('/config set display.thinking false')
+    result = commands.execute('/config set display.show_thinking false')
     assert isinstance(result, str) and result.startswith('Saved')
-    assert not store.load().thinking
+    assert not store.load().show_thinking
     with pytest.raises(ValueError, match='Unknown command'):
         commands.execute('/oops')
     with pytest.raises(ValueError, match='duplicate'):

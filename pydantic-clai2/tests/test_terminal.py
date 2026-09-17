@@ -59,14 +59,14 @@ async def test_set_without_initial_model(tmp_path: Path) -> None:
     store = SettingsStore(tmp_path / 'config.db')
     with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
         pipe.send_text(
-            'hello\n/set model test\n/set display.thinking false\n/set run.request_limit 123\nhello\n/exit\n'
+            'hello\n/set model test\n/set display.show_thinking false\n/set run.request_limit 123\nhello\n/exit\n'
         )
         await chat(Agent(), deps=None, console=Console(file=output), store=store)
     assert 'Choose a model first' in output.getvalue()
     assert 'Applied.' in output.getvalue()
     assert store.load().model == 'test'
     assert store.load().request_limit == 123
-    assert not store.load().thinking
+    assert not store.load().show_thinking
     assert 'success' in output.getvalue()
 
 
@@ -194,7 +194,9 @@ def test_set_autocomplete() -> None:
     commands = Commands()
     commands.register(Command(name='set', description='Settings', handler=lambda _: '', complete=set_completions))
     assert 'model' in [c.text for c in commands.get_completions(Document('/set mo'), CompleteEvent())]
-    assert 'false' in [c.text for c in commands.get_completions(Document('/set display.thinking f'), CompleteEvent())]
+    assert 'false' in [
+        c.text for c in commands.get_completions(Document('/set display.show_thinking f'), CompleteEvent())
+    ]
     models = list(commands.get_completions(Document('/set model anthropic:'), CompleteEvent()))
     assert models
     codex = list(commands.get_completions(Document('/set model openai-codex'), CompleteEvent()))
@@ -221,10 +223,12 @@ async def test_prompt_loop_commands(tmp_path: Path) -> None:
 def test_cli_settings(tmp_path: Path) -> None:
     base = [sys.executable, '-m', 'pydantic_clai2', '--database', str(tmp_path / 'config.db')]
     result = subprocess.run(
-        [*base, 'config', 'set', 'display.thinking', 'false'], check=False, capture_output=True, text=True
+        [*base, 'config', 'set', 'display.show_thinking', 'false'], check=False, capture_output=True, text=True
     )
     assert result.returncode == 0, result.stderr
-    result = subprocess.run([*base, 'config', 'get', 'display.thinking'], check=False, capture_output=True, text=True)
+    result = subprocess.run(
+        [*base, 'config', 'get', 'display.show_thinking'], check=False, capture_output=True, text=True
+    )
     assert result.stdout.strip() == 'false'
     result = subprocess.run(
         [*base, 'config', 'set', 'run.request_limit', '-1'], check=False, capture_output=True, text=True
