@@ -61,6 +61,19 @@ async def test_ctrl_r_recalls_an_earlier_prompt(tmp_path: Path) -> None:
     assert '/help: Show commands' in output.getvalue()
 
 
+async def test_ctrl_c_backs_out_of_search_without_counting_as_an_interrupt(tmp_path: Path) -> None:
+    store = SettingsStore(tmp_path / 'config.db')
+    input_history(store.path.with_name('input-history')).append_string('/help')
+    output = io.StringIO()
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        pipe.send_text('\x12hel\x03/config get model\n/exit\n')
+        await chat(Agent(TestModel()), deps=None, console=Console(file=output, width=200), store=store)
+    text = output.getvalue()
+    assert 'Input cleared' not in text
+    assert '/help: Show commands' not in text
+    assert 'gpt-6-astra' in text
+
+
 def test_search_prompt_uses_theme_colours() -> None:
     for selector in ('class:prompt.search', 'class:prompt.search.text', 'class:search', 'class:search.current'):
         assert COMPLETION_STYLE.get_attrs_for_style_str(selector).color in ('9B77FF', 'E520E9', '00FFEB')
