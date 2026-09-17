@@ -10,6 +10,7 @@ from pydantic_ai.usage import UsageLimits
 from ._app import DEFAULT_PLUGINS, chat, create_agent
 from .commands import config_command, plugins_command
 from .config import resolve_settings
+from .sessions import NEWEST
 from .settings_store import SettingsStore
 
 
@@ -19,6 +20,13 @@ def run() -> None:
     parser.add_argument('--model', help='Provider-qualified model name')
     parser.add_argument('--request-limit', type=int)
     parser.add_argument('--database', type=Path, help='Settings database location')
+    parser.add_argument(
+        '--resume',
+        nargs='?',
+        const=NEWEST,
+        metavar='ID',
+        help='Continue a saved session: the newest for this directory, or the one with this id',
+    )
     parser.add_argument('command', nargs='?', choices=('config', 'plugins'))
     parser.add_argument('arguments', nargs=argparse.REMAINDER)
     args = parser.parse_args()
@@ -42,6 +50,7 @@ def run() -> None:
                 settings=settings,
                 store=store,
                 builtin_plugins=DEFAULT_PLUGINS,
+                resume=args.resume,
             )
         )
     except (ValueError, TypeError, ImportError, AttributeError) as exc:

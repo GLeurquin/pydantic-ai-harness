@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncIterable, Awaitable, Callable, Sequence
 from typing import Generic, TypeVar
+from uuid import uuid4
 
 from anyio import get_cancelled_exc_class
 from pydantic_ai import AgentRunResult, AgentStreamEvent, RunContext, capture_run_messages
@@ -16,11 +17,20 @@ DepsT = TypeVar('DepsT')
 OutputT = TypeVar('OutputT')
 
 
+def new_conversation_id() -> str:
+    """A fresh dialogue id, in the same shape core generates when none is given."""
+    return str(uuid4())
+
+
 class Session(Generic[DepsT, OutputT]):
     """Run prompts to completion, retaining successful and interrupted turns in memory.
 
     Plugins are capabilities (or capability functions) bound per run, not to
     the agent itself, so the set can change between prompts.
+
+    Every prompt runs under `conversation_id`, core's grouping of runs into
+    one dialogue. A persistence capability keys its records on it, which is
+    what lets a conversation be listed and resumed later.
     """
 
     def __init__(
@@ -42,6 +52,7 @@ class Session(Generic[DepsT, OutputT]):
         self.usage_limits = usage_limits
         self.on_stream_event = on_stream_event
         self._messages = list(message_history)
+        self.conversation_id = new_conversation_id()
         self._running = False
         self.on_context_usage: Callable[[int], None] | None = None
 
@@ -51,10 +62,15 @@ class Session(Generic[DepsT, OutputT]):
         return list(self._messages)
 
     def clear(self) -> None:
-        """Start a new conversation without replacing the agent or plugins."""
+        """Start a new conversation, under a new id, without replacing the agent or plugins."""
+        self.restore((), conversation_id=new_conversation_id())
+
+    def restore(self, messages: Sequence[ModelMessage], *, conversation_id: str) -> None:
+        """Replace the conversation with a saved history; the next prompt continues it under `conversation_id`."""
         if self._running:
-            raise RuntimeError('Cannot clear a running conversation')
-        self._messages.clear()
+            raise RuntimeError('Cannot replace a running conversation')
+        self._messages = list(messages)
+        self.conversation_id = conversation_id
 
     async def prompt(self, text: str) -> AgentRunResult[OutputT]:
         """Execute the complete native agent loop, including tool calls."""
@@ -73,6 +89,7 @@ class Session(Generic[DepsT, OutputT]):
                         model=model,
                         model_settings=self.model_settings,
                         message_history=self._messages,
+                        conversation_id=self.conversation_id,
                         capabilities=self.plugins,
                         usage_limits=self.usage_limits,
                         event_stream_handler=self._stream,

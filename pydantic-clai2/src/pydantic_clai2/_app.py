@@ -30,6 +30,8 @@ from .model_menu import open_model_menu
 from .plugin_loader import PluginError, PluginLoader
 from .plugin_menu import open_plugins_menu
 from .plugins import Renderer, SessionEndReason, SessionStart, TurnEnd, TurnStart
+from .session_menu import session_commands
+from .sessions import Sessions, find_store
 from .set_menu import open_settings_menu
 from .settings_store import SettingsStore
 from .status import Status, StatusLine
@@ -41,8 +43,13 @@ _PLUGIN_ACTIONS = ('list', 'add', 'enable', 'disable', 'remove', 'reload')
 
 DEFAULT_PLUGINS: tuple[PluginSettings, ...] = (
     PluginSettings(id='coder', factory='pydantic_ai_harness.coder:Coder', settings={'unrestricted_filesystem': True}),
+    PluginSettings(id='persistence', factory='pydantic_clai2.persistence:activate'),
 )
-"""Plugins CLAI ships enabled. `/plugins disable coder` turns the coding tools off; `remove` restores this."""
+"""Plugins CLAI ships enabled. `/plugins disable coder` turns the coding tools off; `remove` restores this.
+
+`persistence` saves every turn through the harness `StepPersistence` capability; `/resume` and `/sessions`
+read its store. Disabling it stops saving and makes those commands report that.
+"""
 
 
 def create_agent(model: str | None = None) -> Agent[None, str]:
@@ -60,20 +67,26 @@ async def chat(
     settings: Settings | None = None,
     store: SettingsStore | None = None,
     builtin_plugins: Sequence[PluginSettings] = (),
+    resume: str | None = None,
 ) -> None:
     """Start an asyncio terminal conversation with a caller-supplied agent.
 
     Ctrl-C cancels the current turn or clears input; Ctrl-D and `/exit` quit.
-    Failed and cancelled turns are not added to the retained history.
+    `resume` is a conversation id, or `sessions.NEWEST` for the current
+    directory's latest conversation, loaded once the plugins (and so the
+    persistence store) are up.
     """
     console = console or Console()
     console.print()
     print_banner(console)
-    console.print('/new clears history; /exit quits. Ctrl-C interrupts a turn.', style=theme.MUTED)
+    console.print(
+        '/new starts a session; /resume continues one; /exit quits. Ctrl-C interrupts a turn.', style=theme.MUTED
+    )
     settings = settings or Settings(model=None)
     store = store or SettingsStore()
     session = Session(agent, deps=deps, plugins=plugins, usage_limits=usage_limits)
     session.model = settings.model
+    status = Status()
     auth = CodexAuth(console)
 
     async def resolve_model(name: str) -> Model | str:
@@ -121,13 +134,6 @@ async def chat(
         )
     )
     commands.register(Command(name='help', description='Show commands', handler=commands.help))
-    commands.register(
-        Command(
-            name='new',
-            description='Clear conversation history',
-            handler=lambda _: session.clear() or 'Conversation cleared.',
-        )
-    )
     commands.register(Command(name='exit', description='Quit CLAI', handler=lambda _: 'Goodbye.'))
     commands.register(
         Command(
@@ -152,10 +158,11 @@ async def chat(
             complete=lambda args: _PLUGIN_ACTIONS if len(args) <= 1 else (entry.name for entry in loader.entries()),
         )
     )
+    sessions = Sessions(session, store=lambda: find_store(loader.capabilities()), on_switch=status.reset)
+    commands.register_many(session_commands(sessions))
     for plugin in plugins:
         if isinstance(plugin, CommandProvider):
             commands.register_many(plugin.get_commands(context))
-    status = Status()
     prompt = PromptSession[str](
         history=input_history(store.path.with_name('input-history')),
         completer=PromptCompleter(commands),
@@ -180,6 +187,8 @@ async def chat(
     try:
         async with agent:
             await loader.load_all()
+            if resume is not None:
+                await _resume(sessions, resume, console=console)
             reason = await shell.run()
     finally:
         await loader.close(reason)
@@ -216,9 +225,7 @@ class _Shell(Generic[DepsT, OutputT]):
                 continue
             self.console.print()
             if text.startswith('/'):
-                await self.interrupts.run(
-                    _execute_command(self.commands, text, console=self.console, status=self.status)
-                )
+                await self.interrupts.run(_execute_command(self.commands, text, console=self.console))
                 if text == '/exit' or self.interrupts.exit_requested:
                     return 'exit'
                 continue
@@ -265,26 +272,26 @@ class _Shell(Generic[DepsT, OutputT]):
         return self.interrupts.exit_requested
 
 
+async def _resume(sessions: Sessions, target: str, *, console: Console) -> None:
+    """`--resume`: a session that cannot be loaded is reported and the shell starts fresh."""
+    try:
+        console.print(await sessions.resume(target), style=theme.INFO, markup=False)
+    except ValueError as exc:
+        console.print(f'{exc}\nStarting a new session instead.', style=theme.WARNING, markup=False)
+
+
 def _report_interrupt(completed: bool, console: Console) -> None:
     if not completed:
         console.print('Turn cancelled. Press Ctrl-C again within 2 seconds to exit.', style=theme.MUTED)
         console.print()
 
 
-async def _execute_command(commands: Commands, text: str, *, console: Console, status: Status) -> None:
+async def _execute_command(commands: Commands, text: str, *, console: Console) -> None:
     try:
         console.print(await commands.execute_async(text), markup=False)
     except Exception as exc:  # noqa: BLE001 -- command failures must not exit the interactive shell.
         console.print(str(exc), style=theme.ERROR, markup=False)
     console.print()
-    _reset_status(text, status)
-
-
-def _reset_status(command: str, status: Status) -> None:
-    if command == '/new':
-        status.context_tokens = None
-        status.output_tokens = None
-        status.streamed_chars = 0
 
 
 def _model_label(agent: AbstractAgent[DepsT, OutputT]) -> str:

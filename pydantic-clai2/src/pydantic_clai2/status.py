@@ -30,6 +30,12 @@ class Status:
     streamed_chars: int = 0
     activity: str = 'ready'
 
+    def reset(self) -> None:
+        """Forget the counts of a conversation that is no longer the active one."""
+        self.context_tokens = None
+        self.output_tokens = None
+        self.streamed_chars = 0
+
     def observe(self, event: AgentStreamEvent) -> None:
         """Include text, thinking, and streamed tool arguments in the estimate."""
         if isinstance(event, PartStartEvent):
