@@ -107,6 +107,9 @@ actions, `.footer_hint` for the key legend, `markdown_style()` for colours.
 - Nothing prints to the console while the menu is open; the alternate screen
   would hide it. Show empty states and errors inside the menu as disabled rows.
 - Esc and Ctrl-C close cleanly. They are not errors.
+- A menu opened mid-run (the `ask_user` question menu) goes inside
+  `async with host.full_screen()`, which flushes streamed text and pauses the
+  status row first. Between turns the menus do not need it.
 - Adding a plugin is not in the menu. It needs free text, so it stays
   `/plugins add`.
 - Anything that is "edit named, validated fields" uses `field_menu.py`: a
@@ -155,6 +158,8 @@ the pydantic.dev `pydantic-visual-identity` skill's `brand-identity.md`.
 | `plugins.py` | `PluginHost`, hook names, event dataclasses |
 | `plugin_loader.py` | discovery, load, unload, reload; the `/plugins` subcommands |
 | `plugin_menu.py` | the `/plugins` full-screen menu (`PluginMenu` plus its runner) |
+| `ask_user_menu.py` | the built-in `ask_user` plugin: `QuestionMenu`, `TerminalAnswerer`, the transcript renderer |
+| `screen.py` | `Screen`, what `host.full_screen()` binds to during a prompt |
 | `field_menu.py` | the shared field editor (`FieldSource`, `FieldMenu`, `Runners`, `run_flow`) |
 | `set_menu.py` | `/set`: `SettingsSource` over `CommandContext` |
 | `model_menu.py` | `/model`: the picker, `ModelSettingsSource`, `run_model_flow` |

@@ -1,6 +1,7 @@
 """Everything a plugin can register, recorded on one host per plugin."""
 
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from typing import Generic, Literal, Never, TypeVar, get_args, overload
 
@@ -100,6 +101,15 @@ HostEvent = SessionStart | SessionEnd | TurnStart | TurnEnd
 HostEventT = TypeVar('HostEventT', bound=HostEvent)
 HostHandler = Callable[[HostEventT], Awaitable[None]]
 Renderer = Callable[[EventT], RenderableType | None]
+FullScreen = Callable[[], AbstractAsyncContextManager[None]]
+"""Enter it to own the whole terminal for a widget while the agent runs; see `PluginHost.full_screen`."""
+
+
+@asynccontextmanager
+async def bare_screen() -> AsyncGenerator[None]:
+    """The `FullScreen` of a host with no shell around it: nothing is streaming, so nothing to pause."""
+    yield
+
 
 HostHookName = Literal['session_start', 'session_end', 'turn_start', 'turn_end']
 CoreHookName = Literal[
@@ -149,10 +159,19 @@ CORE_HOOK_NAMES: frozenset[str] = frozenset(get_args(CoreHookName))
 class PluginHost(Generic[DepsT]):
     """The one object a plugin talks to. Discarding the host unloads the plugin."""
 
-    def __init__(self, *, name: str, console: Console, settings: dict[str, JsonValue]) -> None:
+    def __init__(
+        self, *, name: str, console: Console, settings: dict[str, JsonValue], full_screen: FullScreen = bare_screen
+    ) -> None:
         """`settings` is the raw JSON from `plugins add`; validate it with `settings(Model)`."""
         self.name = name
         self.console = console
+        self.full_screen = full_screen
+        """Own the whole terminal for a widget mid-run.
+
+        `async with host.full_screen():` flushes streamed output and pauses the status row until
+        the block exits, so a full-screen menu opened from inside a tool call draws on a settled
+        screen. Between turns it is a no-op.
+        """
         self.commands = Commands()
         self._settings = settings
         self._hooks: Hooks[DepsT] = Hooks()

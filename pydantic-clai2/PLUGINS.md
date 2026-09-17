@@ -64,7 +64,7 @@ which can retain globals removed from source; initialize plugin state explicitly
 
 Plugins are trusted code running as you. Only install what you trust.
 
-## The built-in plugin
+## The built-in plugins
 
 The coding tools are a plugin too. `/plugins list` shows `coder`, backed by
 `pydantic_ai_harness.coder:Coder`, marked `(built-in)` and enabled unless you
@@ -77,6 +77,51 @@ own declaration under the same name and it takes the built-in's place:
 ```text
 /plugins add coder pydantic_ai_harness.coder:Coder '{"unrestricted_filesystem": false}'
 ```
+
+### `ask_user`: questions answered from the terminal
+
+The second built-in, `ask_user` (`pydantic_clai2.ask_user_menu:activate`), gives
+the model the harness's `AskUser` capability: one tool, `ask_user_question`, for
+asking you one to ten multiple-choice questions when the task is ambiguous. Each
+question opens a full-screen menu on the alternate screen: the options are the
+rows, the right-hand panel shows the question and what the highlighted option
+means, the title says `question 2 of 3` when there are several. Enter picks;
+Space toggles on multi-select questions; Esc or Ctrl-C declines, which tells the
+model you declined and lets the run continue. Streaming output is flushed and the
+status row paused before the menu opens, and what you picked is printed to the
+transcript afterwards. `/plugins disable ask_user` takes the tool away.
+
+The capability does not know it is in a terminal. It hands an `AskUserRequest`
+to an `Answerer` (one async callable returning an `AskUserResponse`) and waits.
+To answer questions somewhere else, a web page or a chat bridge, say, replace
+the built-in with your own plugin under the same name that constructs `AskUser`
+with a different answerer:
+
+```python
+from pydantic_ai_harness.ask_user import AskUser, AskUserAnswer, AskUserRequest, AskUserResponse
+
+from pydantic_clai2.plugins import PluginHost
+
+
+async def ask_over_http(request: AskUserRequest) -> AskUserResponse:
+    # POST request.questions to your front end, keyed by request.id, and wait
+    # for the reply; return AskUserResponse(cancelled=True) if the user dismisses it.
+    picks = [AskUserAnswer(header=q.header, selected=(q.options[0].label,)) for q in request.questions]
+    return AskUserResponse(answers=tuple(picks))
+
+
+def activate(host: PluginHost[None]) -> None:
+    host.add(AskUser(answerer=ask_over_http))
+```
+
+```text
+/plugins add ask_user my_ask_user
+```
+
+The request and its response are also emitted as `AskUserRequestedEvent` and
+`AskUserAnsweredEvent`, so a plugin that only wants to watch (log the question,
+show a "waiting for you" state) registers `@host.on(EventClass)` or
+`@host.render(EventClass)` without being the answerer.
 
 ## Managing plugins
 
@@ -295,6 +340,25 @@ def activate(host: PluginHost[None]) -> None:
 
 CLAI flushes any streaming text before it prints what you return, so your output
 never lands in the middle of a paragraph.
+
+### Take the whole screen mid-run: `async with host.full_screen()`
+
+A full-screen widget opened from inside a tool call (the built-in `ask_user` menu
+is one) has to wait for streamed text to finish and the status row to get out of
+the way, or it draws over half a paragraph and the footer keeps repainting into
+it. `host.full_screen()` does both and undoes them when the block exits:
+
+```python
+from pydantic_clai2.plugins import PluginHost
+
+
+async def choose(host: PluginHost[None]) -> str:
+    async with host.full_screen():
+        return await show_my_menu()
+```
+
+Between turns nothing is streaming, so it is a no-op there. It only settles the
+screen; drawing, and restoring the terminal afterwards, is the widget's job.
 
 ### Read your settings: `host.settings(Model)`
 

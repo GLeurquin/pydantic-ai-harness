@@ -1,7 +1,8 @@
 """Interactive terminal shell around a capability-independent session."""
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from typing import Generic, TypeVar
 
@@ -30,6 +31,7 @@ from .model_menu import open_model_menu
 from .plugin_loader import PluginError, PluginLoader
 from .plugin_menu import open_plugins_menu
 from .plugins import Renderer, SessionEndReason, SessionStart, TurnEnd, TurnStart
+from .screen import Screen
 from .set_menu import open_settings_menu
 from .settings_store import SettingsStore
 from .status import Status, StatusLine
@@ -41,6 +43,7 @@ _PLUGIN_ACTIONS = ('list', 'add', 'enable', 'disable', 'remove', 'reload')
 
 DEFAULT_PLUGINS: tuple[PluginSettings, ...] = (
     PluginSettings(id='coder', factory='pydantic_ai_harness.coder:Coder', settings={'unrestricted_filesystem': True}),
+    PluginSettings(id='ask_user', factory='pydantic_clai2.ask_user_menu:activate'),
 )
 """Plugins CLAI ships enabled. `/plugins disable coder` turns the coding tools off; `remove` restores this."""
 
@@ -137,12 +140,14 @@ async def chat(
             complete=config_completions,
         )
     )
+    screen = Screen()
     loader: PluginLoader[DepsT] = PluginLoader(
         store=store,
         console=console,
         commands=commands,
         session_start=lambda: SessionStart(agent=agent, settings=context.settings),
         builtin=builtin_plugins,
+        full_screen=screen.full,
     )
     commands.register(
         Command(
@@ -175,6 +180,7 @@ async def chat(
         status=status,
         prompt=prompt,
         interrupts=Interrupts(),
+        screen=screen,
     )
     reason: SessionEndReason = 'error'
     try:
@@ -199,6 +205,7 @@ class _Shell(Generic[DepsT, OutputT]):
     status: Status
     prompt: PromptSession[str]
     interrupts: Interrupts
+    screen: Screen
 
     async def run(self) -> SessionEndReason:
         while True:
@@ -257,6 +264,7 @@ class _Shell(Generic[DepsT, OutputT]):
                 settings=self.context.settings,
                 status=self.status,
                 renderers=self.loader.renderers(),
+                screen=self.screen,
             )
 
         completed = await self.interrupts.run(run_prompt())
@@ -301,7 +309,8 @@ async def _run_prompt(
     console: Console,
     settings: Settings,
     status: Status,
-    renderers: Sequence[Renderer[AgentStreamEvent]] = (),
+    renderers: Sequence[Renderer[AgentStreamEvent]],
+    screen: Screen,
 ) -> TurnEnd:
     renderer = StreamRenderer(
         console,
@@ -325,10 +334,19 @@ async def _run_prompt(
 
     session.on_context_usage = context_usage
     session.on_stream_event = observe
+    status_line = StatusLine(console, status)
+
+    @asynccontextmanager
+    async def take_screen() -> AsyncGenerator[None]:
+        await renderer.finish()
+        async with status_line.paused():
+            yield
+
     try:
-        async with StatusLine(console, status):
-            result = await session.prompt(text)
-            await renderer.finish()
+        with screen.bound(take_screen):
+            async with status_line:
+                result = await session.prompt(text)
+                await renderer.finish()
         status.output_tokens = result.usage.output_tokens
         for message in reversed(result.all_messages()):  # pragma: no branch -- successful runs contain a response.
             if isinstance(message, ModelResponse):

@@ -18,7 +18,18 @@ from rich.console import Console
 from . import theme
 from .commands import Commands, plugins_command
 from .config import PluginSettings
-from .plugins import DepsT, HostEvent, PluginHost, Renderer, SessionEnd, SessionEndReason, SessionStart, TurnStart
+from .plugins import (
+    DepsT,
+    FullScreen,
+    HostEvent,
+    PluginHost,
+    Renderer,
+    SessionEnd,
+    SessionEndReason,
+    SessionStart,
+    TurnStart,
+    bare_screen,
+)
 from .settings_store import SettingsStore
 
 _FOLDER_PACKAGE = 'pydantic_clai2_plugins'
@@ -77,12 +88,17 @@ class PluginLoader(Generic[DepsT]):
         commands: Commands,
         session_start: Callable[[], SessionStart],
         builtin: Sequence[PluginSettings] = (),
+        full_screen: FullScreen = bare_screen,
     ) -> None:
-        """`builtin` declarations ship with CLAI and are on unless the store says otherwise."""
+        """`builtin` declarations ship with CLAI and are on unless the store says otherwise.
+
+        `full_screen` is handed to every host; the shell binds it to the live renderer per prompt.
+        """
         self._store = store
         self._console = console
         self._commands = commands
         self._session_start = session_start
+        self._full_screen = full_screen
         self._builtin = {declaration.id: declaration for declaration in builtin}
         self._entries: dict[str, PluginEntry[DepsT]] = {}
         self._loaded: dict[str, PluginHost[DepsT]] = {}
@@ -165,7 +181,9 @@ class PluginLoader(Generic[DepsT]):
         entry = self._entry(name)
         if entry.host is not None:
             return
-        host = PluginHost[DepsT](name=name, console=self._console, settings=entry.declaration.settings)
+        host = PluginHost[DepsT](
+            name=name, console=self._console, settings=entry.declaration.settings, full_screen=self._full_screen
+        )
         try:
             module = self._import(entry, fresh=fresh)
             _activate(module, entry.declaration, host)
