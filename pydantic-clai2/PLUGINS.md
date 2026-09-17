@@ -66,18 +66,26 @@ which can retain globals removed from source; initialize plugin state explicitly
 
 Plugins are trusted code running as you. Only install what you trust.
 
-## The built-in plugin
+## The built-in plugins
 
-The coding tools are a plugin too. `/plugins list` shows `coder`, backed by
-`pydantic_ai_harness.coder:Coder`, marked `(built-in)` and enabled unless you
-say otherwise. `/plugins disable coder` gives you a chat-only CLAI (a
-writing or research setup with `ExaSearch` instead, say); `/plugins enable
-coder` brings the tools back; `/plugins remove coder` cannot forget a built-in,
-so it resets it to its defaults. To run `Coder` with different options, add your
-own declaration under the same name and it takes the built-in's place:
+The coding tools and session saving are plugins too. `/plugins list` shows
+them marked `(built-in)`, enabled unless you say otherwise:
+
+| Name | Factory | Settings | Adds |
+|---|---|---|---|
+| `coder` | `pydantic_ai_harness.coder:Coder` | `{"unrestricted_filesystem": true}` | the file, shell, and search tools |
+| `persistence` | `pydantic_clai2.persistence:activate` | `{"database": null}` (`sessions.db` in the config directory) | harness `StepPersistence` over a `SqliteStepStore`; `/resume` and `/sessions` read it |
+
+`/plugins disable coder` gives you a chat-only CLAI (a writing or research
+setup with `ExaSearch` instead, say); `/plugins disable persistence` stops
+saving turns, and `/resume` and `/sessions` say so. `enable` brings either
+back; `remove` cannot forget a built-in, so it resets it to its defaults. To
+run one with different options, add your own declaration under the same name
+and it takes the built-in's place:
 
 ```text
 /plugins add coder pydantic_ai_harness.coder:Coder '{"unrestricted_filesystem": false}'
+/plugins add persistence pydantic_clai2.persistence:activate '{"database": "/srv/clai/sessions.db"}'
 ```
 
 ## Managing plugins

@@ -29,8 +29,47 @@ to `config.db`: `$XDG_CONFIG_HOME/pydantic-clai2/input-history`, or
 `~/.config/pydantic-clai2/input-history` by default. On POSIX the file is restricted
 to its owner (mode 0600). Avoid entering secrets in the prompt: input history is
 not encrypted. Delete this file while CLAI is closed to clear saved input.
-`/new` clears model conversation history, not input recall. Model responses and
-tool results are not saved to this file.
+`/new` starts a new session, not input recall. Model responses and tool results
+are not saved to this file; they go to the session store described next.
+
+## Sessions
+
+Every conversation is a session, saved by the built-in `persistence` plugin
+through the harness `StepPersistence` capability into
+`$XDG_CONFIG_HOME/pydantic-clai2/sessions.db`. The capability writes a
+snapshot of the history at every settled point of a turn (after each model
+response and each tool result) and when a turn fails or is cancelled, so
+quitting or crashing loses at most the step in flight. A turn cut off before
+the model replied is not saved. A session belongs to the directory CLAI was
+launched in, so `/resume` in one project does not list another project's
+conversations.
+
+```text
+clai2 --resume          continue the newest session for this directory
+clai2 --resume ID       continue one session by id
+/resume                 pick a recent session from a menu
+/resume ID              continue one session by id
+/sessions               browse, rename (R), and delete (D) saved sessions
+/new                    start a new session
+```
+
+An id is the conversation's UUID; a unique prefix is enough. Resuming by id
+works from any directory. The menu lists the newest 20 sessions for this
+directory with the start of their id, last activity, and title or first
+prompt. The panel on the right shows the first prompt and the last reply.
+Enter continues the highlighted session for the next prompt; the whole
+message history is sent to the model again. Esc closes. In `/sessions`, `R`
+opens a title editor (an empty title clears it) and `D` deletes immediately.
+Deleting the active session starts a new one. A session whose only turn was
+cancelled before a reply shows as `(no saved turns)`: it cannot be resumed
+but `/sessions` can delete it.
+
+Messages are stored as plaintext JSON, including tool results and file
+contents the model saw. Delete sessions you do not want kept on disk, or
+`/plugins disable persistence` to stop saving; `/resume` and `/sessions`
+then say so. `/plugins add persistence pydantic_clai2.persistence:activate
+'{"database": "/path/to/other.db"}'` moves the store. The same file works
+with any other `StepStore` reader, and the harness docs describe the schema.
 
 ## CI coverage
 
@@ -103,9 +142,10 @@ an awaitable string.
 
 Preferences live in `$XDG_CONFIG_HOME/pydantic-clai2/config.db`, falling back to
 `~/.config/pydantic-clai2/config.db`. Use `--database PATH` to select another database.
-There is no automatic repository config loading. Conversation messages and CLAI's
-Codex tokens are not written to the settings database. Plugin settings are arbitrary
-JSON stored in plaintext in this database, including secrets if you put them there.
+There is no automatic repository config loading. CLAI's Codex tokens are not
+written to this database, and conversation messages go to `sessions.db` next to
+it (see [Sessions](#sessions)). Plugin settings are arbitrary JSON stored in
+plaintext in this database, including secrets if you put them there.
 Pass secret references or use plugin-owned credential storage instead of embedding keys.
 
 ```text
@@ -159,7 +199,8 @@ Settings are validated before writes. `/set` updates the active settings snapsho
 legacy `/config` writes apply on restart; plugin changes apply on the next prompt.
 `--request-limit` controls the full prompt's model-request budget.
 
-Interactive commands: `/login`, `/set`, `/model`, `/help`, `/new`, `/exit`, `/config`, and `/plugins`.
+Interactive commands: `/login`, `/set`, `/model`, `/help`, `/new`, `/resume`,
+`/sessions`, `/exit`, `/config`, and `/plugins`.
 Tab completion suggests commands, settings, boolean values, plugin identifiers,
 and paths after `@`. Path completion inserts a path; it does not attach file contents.
 Unknown slash commands are not sent to the model. Up/down recall saved prompt
@@ -200,8 +241,9 @@ API. Call `await session.prompt(text)` for each turn. Native `agent.run` drives 
 loop through tools to completion. Successful turns retain `result.all_messages()`;
 cancelled turns retain the prompt and messages captured by Pydantic AI, including
 interrupted responses and tool results. Failed turns leave the previous history
-intact. External tool side effects may already have occurred. History is in memory
-only. Structured outputs are supported and displayed after completion.
+intact. External tool side effects may already have occurred. `Session` keeps
+history in memory only; the interactive shell is what writes it to the session
+store. Structured outputs are supported and displayed after completion.
 
 CLAI is painted in the Pydantic brand palette: Lithium magenta for headings,
 the banner, and the thing to look at; Calcium for list markers and errors; Aqua

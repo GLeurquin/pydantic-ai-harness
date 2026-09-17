@@ -75,7 +75,7 @@ Plugins load and unload while CLAI runs. The rules that make that safe:
   (`agent.run(capabilities=...)`), so "active for the next prompt" is the
   natural unit; nothing rebuilds the agent.
 - **Built-ins are declarations, not code paths.** `DEFAULT_PLUGINS` in
-  `_app.py` lists what CLAI ships enabled (`coder`). The loader treats them
+  `_app.py` lists what CLAI ships enabled (`coder`, `persistence`). The loader treats them
   like drop-ins with the lowest precedence: a store declaration with the same
   id replaces one, `disable` persists an override, `remove` resets it. Do not
   special-case `Coder` anywhere else; the agent from `create_agent()` has no
@@ -162,7 +162,10 @@ the pydantic.dev `pydantic-visual-identity` skill's `brand-identity.md`.
 | `model_settings.py` | `ModelSettingsForm`, the editable subset of `ModelSettings` |
 | `commands.py` | `Command`, the registry, completion |
 | `config.py` | `Settings`, `PluginSettings` |
-| `settings_store.py` | the SQLite store under `$XDG_CONFIG_HOME/pydantic-clai2/` |
+| `settings_store.py` | the settings SQLite store; `config_dir()` is where CLAI's files live |
+| `persistence.py` | the built-in `persistence` plugin: harness `StepPersistence` over `SqliteStepStore`, runs tagged with `cwd` |
+| `sessions.py` | `Sessions`: list, resume, rename, delete conversations from the `StepStore`; `find_store` |
+| `session_menu.py` | `/resume` and `/sessions` menus (`SessionMenu`, `run_sessions_flow`) and the `/new`, `/resume`, `/sessions` commands |
 | `theme.py` | brand palette, colour roles, `sgr()` |
 
 Keep files concise - we don't need any 10,000 line files. Single responsibility.
