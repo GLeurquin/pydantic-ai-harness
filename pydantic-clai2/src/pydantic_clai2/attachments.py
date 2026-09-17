@@ -96,13 +96,14 @@ def _load(reference: str, path: Path) -> str | BinaryContent:
     if not path.is_file():
         raise ValueError('it is a directory' if path.is_dir() else 'no such file')
     media_type = IMAGE_MEDIA_TYPES.get(path.suffix.lower())
-    size = path.stat().st_size
     limit = MAX_TEXT_BYTES if media_type is None else MAX_IMAGE_BYTES
-    if size > limit:
-        raise ValueError(f'{size} bytes exceeds the {limit} byte limit')
+    with path.open('rb') as file:
+        data = file.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError(f'over the {limit} byte limit')
     if media_type is not None:
-        return BinaryContent(path.read_bytes(), media_type=media_type)
-    return _fenced(reference, path.read_text(encoding='utf-8'))
+        return BinaryContent(data, media_type=media_type)
+    return _fenced(reference, data.decode('utf-8'))
 
 
 def _fenced(reference: str, content: str) -> str:
