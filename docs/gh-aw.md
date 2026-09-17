@@ -331,12 +331,6 @@ file` step recomputes the frontmatter hash at run time and fails the run when th
 not match the source, so a stale or missing lock stops the workflow rather than running an
 old configuration.
 
-Every compile prints `Using experimental engine: Pydantic AI`. The engine definition
-declares itself experimental to gh-aw, which is a statement about this definition's
-interface with gh-aw rather than about Pydantic AI: the two projects are moving, and the
-definition is free to change how it bridges them. Pin the `imports:` ref to a tag or a SHA
-when that matters, as described above.
-
 Compiling this workflow for the first time prints a security-review warning listing
 `CODEX_API_KEY` and `OPENAI_API_KEY` as new restricted secrets. gh-aw records the secrets,
 actions and container images a lock uses in a `gh-aw-manifest` header and asks you to look
