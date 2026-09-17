@@ -74,7 +74,9 @@ class Session(Generic[DepsT, OutputT]):
             while self._steered:
                 # Steered text that missed the run's last model request gets its own run instead of being dropped.
                 # Usage carries over so the prompt's limits cover the follow-up too.
-                result = await self._run('\n\n'.join(self._drain_steered()), usage=result.usage)
+                follow_up = '\n\n'.join(self._steered)
+                self._steered.clear()
+                result = await self._run(follow_up, usage=result.usage)
             return result
         finally:
             self._running = False
@@ -92,11 +94,6 @@ class Session(Generic[DepsT, OutputT]):
         self._steered.append(text)
         self._flush_steered()
         return None
-
-    def _drain_steered(self) -> list[str]:
-        texts = list(self._steered)
-        self._steered.clear()
-        return texts
 
     def _flush_steered(self) -> None:
         """Enqueue held text once the run has handed over a context that accepts it.
