@@ -71,9 +71,12 @@ class Plugin:
         return self.output.getvalue()
 
 
-def write(content: str) -> Callable[[Path], None]:
+def write(content: str | bytes) -> Callable[[Path], None]:
     def apply(path: Path) -> None:
-        path.write_text(content)
+        if isinstance(content, bytes):
+            path.write_bytes(content)
+        else:
+            path.write_text(content)
 
     return apply
 
@@ -161,11 +164,62 @@ async def test_unannounced_and_unapplied_changes(tmp_path: Path) -> None:
     assert '<outside-workspace>' not in plugin.command('/diff')
 
 
-def test_unified_diff_labels_missing_files_and_ledger_is_keyed_by_resolved_path(tmp_path: Path) -> None:
+def test_unified_diff_keeps_byte_level_changes_visible() -> None:
     assert unified_diff(None, None, label='x') == ''
+    assert unified_diff('a\n', 'a\n', label='x') == ''
     assert unified_diff('a\n', None, label='x').startswith('--- a/x\n+++ /dev/null\n')
     assert unified_diff('a\n', 'b\n', label='/abs/x').startswith('--- /abs/x\n+++ /abs/x\n')
+    assert unified_diff(None, '', label='x') == '--- /dev/null\n+++ b/x'
+    assert unified_diff('', None, label='x') == '--- a/x\n+++ /dev/null'
+    assert unified_diff('a\n', 'a', label='x').endswith('-a\n+a\n\\ No newline at end of file')
+    assert unified_diff('a\r\n', 'a\n', label='x').endswith('-a\r\n+a')
+    assert '-\udcff\n+\ufffd' in unified_diff('\udcff\n', '\ufffd\n', label='x')
+
+
+async def test_undecodable_bytes_and_line_endings_are_diffed_as_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    plugin = Plugin(tmp_path)
+    (tmp_path / 'raw.bin').write_bytes(b'\xff\n')
+    (tmp_path / 'crlf.txt').write_bytes(b'a\r\nb\r\n')
+    (tmp_path / 'empty.txt').write_text('')
+    await plugin.change('raw.bin', write('\ufffd\n'))
+    await plugin.change('crlf.txt', write(b'a\nb\n'))
+    await plugin.change('empty.txt', remove)
+    await plugin.change('blank.txt', write(''))
+    text = plugin.command('/diff')
+    assert '-\\xdcff\n+\ufffd\n' in text
+    assert '-a\\x0d\n-b\\x0d\n+a\n+b\n' in text
+    assert '--- a/empty.txt\n+++ /dev/null\n' in text
+    assert '--- /dev/null\n+++ b/blank.txt\n' in text
+    assert 'empty.txt  +0 -0' in plugin.command('/diff --stat')
+
+
+async def test_a_file_that_cannot_be_read_now_is_reported_not_hidden(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    plugin = Plugin(tmp_path)
+    (tmp_path / 'swapped').write_text('text\n')
+    await plugin.change('swapped', write('more\n'))
+    await plugin.change('fine.txt', write('ok\n'))
+    (tmp_path / 'swapped').unlink()
+    (tmp_path / 'swapped').mkdir()
+    text = plugin.command('/diff')
+    assert text.startswith('swapped: cannot read it now (')
+    assert '+ok' in text and '+++ /dev/null' not in text
+    assert '1 files changed' in plugin.command('/diff --stat')
+    assert plugin.command('/diff swapped').startswith('swapped: cannot read it now (')
+    assert plugin.command('/diff --stat swapped').startswith('swapped: cannot read it now (')
+
+
+def test_ledger_skips_paths_without_a_readable_baseline_and_is_keyed_by_resolved_path(tmp_path: Path) -> None:
     ledger = SessionDiff()
+    (tmp_path / 'dir').mkdir()
+    ledger.announce(tmp_path / 'dir')
+    ledger.commit(tmp_path / 'dir')
+    assert ledger.paths == []
     (tmp_path / 'f.txt').write_text('1\n')
     ledger.announce(tmp_path / 'sub' / '..' / 'f.txt')
     ledger.announce(tmp_path / 'f.txt')

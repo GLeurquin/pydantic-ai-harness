@@ -17,13 +17,20 @@ from .tool_output import print_diff
 
 _USAGE = 'Usage: /diff [--stat] [PATH]'
 _ABSENT = '/dev/null'
+_NO_NEWLINE = '\\ No newline at end of file'
 
 
 def _read(path: Path) -> str | None:
-    """The file's text, or `None` when there is no readable file there."""
+    """The file's text with bytes and line endings intact, or `None` when nothing exists at `path`.
+
+    Undecodable bytes survive as surrogates so they never collide with a real
+    replacement character. A path that exists but cannot be read raises
+    `OSError`, so a permission error is not mistaken for a deletion.
+    """
     try:
-        return path.read_text(encoding='utf-8', errors='replace')
-    except OSError:
+        with path.open(encoding='utf-8', errors='surrogateescape', newline='') as file:
+            return file.read()
+    except (FileNotFoundError, NotADirectoryError):
         return None
 
 
@@ -37,21 +44,45 @@ def _label(path: Path) -> str:
 
 @dataclass(kw_only=True)
 class FileDiff:
-    """One changed file: the diff from its first-seen content to what is on disk now."""
+    """One changed file: the diff from its first-seen content to what is on disk now, or why it has none."""
 
     label: str
-    diff: str
-    added: int
-    removed: int
+    diff: str = ''
+    added: int = 0
+    removed: int = 0
+    error: str | None = None
+
+
+def _lines(text: str) -> list[str]:
+    """Split on LF only, keeping it, so a CR or a missing final newline stays visible to the diff."""
+    lines = text.split('\n')
+    last = lines.pop()
+    return [f'{line}\n' for line in lines] + ([last] if last else [])
 
 
 def unified_diff(before: str | None, after: str | None, *, label: str) -> str:
-    """Unified diff between two texts; `None` on either side is a missing file, as `git diff` shows it."""
+    """Unified diff between two texts; `None` on either side is a missing file, as `git diff` shows it.
+
+    Mirrors the harness filesystem's private diff helper, which is not importable
+    from here: a final line without a newline gets git's marker, and an empty
+    file appearing or disappearing is the two headers alone.
+    """
+    if before == after:
+        return ''
     prefixed = not Path(label).is_absolute()
     old = _ABSENT if before is None else f'a/{label}' if prefixed else label
     new = _ABSENT if after is None else f'b/{label}' if prefixed else label
-    lines = difflib.unified_diff((before or '').splitlines(), (after or '').splitlines(), old, new, lineterm='')
-    return '\n'.join(lines)
+    out: list[str] = []
+    for index, line in enumerate(
+        difflib.unified_diff(_lines(before or ''), _lines(after or ''), old, new, lineterm='')
+    ):
+        if line.endswith('\n'):
+            out.append(line[:-1])
+        else:
+            out.append(line)
+            if index >= 2 and not line.startswith('@@'):
+                out.append(_NO_NEWLINE)
+    return '\n'.join(out) if out else f'--- {old}\n+++ {new}'
 
 
 class SessionDiff:
@@ -76,13 +107,24 @@ class SessionDiff:
         """A change is about to be applied; remember the content it starts from."""
         path = path.resolve()
         if path not in self._before and path not in self._pending:
-            self._pending[path] = _read(path)
+            self._record(self._pending, path)
 
     def commit(self, path: Path) -> None:
         """A change was applied; the announced content becomes the file's baseline."""
         path = path.resolve()
-        if path not in self._before:
-            self._before[path] = self._pending.pop(path) if path in self._pending else _read(path)
+        if path in self._before:
+            return
+        if path in self._pending:
+            self._before[path] = self._pending.pop(path)
+        else:
+            self._record(self._before, path)
+
+    def _record(self, ledger: dict[Path, str | None], path: Path) -> None:
+        """A path that exists but cannot be read has no usable baseline, so it is not tracked."""
+        try:
+            ledger[path] = _read(path)
+        except OSError:
+            return
 
     def discard_pending(self) -> None:
         """Forget announced changes that were never applied."""
@@ -100,7 +142,11 @@ class SessionDiff:
             if path not in self._before:
                 continue
             label = _label(path)
-            diff = unified_diff(self._before[path], _read(path), label=label)
+            try:
+                diff = unified_diff(self._before[path], _read(path), label=label)
+            except OSError as exc:
+                yield FileDiff(label=label, error=str(exc))
+                continue
             if not diff:
                 continue
             body = diff.splitlines()[2:]
@@ -133,11 +179,15 @@ def _print_stat(console: Console, changes: list[FileDiff]) -> None:
 def print_changes(console: Console, *, ledger: SessionDiff, args: list[str]) -> None:
     """Back `/diff`: every changed file, one file, or the `--stat` summary."""
     stat, only = _parse(args)
-    changes = list(ledger.changes(only))
-    if not changes:
+    found = list(ledger.changes(only))
+    changes = [change for change in found if change.error is None]
+    for change in found:
+        if change.error is not None:
+            console.print(f'{change.label}: cannot read it now ({change.error})', style=theme.MUTED, markup=False)
+    if not found:
         what = f'No changes to {only.as_posix()} this conversation.' if only else 'No files changed this conversation.'
         console.print(what, style=theme.MUTED, markup=False)
-    elif stat:
+    elif changes and stat:
         _print_stat(console, changes)
     else:
         for change in changes:
