@@ -135,15 +135,21 @@ async def test_one_path_and_a_reverted_file(tmp_path: Path, monkeypatch: pytest.
     await plugin.change('keep.txt', write('same\n'))
     assert 'keep.txt' not in plugin.command('/diff')
     assert plugin.command('/diff keep.txt') == 'No changes to keep.txt this conversation.\n'
+    assert plugin.command('/diff \x1bnope') == 'No changes to \\x1bnope this conversation.\n'
 
+
+@pytest.mark.skipif(os.name == 'nt', reason='control characters are invalid in Windows filenames')
+async def test_filenames_with_control_characters_are_shown_inert_on_one_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    plugin = Plugin(tmp_path)
     await plugin.change('\x1b]0;evil\x07.txt', write('x\n'))
     await plugin.change('safe\n+++ b\tc', write('y\n'))
-    for text in (plugin.command('/diff --stat'), plugin.command('/diff'), plugin.command('/diff \x1bnope')):
+    for text in (plugin.command('/diff --stat'), plugin.command('/diff')):
         assert '\x1b' not in text and '\x07' not in text and '\n+++ b\tc' not in text
-    assert plugin.command('/diff \x1bnope') == 'No changes to \\x1bnope this conversation.\n'
     stat = plugin.command('/diff --stat')
-    assert '\n\\x1b]0;evil\\x07.txt  +1 -0\n' in stat
-    assert '\nsafe\\n+++ b\\tc       +1 -0\n' in stat
+    assert stat.startswith('\\x1b]0;evil\\x07.txt  +1 -0\nsafe\\n+++ b\\tc       +1 -0\n')
     assert '--- /dev/null\n+++ b/safe\\n+++ b\\tc\n' in plugin.command('/diff')
 
 
