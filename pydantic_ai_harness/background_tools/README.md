@@ -108,9 +108,8 @@ The task ID matches the acknowledgment. The follow-up is user content, not anoth
 `ToolReturn.return_value` and `ToolReturn.content` remain model-visible, including multimodal
 content. Application-only `ToolReturn.metadata` and deferred tool names from `ToolReturn.tools` are
 not carried into the follow-up. Retries and deferred calls are reported as text failures. Expected
-tool errors include
-their message. Unexpected exceptions are logged for the application, while the model sees only
-their type. Running out of retries, or raising `CancelledError`, ends the run, as it would for a sequential tool. Call
+tool errors include their message. For unexpected exceptions, the model sees only the exception
+type because messages may contain private details. Running out of retries, or raising `CancelledError`, ends the run, as it would for a sequential tool. Call
 `ctx.cancel()` when a background tool needs to stop the run and all live background tasks.
 
 ## Execution behavior

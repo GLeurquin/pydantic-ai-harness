@@ -337,9 +337,7 @@ class TestBackgroundTools:
         )
         assert barrier_return.content == 'barrier result'
 
-    async def test_unexpected_error_is_logged_without_exposing_details_to_model(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    async def test_unexpected_error_reports_type_without_exposing_details_to_model(self) -> None:
         agent = Agent(_model_calling('broken'), capabilities=[BackgroundTools()])
 
         @agent.tool_plain(metadata={'background': True})
@@ -350,8 +348,6 @@ class TestBackgroundTools:
 
         assert _follow_up_seen(result.all_messages(), 'failed: RuntimeError')
         assert not _follow_up_seen(result.all_messages(), 'private backend detail')
-        assert 'Background tool broken failed' in caplog.text
-        assert 'private backend detail' in caplog.text
 
     async def test_run_stream_waits_for_live_task_then_drops_its_result(self) -> None:
         started = asyncio.Event()

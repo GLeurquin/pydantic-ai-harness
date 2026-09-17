@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import math
 from collections.abc import Iterator, Sequence
 from contextlib import suppress
@@ -53,9 +52,6 @@ _RUN_IN_BACKGROUND = 'run_in_background'
 def _instructions(ctx: RunContext[Any]) -> str | None:
     # Realtime sessions run tools concurrently already; see `_background_mode`.
     return None if ctx.realtime else _INSTRUCTIONS
-
-
-logger = logging.getLogger(__name__)
 
 
 def _with_run_in_background(tool_def: ToolDefinition) -> ToolDefinition:
@@ -286,8 +282,7 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
                     # The retry budget ran out: it ends the run, as it would for a sequential tool.
                     outcome = e
                 except Exception as e:
-                    # Unexpected errors are logged in full; the model only learns the type.
-                    logger.exception('Background tool %s failed', tool_name)
+                    # Exception messages can contain private details, so the model only learns the type.
                     outcome = (f"Background tool '{tool_name}' (task {task_id}) failed: {type(e).__name__}",)
                 except BaseException as e:
                     outcome = e
