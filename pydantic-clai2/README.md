@@ -332,8 +332,8 @@ The footer is the prompt's bottom toolbar, so it stays on screen while a turn
 runs and while you type. It refreshes ten times a second; while a turn runs its
 text shimmers with a moving highlight, with no spinner, and it shows how many
 queued lines are waiting. Prompt-toolkit maps the brand colours to the terminal's
-colour depth and shows control characters in caret notation. There is no footer
-for redirected output. No model requests or telemetry are added for status
+colour depth. Control characters in tool names are replaced before they reach
+the row. There is no footer for redirected output. No model requests or telemetry are added for status
 reporting.
 
 ## Plugins
