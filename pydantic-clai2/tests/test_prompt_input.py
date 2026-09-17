@@ -94,7 +94,7 @@ def test_resolve_references(tmp_path: Path) -> None:
     (tmp_path / 'binary.dat').write_bytes(b'\xff\xfe\x00')
     (tmp_path / 'big.txt').write_bytes(b'x' * (MAX_ATTACHMENT_BYTES + 1))
     (tmp_path / 'sub').mkdir()
-    (tmp_path / 'my notes.md').write_text('spaced\n', encoding='utf-8')
+    (tmp_path / 'my notes.md').write_text('spaced  ', encoding='utf-8')
     attachments = Attachments(root=tmp_path, clipboard=FakeClipboard(None))
     plain = attachments.resolve('nothing to attach, mail me@example.com')
     assert plain.content == 'nothing to attach, mail me@example.com'
@@ -105,7 +105,7 @@ def test_resolve_references(tmp_path: Path) -> None:
     assert text == 'read (@shot.PNG), then @notes.md and @"my notes.md".'
     assert isinstance(image, BinaryContent) and image.media_type == 'image/png' and image.data == PNG
     assert block == 'notes.md:\n````\n# Notes\n```py\nprint(1)\n```\n````'
-    assert spaced == 'my notes.md:\n```\nspaced\n```'
+    assert spaced == 'my notes.md:\n```\nspaced  \n```'
     assert resolved.warnings == []
     problems = attachments.resolve('@missing.txt @sub @binary.dat @big.txt')
     assert problems.content == '@missing.txt @sub @binary.dat @big.txt'
