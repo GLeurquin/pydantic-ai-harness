@@ -14,7 +14,7 @@ from rich.text import Text
 from . import theme
 from .commands import Command
 from .plugins import DepsT, HistoryClear, PluginHost, TurnEnd
-from .tool_output import print_diff
+from .tool_output import print_diff, terminal_text
 
 _USAGE = 'Usage: /diff [--stat] [PATH]'
 _ABSENT = '/dev/null'
@@ -52,11 +52,11 @@ def _snapshot(path: Path) -> _Snapshot:
 
 
 def _label(path: Path) -> str:
-    """The path as the user would type it: relative to the working directory when it is inside it."""
+    """The path as the user would type it, relative to the working directory when inside it, made inert."""
     try:
-        return path.relative_to(Path.cwd()).as_posix()
+        return terminal_text(path.relative_to(Path.cwd()).as_posix())
     except ValueError:
-        return path.as_posix()
+        return terminal_text(path.as_posix())
 
 
 @dataclass(kw_only=True)
@@ -192,7 +192,7 @@ def print_changes(console: Console, *, ledger: SessionDiff, args: list[str]) -> 
         if change.error is not None:
             console.print(f'{change.label}: {change.error}', style=theme.MUTED, markup=False)
     if not found:
-        what = f'No changes to {only.as_posix()} this conversation.' if only else 'No files changed this conversation.'
+        what = f'No changes to {_label(only)} this conversation.' if only else 'No files changed this conversation.'
         console.print(what, style=theme.MUTED, markup=False)
     elif changes and stat:
         _print_stat(console, changes)

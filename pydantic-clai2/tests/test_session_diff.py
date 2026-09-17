@@ -135,6 +135,12 @@ async def test_one_path_and_a_reverted_file(tmp_path: Path, monkeypatch: pytest.
     assert 'keep.txt' not in plugin.command('/diff')
     assert plugin.command('/diff keep.txt') == 'No changes to keep.txt this conversation.\n'
 
+    await plugin.change('\x1b]0;evil\x07.txt', write('x\n'))
+    for text in (plugin.command('/diff --stat'), plugin.command('/diff'), plugin.command('/diff \x1bnope')):
+        assert '\x1b' not in text and '\x07' not in text
+    assert plugin.command('/diff \x1bnope') == 'No changes to \\x1bnope this conversation.\n'
+    assert '\n\\x1b]0;evil\\x07.txt  +1 -0\n' in plugin.command('/diff --stat')
+
 
 async def test_nothing_changed_unparseable_arguments_and_reset(tmp_path: Path) -> None:
     plugin = Plugin(tmp_path)
