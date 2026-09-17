@@ -6,8 +6,10 @@ import json
 import logging
 import os
 import re
+import shutil
 import sqlite3
 from collections import defaultdict
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
@@ -151,11 +153,34 @@ class StepStore(Protocol):
     `latest_snapshot` returns the newest snapshot whose `state` is
     `complete`; with `include_interrupted=True` it returns the newest
     snapshot regardless of state (see `SnapshotState`).
+
+    `update_run_metadata` and `delete_conversation` are the two mutations a
+    conversation catalogue needs on top of the append-only log: label a
+    dialogue after the fact, and forget one entirely.
     """
 
     async def register_run(self, record: RunRecord) -> None: ...  # pragma: no cover
 
     async def get_run(self, *, run_id: str) -> RunRecord | None: ...  # pragma: no cover
+
+    async def update_run_metadata(self, *, run_id: str, metadata: dict[str, str]) -> None:
+        """Replace the stored `RunRecord.metadata` for `run_id`.
+
+        The whole mapping is replaced, so a caller that wants to keep existing
+        keys reads the record first and passes the merged dict back. Raises
+        `LookupError` when no run has that id. Events already written keep
+        the metadata they were written with.
+        """
+        ...  # pragma: no cover
+
+    async def delete_conversation(self, *, conversation_id: str) -> None:
+        """Remove every run whose `conversation_id` matches, with its events, snapshots, and tool effects.
+
+        Idempotent: an unknown id removes nothing and does not raise.
+        Externalised media is content-addressed and may be shared with other
+        snapshots, so it is left in place.
+        """
+        ...  # pragma: no cover
 
     async def list_runs(
         self,
@@ -211,6 +236,21 @@ class InMemoryStepStore:
 
     async def get_run(self, *, run_id: str) -> RunRecord | None:
         return self._runs.get(run_id)
+
+    async def update_run_metadata(self, *, run_id: str, metadata: dict[str, str]) -> None:
+        record = self._runs.get(run_id)
+        if record is None:
+            raise LookupError(f'no run with id {run_id!r}')
+        self._runs[run_id] = replace(record, metadata=dict(metadata))
+
+    async def delete_conversation(self, *, conversation_id: str) -> None:
+        for run_id in [r.run_id for r in self._runs.values() if r.conversation_id == conversation_id]:
+            del self._runs[run_id]
+            self._events.pop(run_id, None)
+            self._snapshots.pop(run_id, None)
+            self._snapshot_key_high_water.pop(run_id, None)
+            for key in [key for key in self._tool_effects if key[0] == run_id]:
+                del self._tool_effects[key]
 
     async def list_runs(
         self,
@@ -541,6 +581,23 @@ class FileStepStore:
         if not path.exists():
             return None
         return _run_from_dict(_load_json_object(path.read_text(encoding='utf-8')))
+
+    async def update_run_metadata(self, *, run_id: str, metadata: dict[str, str]) -> None:
+        await anyio.to_thread.run_sync(self._sync_update_run_metadata, run_id, metadata)
+
+    def _sync_update_run_metadata(self, run_id: str, metadata: dict[str, str]) -> None:
+        record = self._sync_get_run(run_id)
+        if record is None:
+            raise LookupError(f'no run with id {run_id!r}')
+        updated = replace(record, metadata=dict(metadata))
+        _atomic_write_text(self._run_dir(run_id) / 'run.json', json.dumps(_run_to_dict(updated)))
+
+    async def delete_conversation(self, *, conversation_id: str) -> None:
+        await anyio.to_thread.run_sync(self._sync_delete_conversation, conversation_id)
+
+    def _sync_delete_conversation(self, conversation_id: str) -> None:
+        for record in self._sync_list_runs(None, conversation_id):
+            shutil.rmtree(self._run_dir(record.run_id))
 
     async def list_runs(
         self,
@@ -1133,6 +1190,34 @@ class SqliteStepStore:
         if row is None:
             return None
         return _run_from_row(row)
+
+    async def update_run_metadata(self, *, run_id: str, metadata: dict[str, str]) -> None:
+        await anyio.to_thread.run_sync(self._sync_update_run_metadata, run_id, metadata)
+
+    def _sync_update_run_metadata(self, run_id: str, metadata: dict[str, str]) -> None:
+        conn = self._open()
+        try:
+            self._ensure_schema(conn)
+            cursor = conn.execute('UPDATE runs SET metadata = ? WHERE run_id = ?', (json.dumps(dict(metadata)), run_id))
+        finally:
+            self._maybe_close(conn)
+        if cursor.rowcount == 0:
+            raise LookupError(f'no run with id {run_id!r}')
+
+    async def delete_conversation(self, *, conversation_id: str) -> None:
+        await anyio.to_thread.run_sync(self._sync_delete_conversation, conversation_id)
+
+    def _sync_delete_conversation(self, conversation_id: str) -> None:
+        conn = self._open()
+        try:
+            self._ensure_schema(conn)
+            # Child rows first, keyed on the runs about to go, then the runs themselves.
+            where = 'run_id IN (SELECT run_id FROM runs WHERE conversation_id = ?)'
+            for table in ('events', 'snapshots', 'snapshot_idempotency_keys', 'tool_effects'):
+                conn.execute(f'DELETE FROM {table} WHERE {where}', (conversation_id,))
+            conn.execute('DELETE FROM runs WHERE conversation_id = ?', (conversation_id,))
+        finally:
+            self._maybe_close(conn)
 
     async def list_runs(
         self,

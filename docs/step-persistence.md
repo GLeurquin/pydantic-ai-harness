@@ -242,6 +242,33 @@ async def main():
 asyncio.run(main())
 ```
 
+## Cataloguing conversations
+
+A user-facing list of past dialogues (a chat shell's "resume" picker, say) is `list_runs()` grouped by `conversation_id`. The first run in a group carries whatever the capability's `metadata` said when the dialogue started, and the last run's `latest_snapshot` is where it left off. Two store methods cover the edits such a catalogue needs on top of the append-only log:
+
+```python
+import asyncio
+
+
+async def main():
+    turns = await store.list_runs(conversation_id='conv-abc')
+
+    # Label the dialogue after the fact. The whole mapping is replaced, so keep
+    # the keys you want. Raises LookupError for an unknown run id.
+    first = turns[0]
+    await store.update_run_metadata(run_id=first.run_id, metadata={**first.metadata, 'title': 'Auth refactor'})
+
+    # Forget the dialogue: every run in it, with its events, snapshots, and
+    # tool effects. Unknown ids are a no-op. Externalized media stays, since
+    # blobs are content-addressed and may be shared.
+    await store.delete_conversation(conversation_id='conv-abc')
+
+
+asyncio.run(main())
+```
+
+Events already written keep the metadata they were written with; `update_run_metadata` changes the `RunRecord` only.
+
 ## Failure recovery
 
 ```python

@@ -171,6 +171,20 @@ class MongoStepStore:
             return None
         return _run_from_dict(doc)
 
+    async def update_run_metadata(self, *, run_id: str, metadata: dict[str, str]) -> None:
+        result = await self._db['runs'].update_one({'_id': run_id}, {'$set': {'metadata': dict(metadata)}})
+        if result.matched_count == 0:
+            raise LookupError(f'no run with id {run_id!r}')
+
+    async def delete_conversation(self, *, conversation_id: str) -> None:
+        run_ids = [doc['_id'] async for doc in self._db['runs'].find({'conversation_id': conversation_id}, {'_id': 1})]
+        if not run_ids:
+            return
+        for name in ('events', 'snapshots', 'tool_effects'):
+            await self._db[name].delete_many({'run_id': {'$in': run_ids}})
+        await self._db['snapshot_idempotency_keys'].delete_many({'_id.run_id': {'$in': run_ids}})
+        await self._db['runs'].delete_many({'_id': {'$in': run_ids}})
+
     async def list_runs(
         self,
         *,

@@ -38,6 +38,7 @@ from pydantic_ai_harness.step_persistence import (
     StepPersistence,
     ToolEffectRecord,
 )
+from tests.step_persistence import _conversation_ops  # pyright: ignore[reportMissingTypeStubs]
 
 pytestmark = pytest.mark.anyio
 
@@ -168,6 +169,19 @@ class TestMongoStepStoreProtocol:
         assert {r.run_id for r in await store.list_runs(conversation_id='a')} == {'r1', 'r2'}
         assert {r.run_id for r in await store.list_runs(parent_run_id='p')} == {'r1', 'r3'}
         assert [r.run_id for r in await store.list_runs(parent_run_id='p', conversation_id='a')] == ['r1']
+
+    async def test_conversation_ops(self) -> None:
+        store = MongoStepStore(client=_mock_client(), database='t', media_store=None)
+        await _conversation_ops.exercise_conversation_ops(store)
+
+    async def test_delete_conversation_clears_snapshot_key_ledger(self) -> None:
+        client = _mock_client()
+        store = MongoStepStore(client=client, database='t', media_store=None)
+        await store.register_run(RunRecord(run_id='r1', conversation_id='a'))
+        await store.save_snapshot(ContinuableSnapshot(run_id='r1', step_index=1, messages=[], idempotency_key='k'))
+        await store.delete_conversation(conversation_id='a')
+        assert await client['t']['snapshot_idempotency_keys'].count_documents({}) == 0
+        assert await client['t']['snapshots'].count_documents({}) == 0
 
     async def test_list_runs_sorts_by_instant_not_iso_string(self) -> None:
         """Mixed-offset timestamps sort by instant, matching the base stores' contract.
