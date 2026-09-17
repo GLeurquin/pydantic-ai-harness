@@ -205,21 +205,15 @@ def _tokens(count: int | None) -> str:
     return f'{count:,} tokens' if count is not None else ''
 
 
-def run_model_flow(
-    menu: ModelMenu, runners: Runners = TERMINAL, *, connect: Callable[[], str] | None = None
-) -> list[str]:
+def run_model_flow(menu: ModelMenu, runners: Runners = TERMINAL, *, connect_provider: bool = False) -> list[str]:
     """Show the list; Enter picks and closes, `Ctrl+S` edits settings and returns to the list."""
     messages: list[str] = []
     while True:
         selection = runners.run_list(menu.build_providers())
         if selection.cancelled or selection.item is None or not isinstance(selection.item.value, str):
             return messages
-        if selection.item.value == 'openrouter' and connect is not None:
-            message = connect()
-            if message != 'Connection cancelled.':
-                messages.append(message)
-                return messages
-            continue
+        if selection.item.value == 'openrouter' and connect_provider:
+            raise _ConnectProvider
         provider_menu = menu.for_provider(selection.item.value)
         if _run_provider(provider_menu, runners, messages):
             return messages
@@ -244,11 +238,8 @@ def _run_provider(menu: ModelMenu, runners: Runners, messages: list[str]) -> boo
 async def open_model_menu(context: CommandContext, *, run: Callable[[ModelMenu], list[str]] | None = None) -> str:
     """Show the menu in a thread; the pick and any settings edits apply to the next prompt."""
 
-    def connect() -> str:
-        raise _ConnectProvider
-
     def flow(menu: ModelMenu) -> list[str]:
-        return run_model_flow(menu, connect=connect)
+        return run_model_flow(menu, connect_provider=True)
 
     while True:
         try:
