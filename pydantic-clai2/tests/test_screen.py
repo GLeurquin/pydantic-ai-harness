@@ -97,6 +97,24 @@ async def test_paused_status_line_releases_and_reserves_the_row() -> None:
     assert output.getvalue().endswith('\x1b[?25h')
 
 
+async def test_pausing_does_not_swallow_the_callers_own_cancellation() -> None:
+    output = io.StringIO()
+    console = Console(file=output, force_terminal=True, width=80, height=24)
+    async with StatusLine(console, Status()) as line:
+
+        async def pause() -> None:
+            async with line.paused():
+                raise AssertionError('the screen must not be handed over')  # pragma: no cover
+
+        pausing = asyncio.create_task(pause())
+        await asyncio.sleep(0)  # now waiting on the cancelled animation task
+        pausing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pausing
+    # The row was released for the pause and the cursor restored; exit finds nothing left to undo.
+    assert output.getvalue().count('\x1b[r') == 1 and output.getvalue().endswith('\x1b[?25h')
+
+
 async def test_paused_is_a_no_op_when_the_row_was_never_reserved() -> None:
     output = io.StringIO()
     async with StatusLine(Console(file=output, force_terminal=False), Status()) as line, line.paused():

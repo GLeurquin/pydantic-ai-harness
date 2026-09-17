@@ -61,6 +61,12 @@ class Status:
         return f'{frame} {self.model} | context: {context} tokens | {output} | {self.activity}'.strip()
 
 
+def _interrupted() -> bool:
+    """Whether the current task was itself cancelled while it waited on the animation task."""
+    current = asyncio.current_task()
+    return current is not None and current.cancelling() > 0
+
+
 class StatusLine:
     """Reserve the last row while a run owns the terminal; restore it on exit."""
 
@@ -102,6 +108,9 @@ class StatusLine:
             try:
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
+                if _interrupted():
+                    # The CancelledError was ours, not the animation's: Ctrl-C must still abort.
+                    raise asyncio.CancelledError
             finally:
                 # Forget the height so the next reserve sets the scroll region again.
                 height, self._height = self._height, 0
