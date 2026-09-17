@@ -9,10 +9,17 @@ from termflow.tui.completion import CompleteEvent as TermflowEvent  # pyright: i
 from termflow.tui.completion import Document as TermflowDocument  # pyright: ignore[reportMissingTypeStubs]
 
 from .commands import Commands
-from .theme import ELEMENT_PURPLE, GREY, LITHIUM, PURPLE
+from .theme import AI_CYAN, ELEMENT_PURPLE, GREY, LITHIUM, PURPLE
 
 COMPLETION_STYLE = Style.from_dict(
     {
+        'prompt.search': f'{PURPLE}',
+        'prompt.search.text': f'{LITHIUM} bold',
+        'search': f'bg:default {AI_CYAN}',
+        'search.current': f'bg:default {LITHIUM} bold',
+        'search-toolbar': f'bg:default {PURPLE}',
+        'search-toolbar.prompt': f'bg:default {PURPLE}',
+        'search-toolbar.text': f'bg:default {LITHIUM} bold',
         'bottom-toolbar': f'noreverse bg:default {PURPLE}',
         'bottom-toolbar.text': f'noreverse bg:default {PURPLE}',
         'completion-menu': 'bg:default',

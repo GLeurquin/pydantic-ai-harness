@@ -28,6 +28,9 @@ class Settings(BaseModel):
         allow_inf_nan=False,
         description='Catch-up window for smoothed response streaming, 0.1 to 5 seconds.',
     )
+    check_updates: bool = Field(
+        default=True, description='Ask PyPI once a day whether a newer pydantic-clai2 exists and say so at startup.'
+    )
 
 
 SETTING_FIELDS = {
@@ -38,6 +41,7 @@ SETTING_FIELDS = {
     'display.shell_lines': 'shell_lines',
     'display.grep_lines': 'grep_lines',
     'display.smooth_seconds': 'smooth_seconds',
+    'check_updates': 'check_updates',
 }
 
 

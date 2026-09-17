@@ -32,6 +32,7 @@ class SettingsStore:
             connection.execute(
                 'CREATE TABLE IF NOT EXISTS model_settings (model TEXT PRIMARY KEY, settings_json TEXT NOT NULL)'
             )
+            connection.execute('CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
             connection.execute('PRAGMA user_version = 1')
 
     @contextmanager
@@ -108,6 +109,19 @@ class SettingsStore:
                 'INSERT INTO model_settings VALUES (?, ?) '
                 'ON CONFLICT(model) DO UPDATE SET settings_json = excluded.settings_json',
                 (model, _JSON_OBJECT.dump_json(settings).decode()),
+            )
+
+    def state(self, key: str) -> str | None:
+        """Bookkeeping CLAI keeps for itself (last update check); not a user setting."""
+        with self._connect() as connection:
+            row = connection.execute('SELECT value FROM state WHERE key = ?', (key,)).fetchone()
+        return row[0] if row else None
+
+    def save_state(self, key: str, value: str) -> None:
+        """Record one bookkeeping value, replacing any previous one."""
+        with self._connect() as connection:
+            connection.execute(
+                'INSERT INTO state VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', (key, value)
             )
 
     @property

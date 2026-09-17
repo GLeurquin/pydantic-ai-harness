@@ -32,6 +32,30 @@ not encrypted. Delete this file while CLAI is closed to clear saved input.
 `/new` clears model conversation history, not input recall. Model responses and
 tool results are not saved to this file.
 
+Press Ctrl-R to search that history backwards, the same as in a shell: the
+prompt changes to `(reverse-i-search)`, type part of an earlier prompt, press
+Ctrl-R again for older matches, Enter to take the match, Ctrl-C to back out.
+
+## Screen, conversation, and export
+
+Three commands that are easy to mix up:
+
+- `/clear` wipes the terminal screen and scrollback. The model still remembers
+  everything; only your view is cleared.
+- `/new` starts a fresh conversation. The model forgets everything so far; the
+  screen is left alone.
+- `/export [PATH] [--force]` writes the conversation to a file and changes
+  nothing else.
+
+`/export` on its own writes `clai-session-<timestamp>.md` in the workspace.
+The Markdown holds a header (model, first and last message time, export time),
+every prompt, every answer, and each tool call with a one-line summary of its
+result. Thinking and system instructions are left out. A path ending in `.json`
+writes the messages in Pydantic AI's own format instead (core's
+`ModelMessagesTypeAdapter`, under a `messages` key next to `model` and
+`exported_at`), which includes everything. An existing file is never overwritten
+unless you add `--force`.
+
 ## CI coverage
 
 The `CLAI coverage` check combines branch coverage from Python 3.11 and 3.14
@@ -104,7 +128,15 @@ Pass secret references or use plugin-owned credential storage instead of embeddi
 /set model <Tab>
 /set display.thinking false
 /set run.request_limit 10000
+/set check_updates false
 ```
+
+Once a day, in the background, CLAI asks PyPI whether a newer `pydantic-clai2`
+exists. If one does, a single muted line under the banner says so:
+`pydantic-clai2 X.Y.Z is available (you have A.B.C): pip install -U pydantic-clai2`.
+The check has a three second timeout, never delays startup, and says nothing
+when the network is down. The time of the last check is kept in `config.db`.
+Set `check_updates` to `false` to turn it off; nothing is sent to PyPI then.
 
 `/set` on its own opens a full-screen menu, the same kind Code Puppy uses: the
 settings on the left, details for the highlighted one on the right (current

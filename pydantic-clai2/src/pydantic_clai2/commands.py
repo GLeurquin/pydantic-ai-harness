@@ -15,7 +15,7 @@ from termflow.tui.completion import (  # pyright: ignore[reportMissingTypeStubs]
     Document,
 )
 
-from .config import SETTING_FIELDS, PluginSettings
+from .config import SETTING_FIELDS, PluginSettings, Settings
 from .settings_store import SettingsStore
 
 
@@ -148,7 +148,11 @@ def set_completions(args: list[str]) -> Iterable[str]:
         names = known_model_names()
         providers = sorted({name.partition(':')[0] + ':' for name in names} | {'openai-codex:'})
         return (*providers, 'openai-codex:gpt-6-astra', *names)
-    if len(args) == 2 and args[0] in ('display.thinking', 'display.splash'):
+    if (
+        len(args) == 2
+        and args[0] in SETTING_FIELDS
+        and Settings.model_fields[SETTING_FIELDS[args[0]]].annotation is bool
+    ):
         return ('true', 'false')
     return ()
 

@@ -3,6 +3,8 @@
 import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from datetime import datetime
+from pathlib import Path
 from typing import Generic, TypeVar
 
 from prompt_toolkit import PromptSession
@@ -24,15 +26,18 @@ from .command_context import CommandContext, CommandProvider
 from .commands import Command, Commands, config_command, config_completions, set_completions
 from .config import PluginSettings, Settings
 from .customization import customization_guide
+from .export import export_session
 from .input_history import input_history
 from .interrupts import Interrupts
 from .model_menu import open_model_menu
 from .plugin_loader import PluginError, PluginLoader
 from .plugin_menu import open_plugins_menu
 from .plugins import Renderer, SessionEndReason, SessionStart, TurnEnd, TurnStart
+from .screen import clear_screen
 from .set_menu import open_settings_menu
 from .settings_store import SettingsStore
 from .status import Status, StatusLine
+from .updates import PyPI, check_for_update, installed_version
 
 DepsT = TypeVar('DepsT')
 OutputT = TypeVar('OutputT')
@@ -69,7 +74,10 @@ async def chat(
     console = console or Console()
     console.print()
     print_banner(console)
-    console.print('/new clears history; /exit quits. Ctrl-C interrupts a turn.', style=theme.MUTED)
+    console.print(
+        '/new starts over; /clear wipes the screen; /exit quits. Ctrl-C interrupts a turn; Ctrl-R searches input.',
+        style=theme.MUTED,
+    )
     settings = settings or Settings(model=None)
     store = store or SettingsStore()
     session = Session(agent, deps=deps, plugins=plugins, usage_limits=usage_limits)
@@ -124,8 +132,28 @@ async def chat(
     commands.register(
         Command(
             name='new',
-            description='Clear conversation history',
+            description='Start a new conversation; the model forgets everything so far',
             handler=lambda _: session.clear() or 'Conversation cleared.',
+        )
+    )
+    commands.register(
+        Command(
+            name='clear',
+            description='Clear the screen; the conversation is kept',
+            handler=lambda _: clear_screen(console),
+        )
+    )
+    commands.register(
+        Command(
+            name='export',
+            description='Save the conversation as Markdown, or JSON for a .json path: /export [PATH] [--force]',
+            handler=lambda args: export_session(
+                args,
+                messages=session.messages,
+                model=session.model or _model_label(agent),
+                workspace=Path.cwd(),
+                now=datetime.now().astimezone(),
+            ),
         )
     )
     commands.register(Command(name='exit', description='Quit CLAI', handler=lambda _: 'Goodbye.'))
@@ -177,11 +205,17 @@ async def chat(
         interrupts=Interrupts(),
     )
     reason: SessionEndReason = 'error'
+    update_check = asyncio.create_task(
+        check_for_update(
+            store=store, console=console, source=PyPI(), current=installed_version(), enabled=settings.check_updates
+        )
+    )
     try:
         async with agent:
             await loader.load_all()
             reason = await shell.run()
     finally:
+        update_check.cancel()
         await loader.close(reason)
 
 

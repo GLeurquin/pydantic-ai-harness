@@ -163,6 +163,9 @@ the pydantic.dev `pydantic-visual-identity` skill's `brand-identity.md`.
 | `commands.py` | `Command`, the registry, completion |
 | `config.py` | `Settings`, `PluginSettings` |
 | `settings_store.py` | the SQLite store under `$XDG_CONFIG_HOME/pydantic-clai2/` |
+| `export.py` | `/export`: the conversation as Markdown or core's JSON |
+| `screen.py` | `/clear` and other screen-only housekeeping |
+| `updates.py` | the daily PyPI version check behind `VersionSource` |
 | `theme.py` | brand palette, colour roles, `sgr()` |
 
 Keep files concise - we don't need any 10,000 line files. Single responsibility.
