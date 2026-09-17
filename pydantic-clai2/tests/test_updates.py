@@ -97,6 +97,16 @@ async def test_checks_at_most_once_a_day(tmp_path: Path) -> None:
     assert notice is not None and source.calls == 3
 
 
+async def test_broken_store_is_silent_too(tmp_path: Path) -> None:
+    class BrokenStore(SettingsStore):
+        def save_state(self, key: str, value: str) -> None:
+            raise OSError('disk full')
+
+    source = FakePyPI('0.2.0')
+    notice, printed = await run_check(BrokenStore(tmp_path / 'config.db'), source)
+    assert notice is None and printed == '' and source.calls == 0
+
+
 async def test_disabled_setting_skips_everything(tmp_path: Path) -> None:
     store = SettingsStore(tmp_path / 'config.db')
     source = FakePyPI('0.2.0')
@@ -109,15 +119,35 @@ def test_installed_version_is_the_package_metadata() -> None:
     assert installed_version() == '0.1.0'
 
 
+class NoticeWatcher(io.StringIO):
+    """Flag the moment the update line is written, so the test can quit without a sleep."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.seen = asyncio.Event()
+
+    def write(self, s: str, /) -> int:
+        if 'is available' in s:
+            self.seen.set()
+        return super().write(s)
+
+
 async def test_chat_mentions_update_after_the_banner(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr('pydantic_clai2._app.PyPI', lambda: FakePyPI('0.2.0'))
     monkeypatch.setattr('pydantic_clai2._app.installed_version', lambda: '0.1.0')
-    output = io.StringIO()
+    output = NoticeWatcher()
     with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
-        pipe.send_text('/exit\n')
-        await chat(
-            Agent(TestModel()), deps=None, console=Console(file=output, width=200), store=SettingsStore(tmp_path / 'db')
+        running = asyncio.create_task(
+            chat(
+                Agent(TestModel()),
+                deps=None,
+                console=Console(file=output, width=200),
+                store=SettingsStore(tmp_path / 'db'),
+            )
         )
+        await asyncio.wait_for(output.seen.wait(), 10)
+        pipe.send_text('/exit\n')
+        await running
     text = output.getvalue()
     assert 'pydantic-clai2 0.2.0 is available (you have 0.1.0): pip install -U pydantic-clai2' in text
     assert text.index('Ctrl-R searches input') < text.index('0.2.0 is available')

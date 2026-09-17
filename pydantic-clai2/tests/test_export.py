@@ -101,14 +101,21 @@ def test_markdown_shortens_long_results_and_marks_empty_ones() -> None:
             parts=[
                 ToolReturnPart(tool_name='big', content='word ' * 100, tool_call_id='big'),
                 ToolReturnPart(tool_name='blank', content='', tool_call_id='blank'),
+                ToolReturnPart(tool_name='padded', content='\n  \nreal result\nmore', tool_call_id='padded'),
             ]
         ),
-        ModelResponse(parts=[ToolCallPart(tool_name='blank', args={}, tool_call_id='blank')]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(tool_name='blank', args={}, tool_call_id='blank'),
+                ToolCallPart(tool_name='padded', args={}, tool_call_id='padded'),
+            ]
+        ),
     ]
     text = to_markdown(messages, model='m', now=NOW)
     line = next(line for line in text.splitlines() if line.startswith('- `big'))
     assert line.endswith('...') and len(line) < 140
     assert '- `blank({})`: (empty)' in text
+    assert '- `padded({})`: real result\n' in text
 
 
 def test_markdown_without_prompts_or_responses_has_unknown_times() -> None:

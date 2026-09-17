@@ -33,10 +33,13 @@ def export_session(
         raise ValueError('Nothing to export yet.')
     name = positional[0] if positional else f'clai-session-{now:%Y%m%d-%H%M%S}.md'
     path = workspace / Path(name).expanduser()
-    if path.exists() and not force:
-        raise ValueError(f'{path} exists. Add --force to overwrite it.')
     render = to_json if path.suffix == '.json' else to_markdown
-    path.write_text(render(messages, model=model, now=now), encoding='utf-8')
+    text = render(messages, model=model, now=now)
+    try:
+        with path.open('w' if force else 'x', encoding='utf-8') as file:
+            file.write(text)
+    except FileExistsError:
+        raise ValueError(f'{path} exists. Add --force to overwrite it.') from None
     return f'Exported {len(messages)} messages to {path}'
 
 
@@ -96,5 +99,5 @@ def _user_text(part: UserPromptPart) -> str:
 
 
 def _one_line(text: str) -> str:
-    first = next(iter(text.splitlines()), '')
+    first = next((line for line in text.splitlines() if line.strip()), '')
     return textwrap.shorten(first, width=SUMMARY_WIDTH, placeholder='...') or '(empty)'

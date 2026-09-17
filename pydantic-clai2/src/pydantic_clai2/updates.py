@@ -71,12 +71,12 @@ async def check_for_update(
     if not enabled:
         return None
     moment = now()
-    if not _due(store.state(STATE_KEY), moment):
-        return None
-    store.save_state(STATE_KEY, moment.isoformat())
     try:
+        if not _due(await asyncio.to_thread(store.state, STATE_KEY), moment):
+            return None
+        await asyncio.to_thread(store.save_state, STATE_KEY, moment.isoformat())
         latest = await asyncio.wait_for(source.latest(PACKAGE), TIMEOUT_SECONDS)
-    except Exception:  # noqa: BLE001 -- an update hint must never surface network trouble.
+    except Exception:  # noqa: BLE001 -- an update hint must never surface network or database trouble.
         return None
     newest, installed = _numbers(latest), _numbers(current)
     if newest is None or installed is None or newest <= installed:
