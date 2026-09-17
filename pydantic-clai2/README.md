@@ -232,9 +232,7 @@ A long conversation eventually fills the model's context window. The built-in
 `pydantic_ai_harness` strategies: once the history fills 85% of the window, the
 next request first replaces the older messages with a summary written by the
 current model, keeping the most recent 50,000 tokens as they were. If the
-summary request fails or would blow the run's usage limit, the chain falls back
-to plain truncation of the same older messages, so a broken summariser never
-fails the run. The summary request counts as one model request, billed to the
+If the summary request raises `ModelAPIError`, `FallbackExceptionGroup`, or `UsageLimitExceeded`, or would blow the run's usage limit, the chain falls back to plain truncation of the same older messages; other exceptions propagate and fail the run.
 model in use unless `summarization_model` names a cheaper one. Nothing in CLAI
 decides when; the capability does, with the same
 rules it follows in any agent.
