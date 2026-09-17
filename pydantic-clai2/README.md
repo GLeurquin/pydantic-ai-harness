@@ -266,7 +266,7 @@ Full output remains in the log; display formatting does not alter model results.
 ## Shell output beyond the fold
 
 Shell output folds like any other tool output, counting logical lines including
-an unterminated final one. The capability only streams the first 16 KB of a
+an unterminated final one. The capability only streams the first 16,000 bytes of a
 command's log to the terminal, so `/expand` can show at most that much. When the
 log is longer, the command's footer says `Output truncated by the event budget`
 and, if the log snapshot at that time counted more lines than were streamed,
