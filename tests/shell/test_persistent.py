@@ -97,10 +97,11 @@ class TestToolSelection:
         with pytest.raises(ValueError, match='Unknown shell tools: bogus'):
             Shell(cwd=tmp_path, tools=['bogus']).get_toolset()
 
-    def test_default_timeout_bounded_for_shell(self, tmp_path: Path) -> None:
-        with pytest.raises(ValueError, match='default_timeout must be at most 270'):
-            Shell(cwd=tmp_path, tools=['shell'], default_timeout=MAX_FOREGROUND_WAIT + 1).get_toolset()
-        Shell(cwd=tmp_path, default_timeout=MAX_FOREGROUND_WAIT + 1).get_toolset()
+    @pytest.mark.parametrize('default_timeout', [0, MAX_FOREGROUND_WAIT + 1])
+    def test_default_timeout_bounded_for_shell(self, tmp_path: Path, default_timeout: float) -> None:
+        with pytest.raises(ValueError, match='default_timeout must be greater than zero and at most 270'):
+            Shell(cwd=tmp_path, tools=['shell'], default_timeout=default_timeout).get_toolset()
+        Shell(cwd=tmp_path, default_timeout=default_timeout).get_toolset()
 
 
 class TestShellTool:

@@ -300,7 +300,7 @@ Shell(
 ```
 
 With `tools=['shell']`, `default_timeout` is also the foreground wait and must be
-at most 270 seconds; that is checked at construction.
+greater than zero and at most 270 seconds; that is checked at construction.
 
 ## Agent spec (YAML/JSON)
 

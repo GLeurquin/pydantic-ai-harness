@@ -105,8 +105,11 @@ class ShellToolset(FunctionToolset[AgentDepsT]):
             raise ValueError('max_output_chars must be a positive integer.')
         if unknown := sorted(set(self._tools) - set(SHELL_TOOL_NAMES)):
             raise ValueError(f'Unknown shell tools: {", ".join(unknown)}. Available: {", ".join(SHELL_TOOL_NAMES)}.')
-        if PERSISTENT_TOOL_NAME in self._tools and default_timeout > MAX_FOREGROUND_WAIT:
-            raise ValueError(f'default_timeout must be at most {MAX_FOREGROUND_WAIT:g} seconds for the shell tool.')
+        if PERSISTENT_TOOL_NAME in self._tools and not 0 < default_timeout <= MAX_FOREGROUND_WAIT:
+            raise ValueError(
+                f'default_timeout must be greater than zero and at most {MAX_FOREGROUND_WAIT:g} seconds '
+                'for the shell tool.'
+            )
 
         command_metadata = {'code_arg_name': 'command', 'code_arg_language': 'shell'}
         registrations: dict[str, Callable[..., Awaitable[str]]] = {
