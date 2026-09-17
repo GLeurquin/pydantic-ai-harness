@@ -64,6 +64,10 @@ class GrepOutput:
             self.console.print()
             return True
         rows = event.part.content.splitlines()
+        if tool_truncated:
+            # The capability ends a capped result with its own '[... truncated at N ...]' footer;
+            # the notice below replaces it, so it is neither folded nor reprinted by /expand.
+            rows = rows[:-1]
         self.console.print(f'Results: {terminal_text(label)}', style=theme.MUTED, markup=False, highlight=False)
         self.folder.show(label=terminal_text(label), lines=[Text(terminal_text(row)) for row in rows])
         if tool_truncated:

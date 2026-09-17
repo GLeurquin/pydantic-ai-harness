@@ -33,6 +33,8 @@ async def test_grep_preview(tool_truncated: bool) -> None:
     )
     assert "grep 'needle' in '/tmp/example'" in output.getvalue()
     result = 'example:1:first\nexample:2:second\nexample:3:third'
+    if tool_truncated:
+        result += '\n[... truncated at 3 matches]'
     await renderer.on_stream_event(
         FilesSearchedEvent(
             path='/tmp/example',
@@ -57,6 +59,7 @@ async def test_grep_preview(tool_truncated: bool) -> None:
     assert 'example:1:first' in text and 'example:2:second' not in text
     assert '... 2 more lines (/expand to show)' in text
     assert ('additional result count unknown' in text) == tool_truncated
+    assert '[... truncated' not in text
     assert text.endswith('\n\n')
     output.truncate(0)
     output.seek(0)
