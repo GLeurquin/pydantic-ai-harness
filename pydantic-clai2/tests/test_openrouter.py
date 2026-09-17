@@ -135,3 +135,25 @@ async def test_corrupt_connection_recovery(tmp_path: Path, monkeypatch: pytest.M
 
     monkeypatch.setattr(openrouter, 'prompt_connection', prompt)
     assert await openrouter.connect(context, []) == 'Connection cancelled.'
+
+
+async def test_invalid_discovery() -> None:
+    with pytest.raises(UserError, match='invalid model list'):
+        await openrouter.discover(
+            openrouter.Connection(token=SecretStr('test')),
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, json={'broken': True})),
+        )
+
+
+async def test_broken_manifest_recovery(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    context, _ = make_context(tmp_path)
+
+    def broken(*, account: str) -> str:
+        raise UserError('Broken manifest')
+
+    async def prompt() -> None:
+        return None
+
+    monkeypatch.setattr(openrouter, 'load_codex_credentials', broken)
+    monkeypatch.setattr(openrouter, 'prompt_connection', prompt)
+    assert await openrouter.connect(context, []) == 'Connection cancelled.'

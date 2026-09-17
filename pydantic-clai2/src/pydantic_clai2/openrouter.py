@@ -46,7 +46,10 @@ async def discover(connection: Connection, *, transport: httpx.AsyncBaseTranspor
             response.raise_for_status()
         except httpx.HTTPError:
             raise UserError('Model discovery failed. Check the server URL, token, and connectivity.') from None
-    names = sorted({model.id for model in ModelList.model_validate_json(response.content).data})
+    try:
+        names = sorted({model.id for model in ModelList.model_validate_json(response.content).data})
+    except ValidationError:
+        raise UserError('The server returned an invalid model list.') from None
     if not names:
         raise UserError('The server returned no models.')
     return names
@@ -89,10 +92,10 @@ async def connect(context: CommandContext, args: list[str]) -> str:
     """Prompt privately, discover models, then persist only after selection."""
     if args:
         raise ValueError('Usage: /openrouter (API key is prompted privately)')
-    raw = await asyncio.to_thread(load_codex_credentials, account='openrouter')
     try:
+        raw = await asyncio.to_thread(load_codex_credentials, account='openrouter')
         connection = Connection.model_validate_json(raw) if raw else None
-    except (ValidationError, ValueError):
+    except (ValidationError, UserError):
         connection = None
     if connection is not None:
         action = await run_worker(connection_action)
