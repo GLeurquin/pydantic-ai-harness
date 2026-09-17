@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic_ai import RunContext
-from pydantic_ai_harness.filesystem import FileChangeRequestEvent, FileWrittenEvent
+from pydantic_ai_harness.filesystem import MAX_DIFF_SOURCE_CHARS, FileChangeRequestEvent, FileWrittenEvent
 from rich.console import Console
 from rich.text import Text
 
@@ -20,18 +20,30 @@ _ABSENT = '/dev/null'
 _NO_NEWLINE = '\\ No newline at end of file'
 
 
-def _read(path: Path) -> str | None:
-    """The file's text with bytes and line endings intact, or `None` when nothing exists at `path`.
+@dataclass(kw_only=True)
+class _Snapshot:
+    """What was at a path: its text, nothing (`text=None`), or the reason it cannot be diffed."""
+
+    text: str | None = None
+    problem: str | None = None
+
+
+def _snapshot(path: Path) -> _Snapshot:
+    """Read `path` with bytes and line endings intact, under the harness's own diff source cap.
 
     Undecodable bytes survive as surrogates so they never collide with a real
-    replacement character. A path that exists but cannot be read raises
-    `OSError`, so a permission error is not mistaken for a deletion.
+    replacement character. A path that exists but cannot be read is a
+    `problem`, not a missing file, so it is never shown as a deletion.
     """
     try:
+        if path.stat().st_size > MAX_DIFF_SOURCE_CHARS:
+            return _Snapshot(problem=f'too large to diff (over {MAX_DIFF_SOURCE_CHARS} bytes)')
         with path.open(encoding='utf-8', errors='surrogateescape', newline='') as file:
-            return file.read()
+            return _Snapshot(text=file.read())
     except (FileNotFoundError, NotADirectoryError):
-        return None
+        return _Snapshot()
+    except OSError as exc:
+        return _Snapshot(problem=f'cannot read ({exc.strerror or exc})')
 
 
 def _label(path: Path) -> str:
@@ -94,9 +106,9 @@ class SessionDiff:
     """
 
     def __init__(self) -> None:
-        """Start empty; `None` content means the file did not exist."""
-        self._before: dict[Path, str | None] = {}
-        self._pending: dict[Path, str | None] = {}
+        """Start empty."""
+        self._before: dict[Path, _Snapshot] = {}
+        self._pending: dict[Path, _Snapshot] = {}
 
     @property
     def paths(self) -> list[Path]:
@@ -107,24 +119,13 @@ class SessionDiff:
         """A change is about to be applied; remember the content it starts from."""
         path = path.resolve()
         if path not in self._before and path not in self._pending:
-            self._record(self._pending, path)
+            self._pending[path] = _snapshot(path)
 
     def commit(self, path: Path) -> None:
         """A change was applied; the announced content becomes the file's baseline."""
         path = path.resolve()
-        if path in self._before:
-            return
-        if path in self._pending:
-            self._before[path] = self._pending.pop(path)
-        else:
-            self._record(self._before, path)
-
-    def _record(self, ledger: dict[Path, str | None], path: Path) -> None:
-        """A path that exists but cannot be read has no usable baseline, so it is not tracked."""
-        try:
-            ledger[path] = _read(path)
-        except OSError:
-            return
+        if path not in self._before:
+            self._before[path] = self._pending.pop(path) if path in self._pending else _snapshot(path)
 
     def discard_pending(self) -> None:
         """Forget announced changes that were never applied."""
@@ -142,11 +143,12 @@ class SessionDiff:
             if path not in self._before:
                 continue
             label = _label(path)
-            try:
-                diff = unified_diff(self._before[path], _read(path), label=label)
-            except OSError as exc:
-                yield FileDiff(label=label, error=str(exc))
+            before, now = self._before[path], _snapshot(path)
+            problem = before.problem or now.problem
+            if problem is not None:
+                yield FileDiff(label=label, error=problem)
                 continue
+            diff = unified_diff(before.text, now.text, label=label)
             if not diff:
                 continue
             body = diff.splitlines()[2:]
@@ -183,7 +185,7 @@ def print_changes(console: Console, *, ledger: SessionDiff, args: list[str]) -> 
     changes = [change for change in found if change.error is None]
     for change in found:
         if change.error is not None:
-            console.print(f'{change.label}: cannot read it now ({change.error})', style=theme.MUTED, markup=False)
+            console.print(f'{change.label}: {change.error}', style=theme.MUTED, markup=False)
     if not found:
         what = f'No changes to {only.as_posix()} this conversation.' if only else 'No files changed this conversation.'
         console.print(what, style=theme.MUTED, markup=False)

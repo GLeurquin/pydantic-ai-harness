@@ -248,7 +248,9 @@ file that existed and is now gone shows as a deletion. `/new` empties the
 ledger. The ledger does not watch shell commands or your own editor, so changes
 made that way appear only for paths the agent also wrote. It does not use git,
 so it works in any directory. Both `/diff` and the per-write previews use the
-same Termflow diff renderer.
+same Termflow diff renderer. A file over the filesystem capability's diff cap
+(32 KiB) is listed with a note instead of being read into memory, and a file
+that cannot be read is listed with the reason rather than shown as deleted.
 
 ## Grep previews
 

@@ -8,7 +8,12 @@ import pytest
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.capabilities import Capability
 from pydantic_ai.models.test import TestModel
-from pydantic_ai_harness.filesystem import FileChangeRequestEvent, FileOperation, FileWrittenEvent
+from pydantic_ai_harness.filesystem import (
+    MAX_DIFF_SOURCE_CHARS,
+    FileChangeRequestEvent,
+    FileOperation,
+    FileWrittenEvent,
+)
 from rich.console import Console
 from test_app_edges import inputs
 
@@ -207,19 +212,32 @@ async def test_a_file_that_cannot_be_read_now_is_reported_not_hidden(
     (tmp_path / 'swapped').unlink()
     (tmp_path / 'swapped').mkdir()
     text = plugin.command('/diff')
-    assert text.startswith('swapped: cannot read it now (')
+    assert text.startswith('swapped: cannot read (Is a directory)\n')
     assert '+ok' in text and '+++ /dev/null' not in text
     assert '1 files changed' in plugin.command('/diff --stat')
-    assert plugin.command('/diff swapped').startswith('swapped: cannot read it now (')
-    assert plugin.command('/diff --stat swapped').startswith('swapped: cannot read it now (')
+    assert plugin.command('/diff swapped') == 'swapped: cannot read (Is a directory)\n'
+    assert plugin.command('/diff --stat swapped') == 'swapped: cannot read (Is a directory)\n'
 
 
-def test_ledger_skips_paths_without_a_readable_baseline_and_is_keyed_by_resolved_path(tmp_path: Path) -> None:
-    ledger = SessionDiff()
+async def test_files_over_the_harness_diff_cap_are_listed_not_loaded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    plugin = Plugin(tmp_path)
+    (tmp_path / 'big.txt').write_text('x' * (MAX_DIFF_SOURCE_CHARS + 1))
+    await plugin.change('big.txt', write('small now\n'))
+    await plugin.change('grown.txt', write('x' * (MAX_DIFF_SOURCE_CHARS + 1)))
     (tmp_path / 'dir').mkdir()
-    ledger.announce(tmp_path / 'dir')
-    ledger.commit(tmp_path / 'dir')
-    assert ledger.paths == []
+    await plugin.change('dir', lambda path: None)
+    assert plugin.command('/diff') == (
+        f'big.txt: too large to diff (over {MAX_DIFF_SOURCE_CHARS} bytes)\n'
+        f'grown.txt: too large to diff (over {MAX_DIFF_SOURCE_CHARS} bytes)\n'
+        'dir: cannot read (Is a directory)\n'
+    )
+
+
+def test_ledger_is_keyed_by_resolved_path(tmp_path: Path) -> None:
+    ledger = SessionDiff()
     (tmp_path / 'f.txt').write_text('1\n')
     ledger.announce(tmp_path / 'sub' / '..' / 'f.txt')
     ledger.announce(tmp_path / 'f.txt')
