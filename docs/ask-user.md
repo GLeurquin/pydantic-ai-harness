@@ -55,7 +55,7 @@ An `Answerer` is one async callable: it takes an `AskUserRequest` and returns an
   distinguishes concurrent or repeated calls so a UI can match its reply to the request.
 - A completed `AskUserResponse` carries one `AskUserAnswer` per question, keyed by `header`,
   with the picked option labels in `selected`: exactly one unless the question is
-  `multi_select`, and at least one either way.
+  `multi_select`, at least one either way, and no label twice.
 - When the user declines, return `AskUserResponse(cancelled=True)` with no answers. The tool
   result tells the model the user declined; nothing is raised into the run.
 - A response that does not fit the request (an unknown header, a label the question did not
@@ -73,7 +73,7 @@ Two `CapabilityEvent`s let anything else in the run observe the exchange:
 | Event | When | Fields |
 | --- | --- | --- |
 | `AskUserRequestedEvent` | before the answerer is called | `request` |
-| `AskUserAnsweredEvent` | after it returns, before the model sees the result | `request_id`, `response` |
+| `AskUserAnsweredEvent` | after it returns, before the response is checked or the model sees the result | `request_id`, `response` |
 
 Both dispatch immediately, so a listener that shows a "waiting for you" state sees the wait
 start and end in step with the run. Subscribe with `@on_event` on a capability or through the
@@ -101,8 +101,9 @@ class WaitIndicator(AbstractCapability[None]):
 The tool schema mirrors Code Puppy's `ask_user_question`, so prompts written for it carry
 over. Limits: 1 to 10 questions per call, unique headers of at most 25 characters, question text
 of at most 500, 2 to 6 options per question with unique labels of at most 50 characters and
-descriptions of at most 200. A call outside those limits is returned to the model as a
-validation retry, not sent to the answerer.
+descriptions of at most 200. A call outside those limits, or carrying a field the schema does
+not have, is returned to the model as a validation retry, not sent to the answerer. Once
+validated the questions are frozen: what the answerer sees is what the model asked.
 
 The result is a JSON object mapping each header to the list of picked labels, or the sentence
 `The user declined to answer. Continue without the answer, or ask differently if it is essential.`

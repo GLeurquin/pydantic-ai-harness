@@ -19,10 +19,18 @@ MAX_DESCRIPTION_LENGTH = 200
 MAX_QUESTION_LENGTH = 500
 
 
+_SCHEMA_CONFIG = ConfigDict(str_strip_whitespace=True, extra='forbid', frozen=True)
+"""Strict on the way in (a field the schema lacks is a retry, not a silent drop) and immutable after.
+
+The request is validated once and the response is checked against it later, so nothing between,
+an event listener or the answerer, may change what was asked.
+"""
+
+
 class QuestionOption(BaseModel):
     """One choice the user can pick."""
 
-    model_config = ConfigDict(str_strip_whitespace=True)
+    model_config = _SCHEMA_CONFIG
 
     label: str = Field(min_length=1, max_length=MAX_LABEL_LENGTH, description='Short option name, one to five words.')
     description: str | None = Field(
@@ -33,7 +41,7 @@ class QuestionOption(BaseModel):
 class Question(BaseModel):
     """One multiple-choice question."""
 
-    model_config = ConfigDict(str_strip_whitespace=True)
+    model_config = _SCHEMA_CONFIG
 
     header: str = Field(
         min_length=1,
@@ -41,7 +49,7 @@ class Question(BaseModel):
         description='Short label naming the question, unique within the call; the answer is keyed by it.',
     )
     question: str = Field(min_length=1, max_length=MAX_QUESTION_LENGTH, description='The full question text.')
-    options: list[QuestionOption] = Field(
+    options: tuple[QuestionOption, ...] = Field(
         min_length=MIN_OPTIONS, max_length=MAX_OPTIONS, description='The choices to offer.'
     )
     multi_select: bool = Field(default=False, description='Whether the user may pick more than one option.')
@@ -104,8 +112,8 @@ class Answerer(Protocol):
 def check_response(request: AskUserRequest, response: AskUserResponse) -> None:
     """Raise `ValueError` when a response does not fit its request.
 
-    A cancelled response carries no answers. A completed one answers every question with labels
-    that question offered, one of them unless `multi_select`.
+    A cancelled response carries no answers. A completed one answers every question with distinct
+    labels that question offered, one of them unless `multi_select`.
     """
     if response.cancelled:
         if response.answers:
@@ -121,6 +129,8 @@ def check_response(request: AskUserRequest, response: AskUserResponse) -> None:
             raise ValueError(f'answer for {answer.header!r} picked options it does not offer: {unknown}')
         if not answer.selected:
             raise ValueError(f'answer for {answer.header!r} picked nothing')
+        if len(set(answer.selected)) != len(answer.selected):
+            raise ValueError(f'answer for {answer.header!r} picked the same option twice')
         if len(answer.selected) > 1 and not question.multi_select:
             raise ValueError(f'answer for {answer.header!r} picked several options but it is single-select')
     if questions:

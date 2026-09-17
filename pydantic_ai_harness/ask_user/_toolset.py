@@ -53,8 +53,9 @@ class AskUserToolset(FunctionToolset[AgentDepsT]):
         request = AskUserRequest(questions=tuple(questions))
         await ctx.emit(AskUserRequestedEvent(request=request))
         response = await self._answerer(request)
-        check_response(request, response)
+        # Observers waiting since the request event are released whether or not the response fits.
         await ctx.emit(AskUserAnsweredEvent(request_id=request.id, response=response))
+        check_response(request, response)
         if response.cancelled:
             return DECLINED
         return {answer.header: list(answer.selected) for answer in response.answers}

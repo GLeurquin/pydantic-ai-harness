@@ -48,7 +48,7 @@ def question(header: str = 'Approach', *, multi_select: bool = False, labels: Se
     return Question(
         header=header,
         question=f'Which {header.lower()}?',
-        options=[QuestionOption(label=label, description=f'Pick {label}') for label in labels],
+        options=tuple(QuestionOption(label=label, description=f'Pick {label}') for label in labels),
         multi_select=multi_select,
     )
 
@@ -195,6 +195,16 @@ class TestAskUser:
                 [raw_questions()[0], raw_questions()[0]], 'question headers must be unique', id='duplicate headers'
             ),
             pytest.param([{**raw_questions()[0], 'header': ' '}], 'at least 1 character', id='blank header'),
+            pytest.param(
+                [{**raw_questions()[0], 'options': [{'label': 'Other', 'free_text': True}, {'label': 'B'}]}],
+                'Extra inputs are not permitted',
+                id='unsupported option field',
+            ),
+            pytest.param(
+                [{**raw_questions()[0], 'allow_other': True}],
+                'Extra inputs are not permitted',
+                id='unsupported question field',
+            ),
         ],
     )
     async def test_bad_schemas_are_returned_to_the_model_as_retries(self, arguments: object, complaint: str) -> None:
@@ -279,6 +289,16 @@ class TestCheckResponse:
                 id='several on single-select',
             ),
             pytest.param(
+                AskUserResponse(
+                    answers=(
+                        AskUserAnswer(header='Approach', selected=('A',)),
+                        AskUserAnswer(header='Targets', selected=('x', 'x')),
+                    )
+                ),
+                'picked the same option twice',
+                id='duplicate pick on multi-select',
+            ),
+            pytest.param(
                 AskUserResponse(answers=(AskUserAnswer(header='Approach', selected=('A',)),)),
                 "unanswered questions: ['Targets']",
                 id='missing answer',
@@ -289,11 +309,16 @@ class TestCheckResponse:
         with pytest.raises(ValueError, match=re.escape(complaint)):
             check_response(self.request(), response)
 
-    async def test_a_broken_answerer_fails_the_run(self) -> None:
+    async def test_a_broken_answerer_fails_the_run_but_still_releases_observers(self) -> None:
         answerer = ScriptedAnswerer(AskUserResponse(answers=(AskUserAnswer(header='Nope', selected=('A',)),)))
-        agent = Agent(calling(raw_questions()), capabilities=[AskUser(answerer=answerer)])
+        observer = Observer()
+        agent = Agent(
+            calling(raw_questions()), deps_type=type(None), capabilities=[AskUser(answerer=answerer), observer]
+        )
         with pytest.raises(ValueError, match='unknown or repeated question'):
             await agent.run('go')
+        assert len(observer.requested) == 1 and len(observer.answered) == 1
+        assert observer.answered[0].response is answerer.response
 
 
 class TestSchema:
@@ -304,6 +329,14 @@ class TestSchema:
     def test_long_description_is_rejected(self) -> None:
         with pytest.raises(ValidationError, match='at most 200 characters'):
             QuestionOption(label='x', description='d' * 201)
+
+    def test_questions_are_immutable_once_validated(self) -> None:
+        asked = question()
+        with pytest.raises(ValidationError, match='frozen'):
+            asked.header = 'Changed'
+        with pytest.raises(ValidationError, match='frozen'):
+            asked.options[0].label = 'Changed'
+        assert isinstance(asked.options, tuple)
 
     def test_request_ids_are_unique(self) -> None:
         first, second = AskUserRequest(questions=(question(),)), AskUserRequest(questions=(question(),))
