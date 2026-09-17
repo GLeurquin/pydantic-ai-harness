@@ -51,14 +51,13 @@ class PathReferenceCompleter(Completer):
             return
         quoted = token.group(1) is not None
         reference = token.group(1) if quoted else token.group(2)
-        path = self.root / Path(reference).expanduser()
         at_directory = reference.endswith('/') or not reference
-        directory = path if at_directory else path.parent
-        prefix = '' if at_directory else path.name
         try:
-            children = sorted(directory.iterdir())
-        except OSError:
+            path = self.root / Path(reference).expanduser()
+            children = sorted((path if at_directory else path.parent).iterdir())
+        except (OSError, RuntimeError):
             return
+        prefix = '' if at_directory else path.name
         for child in children:
             if not child.name.startswith(prefix):
                 continue

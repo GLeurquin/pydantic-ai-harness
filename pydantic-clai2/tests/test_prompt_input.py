@@ -16,12 +16,17 @@ from rich.console import Console
 from test_app_edges import inputs
 
 from pydantic_clai2 import Session, chat
-from pydantic_clai2.attachments import MAX_IMAGE_BYTES, MAX_TEXT_BYTES, Attachments
+from pydantic_clai2.attachments import MAX_IMAGE_BYTES, MAX_PENDING_IMAGES, MAX_TEXT_BYTES, Attachments
 from pydantic_clai2.commands import Command, Commands
 from pydantic_clai2.prompt_input import PathReferenceCompleter, prompt_completer, prompt_key_bindings
 from pydantic_clai2.settings_store import SettingsStore
 
 PNG = b'\x89PNG\r\n\x1a\n' + bytes(16)
+
+
+def no_home(path: str) -> str:
+    """Stand-in for `os.path.expanduser` on a machine with no resolvable home directory."""
+    return path
 
 
 @pytest.fixture
@@ -81,6 +86,8 @@ def test_path_completion(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     assert complete(f'@{tmp_path}/oth') == ['er.txt']
     monkeypatch.setenv('HOME', str(tmp_path))
     assert complete('@~/sub/') == ['inner.md']
+    monkeypatch.setattr('os.path.expanduser', no_home)
+    assert complete('@~/sub/') == []
     commands = Commands()
     commands.register(Command(name='hello', description='hi', handler=lambda _: 'ok'))
     merged = prompt_completer(commands, root=tmp_path)
@@ -126,9 +133,13 @@ def test_resolve_home_and_absolute_paths(tmp_path: Path, monkeypatch: pytest.Mon
     (home / 'notes.txt').write_text('at home', encoding='utf-8')
     monkeypatch.setenv('HOME', str(home))
     attachments = Attachments(root=tmp_path / 'elsewhere', clipboard=FakeClipboard(None))
-    resolved = attachments.resolve(f'@~/notes.txt and @{home}/notes.txt')
+    resolved = attachments.resolve(f'@~/notes.txt and @{home}/notes.txt, @~/notes.txt again')
     assert resolved.warnings == []
     assert isinstance(resolved.content, list) and len(resolved.content) == 3
+    monkeypatch.setattr('os.path.expanduser', no_home)
+    unresolved = attachments.resolve('@~/notes.txt')
+    assert unresolved.content == '@~/notes.txt'
+    assert unresolved.warnings == ['@~/notes.txt left as text: Could not determine home directory.']
 
 
 def test_resolve_unreadable_file(tmp_path: Path) -> None:
@@ -153,6 +164,10 @@ def test_paste_queues_until_next_prompt(tmp_path: Path) -> None:
     attachments = Attachments(root=tmp_path, clipboard=FakeClipboard(PNG))
     assert attachments.paste() == 'Attached a 0.0 KB PNG image to the next prompt (1 queued).'
     assert attachments.paste().endswith('(2 queued).')
+    while len(attachments.pending) < MAX_PENDING_IMAGES:
+        attachments.paste()
+    assert attachments.paste() == 'Clipboard image not attached: 10 already queued. Send a prompt first.'
+    attachments.pending[2:] = []
     resolved = attachments.resolve('what is this?')
     assert isinstance(resolved.content, list)
     assert resolved.content[0] == 'what is this?'
