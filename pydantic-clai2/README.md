@@ -229,9 +229,10 @@ the turn and returns to input. No cancelled run is automatically retried.
 
 The built-in `compaction` plugin uses harness's `FallbackCompaction` with
 `SummarizingCompaction` first and `SlidingWindowCompaction` as the fallback.
-It protects the most recent 50,000 tokens. Model API errors and usage-limit
-errors during summarisation fall back to truncation. The summary request is
-billed to the current model unless `summarization_model` selects another.
+It protects the most recent 50,000 tokens. `ModelAPIError`,
+`FallbackExceptionGroup`, and `UsageLimitExceeded` during summarisation fall
+back to truncation; other exceptions propagate. The summary request is billed
+to the current model unless `summarization_model` selects another.
 
 Compaction is manual, not automatic. `/compact` runs the chain between turns. Add words to say what the
 summary must keep: `/compact the auth refactor, not the CSS`. You get one line
