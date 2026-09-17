@@ -212,11 +212,11 @@ async def test_a_file_that_cannot_be_read_now_is_reported_not_hidden(
     (tmp_path / 'swapped').unlink()
     (tmp_path / 'swapped').mkdir()
     text = plugin.command('/diff')
-    assert text.startswith('swapped: cannot read (Is a directory)\n')
+    assert text.startswith('swapped: not a regular file\n')
     assert '+ok' in text and '+++ /dev/null' not in text
     assert '1 files changed' in plugin.command('/diff --stat')
-    assert plugin.command('/diff swapped') == 'swapped: cannot read (Is a directory)\n'
-    assert plugin.command('/diff --stat swapped') == 'swapped: cannot read (Is a directory)\n'
+    assert plugin.command('/diff swapped') == 'swapped: not a regular file\n'
+    assert plugin.command('/diff --stat swapped') == 'swapped: not a regular file\n'
 
 
 async def test_files_over_the_harness_diff_cap_are_listed_not_loaded(
@@ -229,10 +229,17 @@ async def test_files_over_the_harness_diff_cap_are_listed_not_loaded(
     await plugin.change('grown.txt', write('x' * (MAX_DIFF_SOURCE_CHARS + 1)))
     (tmp_path / 'dir').mkdir()
     await plugin.change('dir', lambda path: None)
-    assert plugin.command('/diff') == (
+    (tmp_path / 'locked.txt').write_text('secret\n')
+    await plugin.change('locked.txt', lambda path: path.chmod(0))
+    try:
+        text = plugin.command('/diff')
+    finally:
+        (tmp_path / 'locked.txt').chmod(0o600)
+    assert text == (
         f'big.txt: too large to diff (over {MAX_DIFF_SOURCE_CHARS} bytes)\n'
         f'grown.txt: too large to diff (over {MAX_DIFF_SOURCE_CHARS} bytes)\n'
-        'dir: cannot read (Is a directory)\n'
+        'dir: not a regular file\n'
+        'locked.txt: cannot read (Permission denied)\n'
     )
 
 

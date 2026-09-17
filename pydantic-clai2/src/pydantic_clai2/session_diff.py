@@ -1,6 +1,7 @@
 """The built-in `diff` plugin: what the agent changed this conversation, shown on `/diff`."""
 
 import difflib
+import stat
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,10 +34,14 @@ def _snapshot(path: Path) -> _Snapshot:
 
     Undecodable bytes survive as surrogates so they never collide with a real
     replacement character. A path that exists but cannot be read is a
-    `problem`, not a missing file, so it is never shown as a deletion.
+    `problem`, not a missing file, so it is never shown as a deletion. Only a
+    regular file is opened: a FIFO or device in its place would block.
     """
     try:
-        if path.stat().st_size > MAX_DIFF_SOURCE_CHARS:
+        status = path.stat()
+        if not stat.S_ISREG(status.st_mode):
+            return _Snapshot(problem='not a regular file')
+        if status.st_size > MAX_DIFF_SOURCE_CHARS:
             return _Snapshot(problem=f'too large to diff (over {MAX_DIFF_SOURCE_CHARS} bytes)')
         with path.open(encoding='utf-8', errors='surrogateescape', newline='') as file:
             return _Snapshot(text=file.read())
