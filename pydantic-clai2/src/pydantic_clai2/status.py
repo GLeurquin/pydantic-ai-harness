@@ -1,11 +1,9 @@
-"""A terminal-only status row, separate from conversation output."""
+"""The prompt's bottom toolbar, separate from conversation output."""
 
-import asyncio
-import contextlib
 import math
 from dataclasses import dataclass
-from typing import Self
 
+from prompt_toolkit.formatted_text import StyleAndTextTuples
 from pydantic_ai import AgentStreamEvent, FunctionToolCallEvent, FunctionToolResultEvent, PartDeltaEvent, PartStartEvent
 from pydantic_ai.messages import (
     TextPart,
@@ -15,9 +13,10 @@ from pydantic_ai.messages import (
     ToolCallPart,
     ToolCallPartDelta,
 )
-from rich.console import Console
 
 from . import theme
+
+_SHADES = (theme.SUGAR, theme.LIGHT_PURPLE, theme.LITHIUM, theme.PURPLE)
 
 
 @dataclass(kw_only=True)
@@ -29,6 +28,7 @@ class Status:
     output_tokens: int | None = None
     streamed_chars: int = 0
     activity: str = 'ready'
+    queued: int = 0
 
     def observe(self, event: AgentStreamEvent) -> None:
         """Include text, thinking, and streamed tool arguments in the estimate."""
@@ -51,68 +51,21 @@ class Status:
         elif isinstance(event, FunctionToolResultEvent):
             self.activity = 'working'
 
-    def text(self, frame: str = '') -> str:
+    def text(self) -> str:
         """Use no percentage when the model's context capacity is unknown."""
         context = '?' if self.context_tokens is None else f'{self.context_tokens:,}'
         output = f'~{math.ceil(self.streamed_chars / 4):,} streamed tokens'
         if self.output_tokens is not None:
             output = f'{self.output_tokens:,} output tokens'
-        return f'{frame} {self.model} | context: {context} tokens | {output} | {self.activity}'.strip()
+        text = f'{self.model} | context: {context} tokens | {output} | {self.activity}'
+        if self.queued:
+            text += f' | {self.queued} queued'
+        return text
 
-
-class StatusLine:
-    """Reserve the last row while a run owns the terminal; restore it on exit."""
-
-    def __init__(self, console: Console, status: Status) -> None:
-        """Bind the footer to the same output stream as the renderer."""
-        self.console = console
-        self.status = status
-        self._task: asyncio.Task[None] | None = None
-        self._height = 0
-
-    async def __aenter__(self) -> Self:
-        """Reserve a row only on an interactive terminal."""
-        if self.console.is_terminal and not self.console.is_dumb_terminal:
-            self.console.show_cursor(False)
-            self._draw(0)
-            self._task = asyncio.create_task(self._animate())
-        return self
-
-    async def __aexit__(self, *exc: object) -> None:
-        """Restore scrolling on success, failure, and cancellation."""
-        if self._task is not None:
-            self._task.cancel()
-            try:
-                with contextlib.suppress(asyncio.CancelledError):
-                    await self._task
-            finally:
-                self.console.file.write(f'\x1b7\x1b[r\x1b[{self._height};1H\x1b[2K\x1b8')
-                self.console.show_cursor(True)
-                self.console.file.flush()
-
-    def _draw(self, frame: int) -> None:
-        width, height = self.console.size
-        if height < 3:
-            return
-        # Leave one column unused so the footer cannot trigger autowrap.
-        text = ''.join(char if char.isascii() and char.isprintable() else '?' for char in self.status.text())
-        prefix = '\x1b7'
-        if height != self._height:
-            # After a prompt the cursor is usually on the last row. Index down and back up first,
-            # so the cursor is inside the region before the margins exclude that row; a linefeed
-            # from outside the region makes terminals either overwrite the footer or scroll it away.
-            prefix = f'\x1bD\x1b[1A\x1b7\x1b[1;{height - 1}r'
-            self._height = height
-        text = text[: max(0, width - 1)]
+    def toolbar(self, *, frame: int) -> StyleAndTextTuples:
+        """Plain toolbar colour while idle; a moving magenta-to-white highlight while a turn runs."""
+        text = self.text()
+        if self.activity == 'ready':
+            return [('', text)]
         highlight = frame % (len(text) + 12) - 6
-        shades = tuple(theme.sgr(color) for color in (theme.SUGAR, theme.LIGHT_PURPLE, theme.LITHIUM, theme.PURPLE))
-        painted = ''.join(shades[min(abs(index - highlight) // 2, 3)] + char for index, char in enumerate(text))
-        self.console.file.write(f'{prefix}\x1b[{height};1H\x1b[2K{painted}\x1b[0m\x1b8')
-        self.console.file.flush()
-
-    async def _animate(self) -> None:
-        frame = 0
-        while True:
-            self._draw(frame)
-            frame += 1
-            await asyncio.sleep(0.1)
+        return [(f'fg:{_SHADES[min(abs(index - highlight) // 2, 3)]}', char) for index, char in enumerate(text)]

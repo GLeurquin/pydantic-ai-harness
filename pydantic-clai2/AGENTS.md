@@ -149,7 +149,10 @@ the pydantic.dev `pydantic-visual-identity` skill's `brand-identity.md`.
 | File | Holds |
 |---|---|
 | `_cli.py` | argument parsing, startup, `--agent` |
-| `_app.py` | the prompt loop and built-in `/commands` |
+| `_app.py` | the prompt loop, the input queue, and built-in `/commands` |
+| `prompt_output.py` | `sys.stdout` stand-in that writes complete lines above the live prompt |
+| `prompt_keys.py` | Esc cancels the turn; the escape-sequence timeouts |
+| `status.py` | the bottom toolbar: `Status` and its shimmer |
 | `_session.py` | conversation state; `agent.run` with per-run plugins |
 | `_rendering.py` | streaming Markdown and thinking |
 | `plugins.py` | `PluginHost`, hook names, event dataclasses |
@@ -170,7 +173,12 @@ Keep files concise - we don't need any 10,000 line files. Single responsibility.
 ## Testing
 
 - `pytest-anyio`; real model calls are blocked globally.
-- Drive the shell with `TestModel` and a `Console(file=StringIO())`.
+- Drive the shell with `TestModel` and a `Console(file=StringIO())`. `tests/chat_driver.py`
+  runs `chat` over a prompt-toolkit pipe; a script can type while a turn is blocked
+  on an `Event`, and `RecordingOutput` captures what the toolbar rendered.
+- The prompt stays open during a turn, so anything typed up front is typeahead: it
+  is queued, not run, if it arrives while a turn is running. Commands only run
+  between turns either way.
 - Test a hook by building a `PluginHost`, registering a handler, and firing the
   event from the shell path that owns it. Assert the handler's effect (the
   cancelled turn, the rewritten text), not a mock call count.

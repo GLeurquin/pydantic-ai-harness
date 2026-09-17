@@ -10,16 +10,32 @@ not protect secret files or repository metadata. OS permissions still apply.
 Relative paths use the launch workspace. Use a custom agent with `Coder()` to
 retain workspace-scoped file tools. Shell output is displayed dimly.
 
-## Interrupting a turn
+## Keyboard
 
-Press Ctrl-C once to cancel the active agent turn and return to input. Tool cleanup
-and terminal restoration finish before the next prompt. Press Ctrl-C again within
-two seconds to exit, including across the transition back to input. At the prompt,
-the first press clears input and the second exits. Ctrl-D and `/exit` also quit.
-The interrupted prompt and captured partial responses and tool results stay in
-conversation history, so you can follow up with a clarification. No interrupted
-run is automatically retried. External application cancellation still propagates,
-and completed tool side effects cannot be undone.
+The prompt stays open while a turn streams. Output scrolls above it and the
+status row keeps updating.
+
+| Key | While a turn runs | At an idle prompt |
+|---|---|---|
+| Enter | queues the line; it runs when the turn ends | runs the line |
+| Esc | cancels the turn; what you typed stays in the prompt | nothing |
+| Ctrl-C | cancels the turn and clears the input | clears the input |
+| Ctrl-C twice within two seconds | quits | quits |
+| Ctrl-D (empty input) | cancels the turn and quits | quits |
+| Up / Down | recall input history | recall input history |
+| Tab | complete commands, settings, and `@paths` | complete commands, settings, and `@paths` |
+
+Queued lines run in order between turns, one turn each. `/commands` queue too and
+run between turns, never inside one. The status row shows how many lines are
+waiting; each queued line is echoed again when it starts. An empty line during a
+turn does nothing. Queued input is dropped on exit.
+
+Cancelling a turn (Esc or Ctrl-C) lets tool cleanup finish before the next turn
+starts. The interrupted prompt and captured partial responses and tool results
+stay in conversation history, so you can follow up with a clarification. No
+interrupted run is automatically retried. External application cancellation still
+propagates, and completed tool side effects cannot be undone. Esc waits about a
+third of a second to be sure it was not the start of an Alt-key sequence.
 
 ## Input history
 
@@ -79,15 +95,6 @@ uses the configured backend and does not enforce its encryption or storage polic
 Installing or selecting a plaintext backend can store tokens in plaintext. Core owns
 token refresh through CLAI's `OpenAICodexCredentialSource`. Tests mock keyring,
 the browser, and OAuth exchange and do not access real credentials.
-
-When no keyring backend exists at all (keyring raises `NoKeyringError` or
-`InitError`, typical on a headless Linux box or over SSH), credentials go to a
-`0600` file in `$XDG_CONFIG_HOME/pydantic-clai2/` (`~/.config/pydantic-clai2/` by
-default) instead, named for the account: Codex uses `credentials-openai-codex.json`,
-and the vllm and openrouter connections use their own files. Like keyring entries,
-these files are per user, so `--database PATH` does not move them. `/login` says so in its confirmation. A locked keyring is not treated as
-missing; unlock it instead. Once a keyring becomes available, the next login or
-token refresh moves the credentials there and deletes the file.
 
 The default Coder shell runs under your OS identity, without a sandbox. Commands
 can read files and access credential backends available to that identity, including
@@ -163,8 +170,8 @@ Interactive commands: `/login`, `/set`, `/model`, `/help`, `/new`, `/exit`, `/co
 Tab completion suggests commands, settings, boolean values, plugin identifiers,
 and paths after `@`. Path completion inserts a path; it does not attach file contents.
 Unknown slash commands are not sent to the model. Up/down recall saved prompt
-history. Ctrl-D exits. Ctrl-C at input clears the line; during a run it cancels
-the turn and returns to input. No cancelled run is automatically retried.
+history. Ctrl-D exits. Esc cancels a running turn; Ctrl-C cancels it and clears
+the input. See [Keyboard](#keyboard). No cancelled run is automatically retried.
 
 ## Ask CLAI to customize itself
 
@@ -222,6 +229,9 @@ Streaming matches Code Puppy's separate output and thinking paths:
   without waiting for newlines or interpreting Markdown.
 - Smoothing applies only to interactive terminal output. Redirected output is
   written directly. Parts drain before the next heading, tool status, or prompt.
+- While the prompt is open, output reaches the terminal one complete line at a
+  time, above the prompt. Smoothing paces when each line completes; characters
+  do not appear one by one.
 
 `/set display.smooth_seconds 0.5` restores the Code Puppy response catch-up
 window if you previously saved a slower preference. This response-only setting
@@ -309,12 +319,12 @@ usage. Context is the most recent response's reported input plus output tokens,
 not cumulative conversation billing or a context-window percentage; `?` means
 unavailable. During a request it may reflect the previous response.
 
-While running, the footer reserves the terminal's bottom row using ANSI scrolling
-regions. Its text shimmers with a moving highlight at ten frames per second, with no spinner and a
-16-colour fallback when truecolour is unavailable. Prompt-toolkit owns the footer while accepting input. The run footer is
-disabled for redirected output and restores normal scrolling on cancellation or
-failure. The cursor is hidden during runs and restored on completion, failure,
-or cancellation. No model requests or telemetry are added for status reporting.
+The footer is the prompt's bottom toolbar, so it stays on screen while a turn
+runs and while you type. It refreshes ten times a second; while a turn runs its
+text shimmers with a moving highlight, with no spinner, and it shows how many
+queued lines are waiting. Prompt-toolkit maps the brand colours to the terminal's
+colour depth. There is no footer for redirected output. No model requests or
+telemetry are added for status reporting.
 
 ## Plugins
 
@@ -373,10 +383,10 @@ See `THIRD_PARTY_NOTICES.md` for attribution.
 
 ## vllm connection
 
-Open `/model`, choose `vllm`, then enter a trusted HTTP(S) server root or `/v1` URL, and optionally a token. CLAI queries `/v1/models` and opens a searchable model picker. HTTP sends tokens unencrypted; use HTTPS outside trusted local networks. The connection is saved like Codex's, see [Codex authentication](#codex-authentication).
+Open `/model`, choose `vllm`, then enter a trusted HTTP(S) server root or `/v1` URL, and optionally a token. CLAI queries `/v1/models` and opens a searchable model picker. HTTP sends tokens unencrypted; use HTTPS outside trusted local networks.
 
 ## openrouter connection
 
 Open `/model`, choose `openrouter`, then paste an API key from https://openrouter.ai/keys in the masked prompt, then select a model from the live catalog. CLAI validates the key with `/api/v1/key` before fetching `/api/v1/models`. This flow uses API-key authentication, not browser OAuth.
 
-The connection is saved in the configured Python keyring backend after selection, or in a per-user `0600` file when no keyring backend exists, as described in [Codex authentication](#codex-authentication). Backend security depends on your keyring configuration. Tokens are not stored in SQLite or command history. The selected model persists across restarts. Select the provider again to browse its live models or reconfigure the saved connection. Discovery is explicit and has a 20-second network timeout; redirects are not followed. Agent inference uses Pydantic AI core.
+The connection is saved in the configured Python keyring backend after selection; backend security depends on your keyring configuration. Tokens are not stored in SQLite or command history. The selected model persists across restarts. Select the provider again to browse its live models or reconfigure the saved connection. Discovery is explicit and has a 20-second network timeout; redirects are not followed. Agent inference uses Pydantic AI core.

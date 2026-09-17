@@ -1,20 +1,11 @@
-"""Footer accounting and terminal restoration without provider calls."""
+"""Toolbar accounting without provider calls."""
 
-import asyncio
-import io
-import re
-
-import pytest
+from prompt_toolkit.formatted_text import fragment_list_to_text
 from pydantic_ai import FunctionToolCallEvent, FunctionToolResultEvent, PartDeltaEvent, PartStartEvent
 from pydantic_ai.messages import NativeToolCallPart, TextPart, ToolCallPart, ToolCallPartDelta, ToolReturnPart
-from rich.console import Console
 
-from pydantic_clai2.status import Status, StatusLine
-
-
-@pytest.fixture
-def anyio_backend() -> str:
-    return 'asyncio'
+from pydantic_clai2 import theme
+from pydantic_clai2.status import Status
 
 
 def test_estimate_includes_tool_argument_deltas() -> None:
@@ -42,100 +33,24 @@ def test_tool_status_transitions() -> None:
     assert status.activity == 'working'
 
 
-@pytest.mark.parametrize('truecolor', [False, True])
-async def test_shimmer_without_spinner(monkeypatch: pytest.MonkeyPatch, truecolor: bool) -> None:
-    monkeypatch.setenv('COLORTERM', 'truecolor' if truecolor else '')
-    output = io.StringIO()
-    frames: list[str] = []
-    original_sleep = asyncio.sleep
-
-    async def tick(delay: float) -> None:
-        frames.append(output.getvalue().split('\x1b[2K')[-1])
-        if len(frames) == 11:
-            raise asyncio.CancelledError
-        await original_sleep(0)
-
-    monkeypatch.setattr('pydantic_clai2.status.asyncio.sleep', tick)
-    async with StatusLine(Console(file=output, force_terminal=True, width=40, height=24), Status(model='test\x1b\n')):
-        while len(frames) < 11:
-            await original_sleep(0)
-    plain = [re.sub(r'\x1b\[[0-9;]*m|\x1b8', '', frame) for frame in frames]
-    assert plain[0].startswith('test?? | context:')
-    assert all(frame == plain[0] for frame in plain)
-    assert all(len(frame) == 39 for frame in plain)
-    assert frames[0] != frames[10]
-    assert ('38;2;' in frames[0]) == truecolor
-    assert ('\x1b[38;2;155;119;255m' if truecolor else '\x1b[35m') in frames[0]
-    assert ('\x1b[38;2;0;255;235m' if truecolor else '\x1b[96m') not in output.getvalue()
-    assert '\n' not in output.getvalue()
+def test_queue_count_only_when_waiting() -> None:
+    status = Status(model='test')
+    assert 'queued' not in status.text()
+    status.queued = 2
+    assert status.text().endswith('| ready | 2 queued')
 
 
-async def test_row_reserved_before_margins_and_again_on_resize(monkeypatch: pytest.MonkeyPatch) -> None:
-    output = io.StringIO()
-    original_sleep = asyncio.sleep
-
-    async def tick(delay: float) -> None:
-        await original_sleep(0)
-
-    monkeypatch.setattr('pydantic_clai2.status.asyncio.sleep', tick)
-    console = Console(file=output, force_terminal=True, width=40, height=24)
-    async with StatusLine(console, Status()):
-        for _ in range(3):
-            await original_sleep(0)
-        first = output.getvalue()
-        # Index down then up puts the cursor inside the region before the margins are set.
-        assert first.count('\x1bD\x1b[1A\x1b7\x1b[1;23r') == 1
-        assert first.count('\x1b[24;1H') >= 2
-        console.height = 30
-        for _ in range(3):
-            await original_sleep(0)
-    resized = output.getvalue()[len(first) :]
-    assert resized.count('\x1bD\x1b[1A\x1b7\x1b[1;29r') == 1
-    assert resized.count('\x1b[30;1H') >= 1
-
-
-async def test_tiny_terminal() -> None:
-    async with StatusLine(Console(file=io.StringIO(), force_terminal=True, height=2), Status()):
-        await asyncio.sleep(0)
-
-
-async def test_redirected_output_has_no_footer() -> None:
-    output = io.StringIO()
-    async with StatusLine(Console(file=output, force_terminal=False), Status()):
-        pass
-    assert output.getvalue() == ''
-
-
-@pytest.mark.parametrize('fail', [False, True])
-async def test_cursor_restored_after_run(fail: bool) -> None:
-    output = io.StringIO()
-    try:
-        async with StatusLine(Console(file=output, force_terminal=True, width=80, height=24), Status()):
-            assert '\x1b[?25l' in output.getvalue()
-            assert '\x1b[?25h' not in output.getvalue()
-            if fail:
-                raise ValueError('run failed')
-    except ValueError:
-        assert fail
-    assert output.getvalue().endswith('\x1b[?25h')
-
-
-async def test_cancellation_restores_scroll_region() -> None:
-    output = io.StringIO()
-    entered = asyncio.Event()
-
-    async def run() -> None:
-        async with StatusLine(Console(file=output, force_terminal=True, width=80, height=24), Status()):
-            entered.set()
-            await asyncio.Event().wait()
-
-    task = asyncio.create_task(run())
-    await entered.wait()
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-    assert output.getvalue().startswith('\x1b[?25l\x1bD\x1b[1A\x1b7\x1b[1;23r\x1b[24;1H\x1b[2K')
-    assert '\x1b[23;1H' not in output.getvalue()
-    assert '\n' not in output.getvalue()
-    assert '\x1b[r' in output.getvalue()
-    assert output.getvalue().endswith('\x1b8\x1b[?25h')
+def test_toolbar_shimmers_only_while_running() -> None:
+    status = Status(model='test')
+    idle = status.toolbar(frame=3)
+    assert idle == [('', status.text())]
+    status.activity = 'responding'
+    first = status.toolbar(frame=0)
+    later = status.toolbar(frame=10)
+    assert fragment_list_to_text(first) == fragment_list_to_text(later) == status.text()
+    assert first != later
+    assert {fragment[0] for fragment in first} <= {
+        f'fg:{color}' for color in (theme.SUGAR, theme.LIGHT_PURPLE, theme.LITHIUM, theme.PURPLE)
+    }
+    assert first[0][0] == f'fg:{theme.PURPLE}'
+    assert status.toolbar(frame=6)[0][0] == f'fg:{theme.SUGAR}'

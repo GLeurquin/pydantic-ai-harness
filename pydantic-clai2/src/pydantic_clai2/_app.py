@@ -1,11 +1,16 @@
 """Interactive terminal shell around a capability-independent session."""
 
 import asyncio
+import itertools
+from collections import deque
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Generic, TypeVar
 
+import anyio
+from anyio.abc import TaskGroup
 from prompt_toolkit import PromptSession
+from prompt_toolkit.document import Document
 from pydantic_ai import Agent, AgentStreamEvent
 from pydantic_ai.agent import AbstractAgent
 from pydantic_ai.capabilities import AgentCapability
@@ -30,9 +35,11 @@ from .model_menu import open_model_menu
 from .plugin_loader import PluginError, PluginLoader
 from .plugin_menu import open_plugins_menu
 from .plugins import Renderer, SessionEndReason, SessionStart, TurnEnd, TurnStart
+from .prompt_keys import bind_prompt_keys
+from .prompt_output import output_above_prompt
 from .set_menu import open_settings_menu
 from .settings_store import SettingsStore
-from .status import Status, StatusLine
+from .status import Status
 
 DepsT = TypeVar('DepsT')
 OutputT = TypeVar('OutputT')
@@ -63,13 +70,17 @@ async def chat(
 ) -> None:
     """Start an asyncio terminal conversation with a caller-supplied agent.
 
-    Ctrl-C cancels the current turn or clears input; Ctrl-D and `/exit` quit.
+    The prompt stays open while a turn streams: Esc cancels the turn, Enter queues the
+    next prompt, Ctrl-C cancels or clears input, and Ctrl-D and `/exit` quit.
     Failed and cancelled turns are not added to the retained history.
     """
     console = console or Console()
     console.print()
     print_banner(console)
-    console.print('/new clears history; /exit quits. Ctrl-C interrupts a turn.', style=theme.MUTED)
+    console.print(
+        '/new clears history; /exit quits. Esc cancels a turn; Enter during a turn queues the next prompt.',
+        style=theme.MUTED,
+    )
     settings = settings or Settings(model=None)
     store = store or SettingsStore()
     session = Session(agent, deps=deps, plugins=plugins, usage_limits=usage_limits)
@@ -156,13 +167,15 @@ async def chat(
         if isinstance(plugin, CommandProvider):
             commands.register_many(plugin.get_commands(context))
     status = Status()
+    frames = itertools.count()
     prompt = PromptSession[str](
         history=input_history(store.path.with_name('input-history')),
         completer=PromptCompleter(commands),
         complete_while_typing=True,
         style=COMPLETION_STYLE,
         reserve_space_for_menu=6,
-        bottom_toolbar=lambda: status.text(),
+        bottom_toolbar=lambda: status.toolbar(frame=next(frames)),
+        refresh_interval=0.1,
     )
     shell = _Shell(
         agent=agent,
@@ -176,6 +189,7 @@ async def chat(
         prompt=prompt,
         interrupts=Interrupts(),
     )
+    bind_prompt_keys(prompt, cancel=shell.cancel_turn)
     reason: SessionEndReason = 'error'
     try:
         async with agent:
@@ -185,9 +199,35 @@ async def chat(
         await loader.close(reason)
 
 
+class _TurnEnded(Exception):
+    """Ends the prompt when a turn finishes with input waiting, so the loop can run it."""
+
+
+@dataclass(kw_only=True)
+class _Pending:
+    """One submitted line waiting for its turn."""
+
+    text: str
+    deferred: bool
+    """Submitted while a turn was running; echoed again when it finally starts."""
+
+
+@dataclass(kw_only=True)
+class _Turn:
+    """The running agent turn: cancel its scope from a key, wait on `done` before quitting."""
+
+    text: str
+    scope: anyio.CancelScope = field(default_factory=anyio.CancelScope)
+    done: anyio.Event = field(default_factory=anyio.Event)
+
+
 @dataclass(kw_only=True)
 class _Shell(Generic[DepsT, OutputT]):
-    """The prompt loop; one turn is one `TurnStart`, one agent run, one `TurnEnd`."""
+    """The prompt loop; one turn is one `TurnStart`, one agent run, one `TurnEnd`.
+
+    The prompt stays open while a turn runs as a sibling task. Input submitted meanwhile
+    waits in `queue`; commands and turns only ever start from `_drain`, between turns.
+    """
 
     agent: AbstractAgent[DepsT, OutputT]
     session: Session[DepsT, OutputT]
@@ -199,57 +239,125 @@ class _Shell(Generic[DepsT, OutputT]):
     status: Status
     prompt: PromptSession[str]
     interrupts: Interrupts
+    queue: deque[_Pending] = field(default_factory=deque[_Pending])
+    _active: _Turn | None = None
+    _draft: Document = field(default_factory=Document)
 
     async def run(self) -> SessionEndReason:
+        reason: SessionEndReason = 'error'
+        async with anyio.create_task_group() as tasks:
+            reason = await self._loop(tasks)
+        return reason
+
+    async def _loop(self, tasks: TaskGroup) -> SessionEndReason:
         while True:
+            reason = await self._drain(tasks)
+            if reason is not None:
+                return reason
+            self.status.model = self.session.model or _model_label(self.agent)
+            self.prompt.app.erase_when_done = False
             try:
-                self.status.model = self.session.model or _model_label(self.agent)
-                text = (await self.prompt.prompt_async('> ')).strip()
+                async with output_above_prompt(self.prompt.output):
+                    text = await self.prompt.prompt_async('> ', default=self._draft)
+            except _TurnEnded:
+                continue
             except KeyboardInterrupt:
+                self._draft = Document()
                 if self.interrupts.press():
+                    await self._stop_turn()
                     return 'exit'
-                self.console.print('Input cleared. Press Ctrl-C again within 2 seconds to exit.', style=theme.MUTED)
+                if self._active is None:
+                    self.console.print('Input cleared. Press Ctrl-C again within 2 seconds to exit.', style=theme.MUTED)
+                self.cancel_turn()
                 continue
             except EOFError:
+                await self._stop_turn()
                 return 'eof'
-            if not text:
-                continue
-            self.console.print()
-            if text.startswith('/'):
-                await self.interrupts.run(
-                    _execute_command(self.commands, text, console=self.console, status=self.status)
-                )
-                if text == '/exit' or self.interrupts.exit_requested:
-                    return 'exit'
-                continue
-            if self.session.model is None and self.agent.model is None:
-                self.console.print('Choose a model first: /set model <Tab>', style=theme.WARNING)
-                continue
-            if await self._turn(text):
-                return 'exit'
+            self._draft = Document()
+            self.submit(text)
 
-    async def _turn(self, text: str) -> bool:
-        start = TurnStart(text=text)
+    def submit(self, text: str) -> None:
+        """The one place typed input enters. Steering would route it into the running turn from here."""
+        text = text.strip()
+        if not text:
+            return
+        running = self._active is not None
+        self.queue.append(_Pending(text=text, deferred=running))
+        if running:
+            self.status.queued = len(self.queue)
+            self.console.print(f'Queued until this turn ends ({len(self.queue)} waiting).', style=theme.MUTED)
+
+    def cancel_turn(self) -> None:
+        """Cancel the running turn, if any. Typed input is kept."""
+        if self._active is not None:
+            self._active.scope.cancel()
+
+    async def _stop_turn(self) -> None:
+        """Cancel the running turn and wait for its cleanup and `turn_end` before quitting."""
+        turn = self._active
+        if turn is not None:
+            turn.scope.cancel()
+            await turn.done.wait()
+
+    async def _drain(self, tasks: TaskGroup) -> SessionEndReason | None:
+        """Run queued commands and start the next turn. Only ever runs between turns."""
+        while self._active is None and self.queue:
+            pending = self.queue.popleft()
+            self.status.queued = len(self.queue)
+            if pending.deferred:
+                self.console.print(f'> {pending.text}', style=theme.MUTED, markup=False, highlight=False)
+            self.console.print()
+            if pending.text.startswith('/'):
+                await self.interrupts.run(
+                    _execute_command(self.commands, pending.text, console=self.console, status=self.status)
+                )
+                if pending.text == '/exit' or self.interrupts.exit_requested:
+                    return 'exit'
+            elif self.session.model is None and self.agent.model is None:
+                self.console.print('Choose a model first: /set model <Tab>', style=theme.WARNING)
+            else:
+                self._active = _Turn(text=pending.text)
+                tasks.start_soon(self._run_turn, self._active)
+        return None
+
+    async def _run_turn(self, turn: _Turn) -> None:
+        try:
+            await self._turn(turn)
+        finally:
+            self._active = None
+            turn.done.set()
+            self._resume_loop()
+
+    def _resume_loop(self) -> None:
+        """End the prompt so the loop can run queued input; the draft comes back on the next prompt."""
+        app = self.prompt.app
+        if not self.queue or not app.is_running or app.is_done:
+            return
+        buffer = self.prompt.default_buffer
+        self._draft = Document(buffer.text, buffer.cursor_position)
+        app.erase_when_done = True
+        app.exit(exception=_TurnEnded())
+
+    async def _turn(self, turn: _Turn) -> None:
+        start = TurnStart(text=turn.text)
         try:
             await self.loader.fire(start)
         except PluginError as exc:
             self.console.print(str(exc), style=theme.ERROR, markup=False)
             self.console.print()
             await self.loader.fire(TurnEnd(text=start.text, outcome='failed', error=exc))
-            return False
+            return
         if start.cancelled:
             self.console.print(
                 f'Turn cancelled by a plugin: {start.cancel_reason or "no reason given"}', style=theme.WARNING
             )
             self.console.print()
             await self.loader.fire(TurnEnd(text=start.text, outcome='cancelled'))
-            return False
+            return
         self.session.plugins = (*self.plugins, *self.loader.capabilities())
         self.session.model_settings = self.context.model_settings(self.session.model or _model_label(self.agent))
         ended: TurnEnd | None = None
-
-        async def run_prompt() -> None:
-            nonlocal ended
+        with turn.scope:
             ended = await _run_prompt(
                 self.session,
                 start.text,
@@ -258,17 +366,11 @@ class _Shell(Generic[DepsT, OutputT]):
                 status=self.status,
                 renderers=self.loader.renderers(),
             )
-
-        completed = await self.interrupts.run(run_prompt())
-        _report_interrupt(completed, self.console)
-        await self.loader.fire(ended or TurnEnd(text=start.text, outcome='cancelled'))
-        return self.interrupts.exit_requested
-
-
-def _report_interrupt(completed: bool, console: Console) -> None:
-    if not completed:
-        console.print('Turn cancelled. Press Ctrl-C again within 2 seconds to exit.', style=theme.MUTED)
-        console.print()
+        if ended is None:
+            self.console.print('Turn cancelled.', style=theme.MUTED)
+            self.console.print()
+            ended = TurnEnd(text=start.text, outcome='cancelled')
+        await self.loader.fire(ended)
 
 
 async def _execute_command(commands: Commands, text: str, *, console: Console, status: Status) -> None:
@@ -326,9 +428,8 @@ async def _run_prompt(
     session.on_context_usage = context_usage
     session.on_stream_event = observe
     try:
-        async with StatusLine(console, status):
-            result = await session.prompt(text)
-            await renderer.finish()
+        result = await session.prompt(text)
+        await renderer.finish()
         status.output_tokens = result.usage.output_tokens
         for message in reversed(result.all_messages()):  # pragma: no branch -- successful runs contain a response.
             if isinstance(message, ModelResponse):
@@ -339,7 +440,9 @@ async def _run_prompt(
             console.print()
         return TurnEnd(text=text, outcome='completed', result=result)
     except asyncio.CancelledError:
-        await renderer.abort()
+        # The turn's scope is still cancelled here; shield the abort so its checkpoint completes.
+        with anyio.CancelScope(shield=True):
+            await renderer.abort()
         raise
     except Exception as exc:  # noqa: BLE001 -- interactive boundary reports plugin/provider failures.
         await renderer.finish()

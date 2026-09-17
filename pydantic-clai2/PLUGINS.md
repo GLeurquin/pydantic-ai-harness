@@ -28,13 +28,11 @@ Keep the bundled guide aligned with this contract when changing plugin APIs.
 
 ## Credentials
 
-CLAI's `/login openai-codex` and the vllm and openrouter connections store tokens
-in the configured keyring backend, not plugin settings. Large token bundles use
-multiple entries to fit Windows Credential Manager's size limit. When no keyring
-backend exists, credentials go to a per-account `0600` file under the user's CLAI config
-directory instead. None of this changes plugin APIs. See
-[Codex authentication](README.md#codex-authentication) for storage and security
-details.
+CLAI's `/login openai-codex` stores tokens in the configured keyring backend,
+not plugin settings. Large token bundles use multiple entries to fit Windows
+Credential Manager's size limit. This does not change plugin APIs or add a
+plaintext fallback. See [Codex authentication](README.md#codex-authentication)
+for storage and security details.
 
 ## Where plugins live
 
@@ -199,8 +197,9 @@ Four names belong to CLAI itself. They fire outside the agent run, in the shell:
 | `turn_start` | you pressed Enter on a prompt | `text` | yes: edit `event.text`, or `event.cancel()` |
 | `turn_end` | the turn finished, failed, or was interrupted | `text`, `outcome`, `result`, `error` | no |
 
-Ctrl-C during an agent run keeps the prompt and captured partial messages in
-conversation history for the next turn. Cancellation still reaches the running
+Cancelling an agent run (Esc or Ctrl-C) keeps the prompt and captured partial
+messages in conversation history for the next turn. Input typed during a run
+waits until the run ends; `turn_start` fires for it then, never mid-run. Cancellation still reaches the running
 tools for cleanup; it does not undo completed side effects or retry the run.
 A prompt cancelled by `turn_start` never starts an agent run and is not retained.
 
