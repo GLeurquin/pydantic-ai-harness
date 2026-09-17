@@ -93,6 +93,14 @@ Plugins load and unload while CLAI runs. The rules that make that safe:
   are reported and the plugin stays unloaded; partial registrations from a
   failed `activate` are discarded with the host.
 
+Compaction registers harness `FallbackCompaction` directly with `max_fraction`
+and `context_window` for both strategies. Harness owns the trigger; do not add
+threshold math or an orchestrator in CLAI. Register the usage gauge after the
+chain so yellow means the compacted request still exceeds the threshold.
+`/compact` drives the same chain regardless of threshold. Only `ModelAPIError`,
+`FallbackExceptionGroup`, and `UsageLimitExceeded` select truncation after a
+summary failure; other exceptions propagate.
+
 ## Adding or changing a hook
 
 1. Add the name to the `Literal`, the event dataclass, and the `@overload`.

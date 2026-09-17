@@ -234,8 +234,9 @@ It protects the most recent 50,000 tokens. `ModelAPIError`,
 back to truncation; other exceptions propagate. The summary request is billed
 to the current model unless `summarization_model` selects another.
 
-Compaction is manual, not automatic. `/compact` runs the chain between turns. Add words to say what the
-summary must keep: `/compact the auth refactor, not the CSS`. You get one line
+The chain runs automatically before requests above `threshold` (85% of the context
+window by default). `/compact` runs the same chain between turns regardless of that
+threshold. Add words to say what the summary must keep: `/compact the auth refactor, not the CSS`. You get one line
 with the message counts before and after and an estimate of the tokens saved.
 An empty conversation, or one that fits inside the protected tail, says so and
 sends nothing.
@@ -253,13 +254,16 @@ turns it off, `/compact` included:
 | Key | Default | Does |
 |---|---|---|
 | `strategy` | `"summarization"` | `"truncation"` skips the summary and only drops older messages |
-| `threshold` | `0.85` | fraction of the window that turns the context warning yellow |
+| `threshold` | `0.85` | fraction of the window above which the fallback chain runs |
 | `protected_tokens` | `50000` | tokens of the most recent messages never compacted |
 | `context_window` | unset | overrides the catalog when it is wrong or silent for your model |
 | `summarization_model` | unset | a cheaper model to write the summary; unset uses the one in use |
 
-The context figure turns yellow when a request exceeds `threshold`. Run
-`/compact` to reduce the history, or `/new` to clear it. The figure and colour
+The context figure turns yellow when a request still exceeds `threshold` after
+compaction, for example because the protected tail is too large. For windows smaller
+than 50,000 tokens, redeclare the plugin with a smaller `protected_tokens` value;
+`/compact` does not override that protection. Run `/compact` to retry the chain,
+or `/new` to clear the history. The figure and colour
 refresh with the next request; `/compact` alone does not change them.
 
 ## Ask CLAI to customize itself

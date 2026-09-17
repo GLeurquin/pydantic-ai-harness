@@ -10,13 +10,14 @@ from pydantic_ai import Agent, ModelHTTPError, capture_run_messages
 from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, SystemPromptPart, TextPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai_harness.compaction import FallbackCompaction
 from rich.console import Console
 from test_app_edges import inputs
 
 from pydantic_clai2 import Session, chat
 from pydantic_clai2.compaction import activate
 from pydantic_clai2.config import PluginSettings, Settings
-from pydantic_clai2.plugins import PluginHost, Transcript
+from pydantic_clai2.plugins import PluginHost, SessionEnd, Transcript
 from pydantic_clai2.settings_store import SettingsStore
 
 
@@ -120,20 +121,45 @@ async def test_settings_are_validated_on_activation() -> None:
         make_host(compact_at=0.5)
 
 
-async def test_gauge_warns_without_automatically_compacting() -> None:
-    session = Session(Agent(TestModel()), deps=None)
-    host = make_host(session, context_window=10, protected_tokens=0)
+@pytest.mark.parametrize('strategy', ['summarization', 'truncation'])
+async def test_direct_fallback_capability_compacts_before_gauging(strategy: str) -> None:
+    session = Session(Agent(TestModel(custom_output_text='gist')), deps=None)
+    host = make_host(session, strategy=strategy, context_window=1000, protected_tokens=0)
+    assert isinstance(host.capabilities[0], FallbackCompaction)
     session.plugins = host.capabilities
-    await session.prompt('hello there, this is longer than ten tokens')
-    await session.prompt('another turn above the warning threshold')
-    assert len(session.messages) == 4
-    assert not any(isinstance(part, SystemPromptPart) for message in session.messages for part in message.parts)
-    assert host.status.context_alert
-    assert host.status.context_tokens is not None and host.status.context_tokens > 8, 'the figure is the gauge reading'
-    roomy = make_host(session, context_window=100_000)
-    session.plugins = roomy.capabilities
+    session.replace_messages(
+        [
+            ModelRequest.user_text_prompt('first'),
+            ModelResponse(parts=[TextPart('reply')]),
+            ModelRequest.user_text_prompt('old ' * 1000),
+            ModelResponse(parts=[TextPart('reply')]),
+        ]
+    )
+    await session.prompt('new')
+    assert not any(
+        isinstance(part, UserPromptPart) and part.content == 'old ' * 1000
+        for message in session.messages
+        for part in message.parts
+    )
+    assert any(isinstance(part, SystemPromptPart) for message in session.messages for part in message.parts) == (
+        strategy == 'summarization'
+    )
+    assert not host.status.context_alert, 'the gauge measures the compacted request'
+    assert host.status.context_tokens is not None and host.status.context_tokens < 850
+    cramped = make_host(session, strategy=strategy, context_window=1, protected_tokens=50_000)
+    session.plugins = cramped.capabilities
     await session.prompt('again')
-    assert not roomy.status.context_alert
+    assert cramped.status.context_alert, 'a protected tail can still exceed the threshold'
+
+
+async def test_unloading_clears_the_context_alert() -> None:
+    host = make_host()
+    host.status.context_alert = True
+    host.status.context_tokens = 123
+    for handler in host.handlers:
+        await handler(SessionEnd(reason='exit'))
+    assert not host.status.context_alert
+    assert host.status.context_tokens == 123
 
 
 async def test_shell_loads_the_plugin_and_compacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

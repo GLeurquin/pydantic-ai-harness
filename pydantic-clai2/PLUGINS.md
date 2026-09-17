@@ -77,7 +77,7 @@ otherwise:
 |---|---|---|---|
 | `coder` | `pydantic_ai_harness.coder:Coder` | `{"unrestricted_filesystem": true, "repo_context": false}` | the file and shell tools |
 | `repo_context` | `pydantic_clai2.repo_context` | `{}` | reads `CLAUDE.md` or `AGENTS.md` from the launch directory into the instructions |
-| `compaction` | `pydantic_clai2.compaction` | `{}` | manual `/compact` with summarisation and a truncation fallback, plus the context warning |
+| `compaction` | `pydantic_clai2.compaction` | `{}` | automatic summarisation with a truncation fallback, `/compact`, and the context warning |
 
 `/plugins disable coder` gives you a chat-only CLAI (a writing or research setup
 with `ExaSearch` instead, say); `/plugins enable coder` brings the tools back;
@@ -111,8 +111,12 @@ repository must not run code as you just because you opened it: CLAI names the
 ones waiting at startup, and `/plugins enable NAME` approves one. See
 [Project settings](README.md#project-settings).
 
-`compaction` works the same way. `/plugins disable compaction` turns
-`/compact` and its context warning off; a declaration under the same name
+`compaction` directly registers harness `FallbackCompaction` with
+`max_fraction=threshold`; harness owns the automatic trigger. `/compact` runs the
+same chain unconditionally. Only `ModelAPIError`, `FallbackExceptionGroup`, and
+`UsageLimitExceeded` cause summarisation to fall back to truncation; other exceptions
+propagate. `/plugins disable compaction` turns automatic compaction,
+`/compact`, and its context warning off; a declaration under the same name
 changes its settings (`strategy`, `threshold`, `protected_tokens`,
 `context_window`, `summarization_model`; see the README):
 

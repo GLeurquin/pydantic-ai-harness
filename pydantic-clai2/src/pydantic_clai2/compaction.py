@@ -10,7 +10,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai import RunContext
 from pydantic_ai.exceptions import FallbackExceptionGroup, ModelAPIError, UsageLimitExceeded
 from pydantic_ai_harness.compaction import (
-    CompactionStrategy,
     ContextUsageEvent,
     FallbackCompaction,
     ReportContextUsage,
@@ -21,7 +20,7 @@ from pydantic_ai_harness.compaction import (
 )
 
 from .commands import Command
-from .plugins import PluginHost
+from .plugins import PluginHost, SessionEnd
 
 
 class CompactionSettings(BaseModel):
@@ -37,7 +36,7 @@ class CompactionSettings(BaseModel):
         gt=0,
         le=1,
         allow_inf_nan=False,
-        description='Warn once the history fills this fraction of the context window.',
+        description='Compact once the history exceeds this fraction of the context window.',
     )
     protected_tokens: int = Field(
         default=50_000, ge=0, description='Tokens of the most recent messages that are never compacted.'
@@ -58,24 +57,29 @@ def build_chain(config: CompactionSettings) -> FallbackCompaction[None]:
         max_messages=1, keep_tokens=config.protected_tokens
     )
     if config.strategy == 'truncation':
-        return FallbackCompaction(fallback_chain=[sliding])
+        return FallbackCompaction(
+            fallback_chain=[sliding], max_fraction=config.threshold, context_window=config.context_window
+        )
     summarizer: SummarizingCompaction[None] = SummarizingCompaction(
         model=config.summarization_model, max_messages=1, keep_tokens=config.protected_tokens
     )
     return FallbackCompaction(
         fallback_chain=[summarizer, sliding],
+        max_fraction=config.threshold,
+        context_window=config.context_window,
         fallback_on=(ModelAPIError, FallbackExceptionGroup, UsageLimitExceeded),
     )
 
 
 def activate(host: PluginHost[None]) -> None:
-    """Gauge usage before each request and offer `/compact [focus]`.
+    """Register automatic compaction, gauge the remaining usage, and offer `/compact [focus]`.
 
     Typed for `None` deps because `compact_now` runs the chain on a context with no deps;
     the strategies never read them, so the plugin works with any agent.
     """
     config = host.settings(CompactionSettings)
-    chain: CompactionStrategy[None] = build_chain(config)
+    chain = build_chain(config)
+    host.add(chain)
     host.add(ReportContextUsage(context_window=config.context_window))
 
     @host.on(ContextUsageEvent)
@@ -83,6 +87,10 @@ def activate(host: PluginHost[None]) -> None:
         """Show the request's size as it goes out; the response's reported usage replaces it on arrival."""
         host.status.context_tokens = event.used_tokens
         host.status.context_alert = event.fraction > config.threshold
+
+    @host.on('session_end')
+    async def clear_alert(event: SessionEnd) -> None:
+        host.status.context_alert = False
 
     async def compact(args: list[str]) -> str:
         before = host.conversation.messages
