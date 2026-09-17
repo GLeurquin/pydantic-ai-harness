@@ -63,8 +63,12 @@ class Status:
         return text
 
     def toolbar(self, *, frame: int) -> StyleAndTextTuples:
-        """Plain toolbar colour while idle; a moving magenta-to-white highlight while a turn runs."""
-        text = self.text()
+        """Plain toolbar colour while idle; a moving magenta-to-white highlight while a turn runs.
+
+        Tool names come from the model, so control characters are replaced before they reach
+        the toolbar row.
+        """
+        text = ''.join(char if char.isprintable() else '?' for char in self.text())
         if self.activity == 'ready':
             return [('', text)]
         highlight = frame % (len(text) + 12) - 6

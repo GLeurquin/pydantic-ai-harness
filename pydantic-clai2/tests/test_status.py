@@ -40,6 +40,17 @@ def test_queue_count_only_when_waiting() -> None:
     assert status.text().endswith('| ready | 2 queued')
 
 
+def test_toolbar_replaces_control_characters() -> None:
+    status = Status(model='te\x1bst')
+    status.observe(PartStartEvent(index=0, part=ToolCallPart('shell\x1b]52;c;evil\x07\n', {})))
+    running = fragment_list_to_text(status.toolbar(frame=0))
+    assert 'tool: shell?]52;c;evil??' in running
+    status.activity = 'ready'
+    idle = fragment_list_to_text(status.toolbar(frame=0))
+    assert idle.startswith('te?st |')
+    assert all(char.isprintable() for char in running + idle)
+
+
 def test_toolbar_shimmers_only_while_running() -> None:
     status = Status(model='test')
     idle = status.toolbar(frame=3)
