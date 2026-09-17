@@ -16,7 +16,8 @@ from rich.console import Console
 from test_app_edges import inputs
 
 from pydantic_clai2 import Session, chat
-from pydantic_clai2.attachments import MAX_IMAGE_BYTES, MAX_PENDING_IMAGES, MAX_TEXT_BYTES, Attachments
+from pydantic_clai2 import attachments as attachments_module
+from pydantic_clai2.attachments import MAX_IMAGE_BYTES, MAX_TEXT_BYTES, Attachments
 from pydantic_clai2.commands import Command, Commands
 from pydantic_clai2.prompt_input import PathReferenceCompleter, prompt_completer, prompt_key_bindings
 from pydantic_clai2.settings_store import SettingsStore
@@ -164,10 +165,6 @@ def test_paste_queues_until_next_prompt(tmp_path: Path) -> None:
     attachments = Attachments(root=tmp_path, clipboard=FakeClipboard(PNG))
     assert attachments.paste() == 'Attached a 0.0 KB PNG image to the next prompt (1 queued).'
     assert attachments.paste().endswith('(2 queued).')
-    while len(attachments.pending) < MAX_PENDING_IMAGES:
-        attachments.paste()
-    assert attachments.paste() == 'Clipboard image not attached: 10 already queued. Send a prompt first.'
-    attachments.pending[2:] = []
     resolved = attachments.resolve('what is this?')
     assert isinstance(resolved.content, list)
     assert resolved.content[0] == 'what is this?'
@@ -175,6 +172,20 @@ def test_paste_queues_until_next_prompt(tmp_path: Path) -> None:
     assert len(resolved.content) == 3
     assert attachments.pending == []
     assert attachments.resolve('again').content == 'again'
+
+
+def test_prompt_budget_spans_files_and_pastes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(attachments_module, 'MAX_PROMPT_BYTES', 2 * len(PNG) + 20)
+    (tmp_path / 'a.txt').write_text('aa', encoding='utf-8')
+    (tmp_path / 'b.txt').write_text('bb', encoding='utf-8')
+    attachments = Attachments(root=tmp_path, clipboard=FakeClipboard(PNG))
+    assert attachments.paste().startswith('Attached')
+    assert attachments.paste().startswith('Attached')
+    assert attachments.paste().startswith('Clipboard image not attached: the ')
+    resolved = attachments.resolve('@a.txt @b.txt')
+    assert isinstance(resolved.content, list) and len(resolved.content) == 4
+    assert resolved.warnings == ['@b.txt left as text: the 68 byte prompt budget is used up']
+    assert attachments.paste().startswith('Attached')
 
 
 async def test_session_accepts_multimodal_content() -> None:

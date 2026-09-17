@@ -20,8 +20,8 @@ MAX_TEXT_BYTES = 1_000_000
 """Larger text files are left as plain text; the coding tools read those in pages."""
 MAX_IMAGE_BYTES = 10_000_000
 """Applies to `@image` and `/paste`; a full-screen Retina screenshot is a few MB of PNG."""
-MAX_PENDING_IMAGES = 10
-"""Bounds one prompt at ten clipboard images; sending a prompt drains the queue."""
+MAX_PROMPT_BYTES = 20_000_000
+"""Everything attached to one prompt, referenced files and pasted images together."""
 
 _REFERENCE = re.compile(r'(?<![\w@])@(?:"([^"\n]+)"|(\S+?))[.,;:!?)\]}"\']*(?=\s|$)')
 """`@path` or `@"path with spaces"`. An `@` after a word character is an email or handle, and punctuation
@@ -52,8 +52,8 @@ class Attachments:
             return 'No image on the clipboard.'
         if len(data) > MAX_IMAGE_BYTES:
             return f'Clipboard image not attached: {len(data)} bytes exceeds the {MAX_IMAGE_BYTES} byte limit.'
-        if len(self.pending) >= MAX_PENDING_IMAGES:
-            return f'Clipboard image not attached: {MAX_PENDING_IMAGES} already queued. Send a prompt first.'
+        if len(data) > MAX_PROMPT_BYTES - self._queued_bytes():
+            return f'Clipboard image not attached: the {MAX_PROMPT_BYTES} byte prompt budget is used up. Send a prompt first.'
         self.pending.append(BinaryContent(data, media_type='image/png'))
         return f'Attached a {len(data) / 1024:.1f} KB PNG image to the next prompt ({len(self.pending)} queued).'
 
@@ -62,20 +62,33 @@ class Attachments:
         resolved = Resolved(content=text)
         items: list[UserContent] = []
         seen: set[str] = set()
+        budget = MAX_PROMPT_BYTES - self._queued_bytes()
         for match in _REFERENCE.finditer(text):
             reference = match.group(1) or match.group(2)
             if reference in seen:
                 continue
             seen.add(reference)
             try:
-                items.append(_load(reference, self.root / Path(reference).expanduser()))
+                item = _load(reference, self.root / Path(reference).expanduser())
             except (OSError, ValueError, RuntimeError) as exc:
                 resolved.warnings.append(f'@{reference} left as text: {exc}')
+                continue
+            size = len(item.data) if isinstance(item, BinaryContent) else len(item.encode())
+            if size > budget:
+                resolved.warnings.append(
+                    f'@{reference} left as text: the {MAX_PROMPT_BYTES} byte prompt budget is used up'
+                )
+                continue
+            budget -= size
+            items.append(item)
         items.extend(self.pending)
         self.pending.clear()
         if items:
             resolved.content = [text, *items]
         return resolved
+
+    def _queued_bytes(self) -> int:
+        return sum(len(image.data) for image in self.pending)
 
 
 def _load(reference: str, path: Path) -> str | BinaryContent:
