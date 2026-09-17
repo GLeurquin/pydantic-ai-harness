@@ -195,8 +195,8 @@ override-dependencies = ['anthropic>=1.3.0', 'openai>=2.45.0']
 # unexplained build failure in the `lowest-versions` lanes, which re-resolve this source to the
 # branch tip and ignore `uv.lock`. A rev means a push to that PR cannot break this one silently --
 # it has to be bumped here, which is the coupling made visible.
-logfire = { git = "https://github.com/pydantic/logfire.git", rev = "bd531426bd9ee45ab720c30019c5e974d0a51aac", subdirectory = "logfire" }
-logfire-sdk = { git = "https://github.com/pydantic/logfire.git", rev = "bd531426bd9ee45ab720c30019c5e974d0a51aac", subdirectory = "logfire-sdk" }
+logfire = { git = "https://github.com/pydantic/logfire.git", rev = "ca08c9e15746e53a364fdf72d9156ce87492ad3a", subdirectory = "logfire" }
+logfire-sdk = { git = "https://github.com/pydantic/logfire.git", rev = "ca08c9e15746e53a364fdf72d9156ce87492ad3a", subdirectory = "logfire-sdk" }
 
 
 [tool.hatch.build.targets.wheel]

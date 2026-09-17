@@ -19,7 +19,7 @@ from typing import Any
 import logfire
 import pytest
 from logfire.agent_control import SCHEMA_SHA256
-from logfire.agent_control._schema import _canonical_json  # pyright: ignore[reportPrivateUsage]
+from logfire.agent_control import canonical_json
 from logfire.testing import CaptureLogfire
 from logfire.variables import Rollout, VariableConfig, VariablesConfig
 from logfire.variables.local import LocalVariableProvider
@@ -221,7 +221,7 @@ async def test_the_hint_is_reported_as_written_with_scrubbing_at_its_default(cap
     assert attributes['agent_control.baseline_reduction'] == 'none'
     assert (
         attributes['agent_control.baseline_sha256']
-        == hashlib.sha256(_agent_control._canonical_json(carried)).hexdigest()
+        == hashlib.sha256(canonical_json(carried)).hexdigest()
     )
     assert attributes['agent_control.baseline_bytes'] == len(attributes['agent_control.baseline'].encode())
     # Scrubbing records what it rewrote, so its absence covers every attribute of the span rather
@@ -261,17 +261,20 @@ async def test_the_baseline_digest_changes_only_when_the_code_does(capfire: Capt
 
 
 def test_the_baseline_digest_uses_the_contracts_canonical_json() -> None:
-    """One definition of canonical, pinned against the contract's own.
+    """One definition of canonical, and it is the contract's.
 
-    `SCHEMA_SHA256` is taken over sorted keys, `(',', ':')` separators, and `ensure_ascii=False`, and
-    a baseline digest has to be taken over the same three or the TypeScript core computing one would
-    not agree with this one. The contract's helper is private, so this module states them again and
-    this is what keeps the two from drifting. The probe is non-ASCII on purpose: `ensure_ascii` is
-    the flag an ASCII document cannot tell apart, and it is the one a prompt in any other language
-    would expose first.
+    This used to pin a copy of the canonical form kept here against the contract's, because the
+    contract's helper was private. It is exported now, so there is one function and nothing to drift
+    -- what is left worth asserting is the form itself, since a digest is only comparable across
+    languages while all three of its properties hold: sorted keys, `(',', ':')` separators, and
+    `ensure_ascii=False`. The probe is non-ASCII on purpose: `ensure_ascii` is the flag an ASCII
+    document cannot tell apart, and the one a prompt in any other language would expose first
+    (`json.dumps` escapes it by default and `JSON.stringify` does not).
     """
-    document = {'instructions': 'Grüße, ¿cómo estás?', 'model': 'test:test'}
-    assert _agent_control._canonical_json(document) == _canonical_json(document)
+    document = {'model': 'test:test', 'instructions': 'Grüße, ¿cómo estás?'}
+    # All three properties, readable in one line: `instructions` sorts before `model`, the separators
+    # carry no spaces, and the accents survive unescaped.
+    assert canonical_json(document).decode() == '{"instructions":"Grüße, ¿cómo estás?","model":"test:test"}'
 
 
 async def test_the_hint_lists_every_instruction_block(capfire: CaptureLogfire) -> None:

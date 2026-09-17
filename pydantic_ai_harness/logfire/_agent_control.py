@@ -41,6 +41,7 @@ from logfire.agent_control import (
     apply_settings,
     apply_tool_definitions,
     build_baseline,
+    canonical_json,
     report_issues,
 )
 from logfire.variables import Variable
@@ -181,7 +182,17 @@ def _warn_dropped(message: str) -> None:
     if message in _warned_drops:
         return
     _warned_drops.add(message)
-    warnings.warn(message)
+    try:
+        warnings.warn(message)
+    except Exception:  # pragma: no cover
+        # Emitted filter-independently, for the reason the contract's own `warn_dropped` is: every
+        # drop reported here happens while a managed config is being read or applied, and
+        # `docs/agent-control.md` promises a published config can never crash a run. Under
+        # `-W error` / `filterwarnings = ['error']` `warnings.warn` raises, which does not make
+        # anything stricter -- a drop raised during resolution is caught by logfire's fallback and
+        # silently un-manages every section that did apply. Strictness is `on_unmatched='error'`,
+        # which raises `UserError` naming every entry and is untouched by this.
+        pass
 
 
 def _report(policy: OnUnmatched, issues: Sequence[ApplyIssue]) -> None:
@@ -243,21 +254,6 @@ def _dump(baseline: AgentConfig) -> str:
     return json.dumps(baseline.model_dump(exclude_none=True), indent=2)
 
 
-def _canonical_json(document: dict[str, Any]) -> bytes:
-    """The bytes a digest is taken over: one document, one spelling, in any language.
-
-    Sorted keys and `(',', ':')` separators make the digest independent of how the document happened
-    to be written out, and `ensure_ascii=False` makes it independent of the language computing it --
-    `json.dumps` escapes non-ASCII by default and `JSON.stringify` does not, so the first block of
-    instructions with an accent in it would otherwise give two identical baselines different digests.
-
-    This is the same canonical form the contract takes `SCHEMA_SHA256` over, stated again here
-    because the contract's own helper is private. `test_config_hint.py` pins the two against each
-    other with a non-ASCII probe, which is the only way this can drift without being caught.
-    """
-    return json.dumps(document, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
-
-
 def _baseline_sha256(baseline: AgentConfig) -> str:
     """The digest that says whether two reports describe the same code.
 
@@ -276,7 +272,7 @@ def _baseline_sha256(baseline: AgentConfig) -> str:
     over it. The exemption is `BaseScrubber.SAFE_KEYS` in the `logfire` package, which is what makes
     it one list for every Agent Control SDK rather than a thing each adapter arranges for itself.
     """
-    return hashlib.sha256(_canonical_json(baseline.model_dump(exclude_none=True))).hexdigest()
+    return hashlib.sha256(canonical_json(baseline.model_dump(exclude_none=True))).hexdigest()
 
 
 def _deployment_attributes(instance: logfire.Logfire) -> dict[str, Any]:

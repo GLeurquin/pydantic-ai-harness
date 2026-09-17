@@ -411,6 +411,73 @@ async def test_settings_lower_by_canonical_key_and_ignore_the_rest(publish: Publ
     assert seen == [{'temperature': 0.9, 'top_k': 3, 'top_p': 0.4}]
 
 
+async def test_a_published_config_cannot_crash_a_run_under_an_error_filter(publish: Publish) -> None:
+    """`docs/agent-control.md`: "a published config can never crash a run". Asserted where it can break.
+
+    Every other test here reads its warnings through `pytest.warns`, which captures them, so none of
+    them can tell whether a drop is able to escalate. Under `-W error` -- or this suite's own
+    `filterwarnings = ['error']`, which is how a user most plausibly meets it -- `warnings.warn`
+    raises. A validation drop is warned from inside `Variable.get`, so that raise was caught by
+    logfire's resolution fallback and reported as "could not read the value": every section that did
+    parse stopped applying because one setting had the wrong type, and then the fallback's own warning
+    raised on top and reached the run.
+
+    Fixed in the contract (pydantic/logfire#2389) rather than here, since every Agent Control SDK
+    inherits it, but the claim is this package's so the test belongs here too. Being strict about
+    unmatched entries is `on_unmatched='error'`, which is unaffected.
+    """
+    seen: list[dict[str, object]] = []
+
+    def capture_settings(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        seen.append(dict(info.model_settings or {}))
+        return ModelResponse(parts=[TextPart('done')])
+
+    # `'0.4'` is a string where the schema says number: dropped rather than coerced, with a warning.
+    # Settings alone carry the point -- a managed `model` would need a provider credential to infer,
+    # which is a different failure and would hide this one.
+    publish('nocrash', {'settings': {'temperature': '0.4', 'max_tokens': 2048}})
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        result = await Agent(
+            FunctionModel(capture_settings), capabilities=[AgentControl('nocrash', label='production')]
+        ).run('hello')
+
+    assert result.output == 'done'
+    # The surviving sections still applied: one bad field costs that field, not the whole config.
+    assert seen == [{'max_tokens': 2048}], 'one wrong-typed setting un-managed the rest of the config'
+
+
+async def test_an_unknown_managed_model_cannot_crash_a_run_under_an_error_filter(publish: Publish) -> None:
+    """The same guarantee on this package's own warning path, which is a separate one.
+
+    The drop above is reported by the contract's parser during resolution. This one is reported here,
+    at apply time, when a published `model` string does not name a model: the run keeps the code model
+    and says so. That warning goes through this module's own `_warn_drop`, so it escalated under an
+    error filter independently of the contract's, and took the run down -- for a config whose only
+    fault was naming a model this deployment does not have.
+
+    An unresolvable provider rather than a real one with no key: `infer_model` refuses it without
+    reaching for a credential, so the test asserts the drop rather than an environment.
+    """
+    seen: list[dict[str, object]] = []
+
+    def capture_model(_messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        seen.append(dict(info.model_settings or {}))
+        return ModelResponse(parts=[TextPart('done')])
+
+    publish('unknownmodel', {'model': 'nonesuch:whatever', 'settings': {'max_tokens': 128}})
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        result = await Agent(
+            FunctionModel(capture_model), capabilities=[AgentControl('unknownmodel', label='production')]
+        ).run('hello')
+
+    assert result.output == 'done'
+    # The run reached the code-defined model rather than raising, and the section that did parse
+    # still applied -- one unusable field costs that field.
+    assert seen == [{'max_tokens': 128}]
+
+
 async def test_every_canonical_setting_reaches_the_request(publish: Publish) -> None:
     """`AgentControl` declares it can lower every canonical setting; this is that claim, key by key.
 
