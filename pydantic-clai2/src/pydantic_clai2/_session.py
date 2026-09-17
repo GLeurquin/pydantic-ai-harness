@@ -7,6 +7,7 @@ from anyio import get_cancelled_exc_class
 from pydantic_ai import AgentRunResult, AgentStreamEvent, RunContext, capture_run_messages
 from pydantic_ai.agent import AbstractAgent
 from pydantic_ai.capabilities import AgentCapability
+from pydantic_ai.exceptions import UserError
 from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, UserPromptPart
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
@@ -43,12 +44,19 @@ class Session(Generic[DepsT, OutputT]):
         self.on_stream_event = on_stream_event
         self._messages = list(message_history)
         self._running = False
+        self._run_context: RunContext[DepsT] | None = None
+        self._steered: list[str] = []
         self.on_context_usage: Callable[[int], None] | None = None
 
     @property
     def messages(self) -> list[ModelMessage]:
         """Return a snapshot of the conversation's message list."""
         return list(self._messages)
+
+    @property
+    def running(self) -> bool:
+        """Whether a prompt is in progress, so callers can choose between `steer` and `prompt`."""
+        return self._running
 
     def clear(self) -> None:
         """Start a new conversation without replacing the agent or plugins."""
@@ -62,32 +70,74 @@ class Session(Generic[DepsT, OutputT]):
             raise RuntimeError('A conversation can only run one prompt at a time')
         self._running = True
         try:
-            model = self.resolve_model(self.model) if self.model is not None else None
-            if isinstance(model, Awaitable):
-                model = await model
-            with capture_run_messages() as messages:
-                try:
-                    result = await self.agent.run(
-                        text,
-                        deps=self.deps,
-                        model=model,
-                        model_settings=self.model_settings,
-                        message_history=self._messages,
-                        capabilities=self.plugins,
-                        usage_limits=self.usage_limits,
-                        event_stream_handler=self._stream,
-                    )
-                    self._messages = result.all_messages()
-                    return result
-                except get_cancelled_exc_class():
-                    # Core captures partial responses and tool results during cleanup.
-                    # If cancellation precedes graph startup, retain at least the prompt.
-                    self._messages = messages or [*self._messages, ModelRequest(parts=[UserPromptPart(text)])]
-                    raise
+            result = await self._run(text)
+            while self._steered:
+                # Steered text that missed the run's last model request gets its own run instead of being dropped.
+                result = await self._run('\n\n'.join(self._drain_steered()))
+            return result
         finally:
             self._running = False
+            self._steered.clear()
+
+    async def steer(self, text: str) -> AgentRunResult[OutputT] | None:
+        """Send `text` as a user message at the running prompt's next model request.
+
+        Tool calls already in flight keep running; core's `RunContext.enqueue` delivers the
+        message before the next request, or redirects a run that was about to end into one
+        more request. With no prompt running, this is `prompt(text)` and returns its result.
+        """
+        if not self._running:
+            return await self.prompt(text)
+        self._steered.append(text)
+        self._flush_steered()
+        return None
+
+    def _drain_steered(self) -> list[str]:
+        texts = list(self._steered)
+        self._steered.clear()
+        return texts
+
+    def _flush_steered(self) -> None:
+        """Enqueue buffered text once the run has handed over its context, keeping it if the run has already ended."""
+        if self._run_context is None:
+            return
+        for text in self._drain_steered():
+            try:
+                self._run_context.enqueue(text)
+            except UserError:
+                # The queue closed at the run's final model request; `prompt` sends the leftovers as a follow-up run.
+                self._steered.append(text)
+
+    async def _run(self, text: str) -> AgentRunResult[OutputT]:
+        model = self.resolve_model(self.model) if self.model is not None else None
+        if isinstance(model, Awaitable):
+            model = await model
+        with capture_run_messages() as messages:
+            try:
+                result = await self.agent.run(
+                    text,
+                    deps=self.deps,
+                    model=model,
+                    model_settings=self.model_settings,
+                    message_history=self._messages,
+                    capabilities=self.plugins,
+                    usage_limits=self.usage_limits,
+                    event_stream_handler=self._stream,
+                )
+                self._messages = result.all_messages()
+                return result
+            except get_cancelled_exc_class():
+                # Core captures partial responses and tool results during cleanup.
+                # If cancellation precedes graph startup, retain at least the prompt.
+                self._messages = messages or [*self._messages, ModelRequest(parts=[UserPromptPart(text)])]
+                raise
+            finally:
+                self._run_context = None
 
     async def _stream(self, ctx: RunContext[DepsT], events: AsyncIterable[AgentStreamEvent]) -> None:
+        self._run_context = ctx
+        self._flush_steered()
+
         async def observed() -> AsyncIterable[AgentStreamEvent]:
             async for event in events:
                 if self.on_context_usage is not None:

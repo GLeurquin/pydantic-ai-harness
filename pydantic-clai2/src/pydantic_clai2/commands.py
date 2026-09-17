@@ -5,6 +5,7 @@ import shlex
 from collections.abc import Awaitable, Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeVar
 
 from pydantic import JsonValue, TypeAdapter
 from pydantic_ai.models import known_model_names
@@ -15,8 +16,12 @@ from termflow.tui.completion import (  # pyright: ignore[reportMissingTypeStubs]
     Document,
 )
 
+from ._session import Session
 from .config import SETTING_FIELDS, PluginSettings
 from .settings_store import SettingsStore
+
+DepsT = TypeVar('DepsT')
+OutputT = TypeVar('OutputT')
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -138,6 +143,17 @@ def config_command(store: SettingsStore, args: list[str]) -> str:
     else:
         raise ValueError('Usage: config show|get KEY|set KEY VALUE|reset KEY')
     return 'Saved. Applies when you restart CLAI.'
+
+
+async def steer_command(session: Session[DepsT, OutputT], args: list[str]) -> str:
+    """Route `/steer` into the running turn. The prompt loop owns turns, so idle text is not run here."""
+    text = ' '.join(args).strip()
+    if not text:
+        raise ValueError('Usage: /steer <text>')
+    if not session.running:
+        return 'No turn is running. Type the text as a prompt instead.'
+    await session.steer(text)
+    return 'Queued for the next model request.'
 
 
 def set_completions(args: list[str]) -> Iterable[str]:

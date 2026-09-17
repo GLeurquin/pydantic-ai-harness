@@ -21,7 +21,7 @@ from ._rendering import StreamRenderer
 from ._session import Session
 from .auth import CodexAuth
 from .command_context import CommandContext, CommandProvider
-from .commands import Command, Commands, config_command, config_completions, set_completions
+from .commands import Command, Commands, config_command, config_completions, set_completions, steer_command
 from .config import PluginSettings, Settings
 from .customization import customization_guide
 from .input_history import input_history
@@ -129,6 +129,13 @@ async def chat(
         )
     )
     commands.register(Command(name='exit', description='Quit CLAI', handler=lambda _: 'Goodbye.'))
+    commands.register(
+        Command(
+            name='steer',
+            description='Add text to the running turn at its next model request',
+            handler=lambda args: steer_command(session, args),
+        )
+    )
     commands.register(
         Command(
             name='config',

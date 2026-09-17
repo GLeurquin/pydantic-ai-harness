@@ -87,20 +87,25 @@ async def test_chat_boundaries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, 
 
 
 async def test_model_string_and_non_command_plugin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    inputs(monkeypatch, ['/set', '/set display.thinking', '/config show', '/plugins list', '/new', '/exit'])
+    inputs(
+        monkeypatch,
+        ['/set', '/set display.thinking', '/config show', '/plugins list', '/steer nudge', '/new', '/exit'],
+    )
 
     class Provider(AbstractCapability[None]):
         def get_commands(self, context: CommandContext) -> list[Command]:
             return [Command(name='legacy', description='Legacy command', handler=lambda args: 'ok')]
 
+    output = io.StringIO()
     await chat(
         Agent('test'),
         deps=None,
         plugins=[AbstractCapability(), Provider()],
         settings=Settings(model='test'),
-        console=Console(file=io.StringIO()),
+        console=Console(file=output),
         store=SettingsStore(tmp_path / 'config.db'),
     )
+    assert 'No turn is running' in output.getvalue()
 
 
 @pytest.mark.parametrize('provider', ['openrouter', 'vllm'])

@@ -21,6 +21,19 @@ conversation history, so you can follow up with a clarification. No interrupted
 run is automatically retried. External application cancellation still propagates,
 and completed tool side effects cannot be undone.
 
+## Steering a turn
+
+Text you send while a turn is running does not have to wait for it, and does
+not cancel it. `/steer <text>` hands the text to the running turn as a user
+message, delivered before its next model request; tool calls already in flight
+finish first. If the turn was about to end, it gets one more model request to
+answer you. Text that arrives after the turn's last model request starts a
+follow-up run in the same turn instead of being dropped. This uses Pydantic AI's
+`RunContext.enqueue`, so the steered message is a normal part of the
+conversation history. With no turn running, `/steer` tells you to type the text
+as a prompt instead. Sending text during a turn without `/steer` is coming in a
+separate change to the prompt loop.
+
 ## Input history
 
 Submitted prompts and slash commands persist across restarts for Up/Down recall,
@@ -150,7 +163,7 @@ Settings are validated before writes. `/set` updates the active settings snapsho
 legacy `/config` writes apply on restart; plugin changes apply on the next prompt.
 `--request-limit` controls the full prompt's model-request budget.
 
-Interactive commands: `/login`, `/set`, `/model`, `/help`, `/new`, `/exit`, `/config`, and `/plugins`.
+Interactive commands: `/login`, `/set`, `/model`, `/help`, `/new`, `/steer`, `/exit`, `/config`, and `/plugins`.
 Tab completion suggests commands, settings, boolean values, plugin identifiers,
 and paths after `@`. Path completion inserts a path; it does not attach file contents.
 Unknown slash commands are not sent to the model. Up/down recall saved prompt
