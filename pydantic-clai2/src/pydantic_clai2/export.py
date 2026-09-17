@@ -13,7 +13,9 @@ from pydantic_ai.messages import (
     ModelMessagesTypeAdapter,
     ModelResponse,
     RetryPromptPart,
+    TextContent,
     TextPart,
+    UserContent,
     UserPromptPart,
 )
 
@@ -95,7 +97,15 @@ def _tool_results(messages: Sequence[ModelMessage]) -> dict[str, str]:
 def _user_text(part: UserPromptPart) -> str:
     if isinstance(part.content, str):
         return part.content
-    return ' '.join(item if isinstance(item, str) else f'[{type(item).__name__}]' for item in part.content)
+    return ' '.join(_content_text(item) for item in part.content)
+
+
+def _content_text(item: UserContent) -> str:
+    if isinstance(item, str):
+        return item
+    if isinstance(item, TextContent):
+        return item.content
+    return f'[{type(item).__name__}]'
 
 
 def _one_line(text: str) -> str:

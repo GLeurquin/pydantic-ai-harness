@@ -20,6 +20,7 @@ from pydantic_ai.messages import (
     NativeToolReturnPart,
     RetryPromptPart,
     SystemPromptPart,
+    TextContent,
     TextPart,
     ThinkingPart,
     ToolCallPart,
@@ -77,7 +78,11 @@ def conversation() -> list[ModelMessage]:
         ModelRequest(
             parts=[
                 UserPromptPart(
-                    content=['and this?', BinaryContent(data=b'1', media_type='image/png')],
+                    content=[
+                        'and this?',
+                        BinaryContent(data=b'1', media_type='image/png'),
+                        TextContent(content='tagged'),
+                    ],
                     timestamp=started + timedelta(seconds=3),
                 )
             ]
@@ -96,7 +101,7 @@ def test_markdown_lists_prompts_answers_and_tool_summaries() -> None:
     assert '- `lost({})`: no result recorded\n' in text
     assert '- `web_search({"q":"py"})`: {"hits":3}\n' in text
     assert '\n## Assistant\n\nTwo files: ' in text
-    assert '\n## User\n\nand this? [BinaryContent]\n' in text
+    assert '\n## User\n\nand this? [BinaryContent] tagged\n' in text
     assert 'be terse' not in text
     assert 'hmm' not in text
 
