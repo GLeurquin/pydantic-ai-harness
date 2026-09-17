@@ -5,6 +5,7 @@ inserted as one block by prompt-toolkit's default binding, so a multi-line
 paste is edited before it is submitted.
 """
 
+import re
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -14,6 +15,9 @@ from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 
 from ._completion_adapter import PromptCompleter
 from .commands import Commands
+
+_TOKEN = re.compile(r'(?<![\w@])@(?:"([^"]*)|(\S*))$')
+"""The `@path` or `@"path` token being typed at the cursor."""
 
 
 def prompt_key_bindings() -> KeyBindings:
@@ -36,21 +40,38 @@ class PathReferenceCompleter(Completer):
         self.root = root
 
     def get_completions(self, document: Document, complete_event: CompleteEvent) -> Iterable[Completion]:
-        """Offer the children of the directory the token points into; slash commands are not paths."""
-        word = document.get_word_before_cursor(WORD=True)
-        if document.text_before_cursor.startswith('/') or not word.startswith('@'):
+        """Offer the children of the directory the token points into; slash commands are not paths.
+
+        Names with spaces are completed in the `@"..."` form; the closing quote is
+        added for files and left open for directories so completion can continue.
+        """
+        text = document.text_before_cursor
+        token = None if text.startswith('/') else _TOKEN.search(text)
+        if token is None:
             return
-        reference = word[1:]
+        quoted = token.group(1) is not None
+        reference = token.group(1) if quoted else token.group(2)
         path = self.root / Path(reference).expanduser()
-        directory = path if reference.endswith('/') or not reference else path.parent
-        prefix = '' if reference.endswith('/') or not reference else path.name
+        at_directory = reference.endswith('/') or not reference
+        directory = path if at_directory else path.parent
+        prefix = '' if at_directory else path.name
         try:
             children = sorted(directory.iterdir())
         except OSError:
             return
         for child in children:
-            if child.name.startswith(prefix):
-                suffix = '/' if child.is_dir() else ''
+            if not child.name.startswith(prefix):
+                continue
+            suffix = '/' if child.is_dir() else ''
+            if quoted or ' ' in child.name:
+                head = reference[: len(reference) - len(prefix)]
+                closing = '' if suffix else '"'
+                yield Completion(
+                    f'@"{head}{child.name}{suffix}{closing}',
+                    start_position=-len(token.group(0)),
+                    display=child.name + suffix,
+                )
+            else:
                 yield Completion(child.name[len(prefix) :] + suffix, display=child.name + suffix)
 
 

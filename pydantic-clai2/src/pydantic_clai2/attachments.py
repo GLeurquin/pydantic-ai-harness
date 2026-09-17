@@ -19,8 +19,9 @@ IMAGE_MEDIA_TYPES = {
 MAX_ATTACHMENT_BYTES = 1_000_000
 """Larger files are left as plain text; the coding tools read those in pages."""
 
-_REFERENCE = re.compile(r'(?<![\w@])@(\S+?)[.,;:!?)\]}"\']*(?=\s|$)')
-"""`@` after a word character is an email or handle; punctuation closing the sentence is not part of the path."""
+_REFERENCE = re.compile(r'(?<![\w@])@(?:"([^"\n]+)"|(\S+?))[.,;:!?)\]}"\']*(?=\s|$)')
+"""`@path` or `@"path with spaces"`. An `@` after a word character is an email or handle, and punctuation
+closing the sentence is not part of the path."""
 _FENCE = re.compile(r'`{3,}')
 
 
@@ -51,23 +52,17 @@ class Attachments:
     def resolve(self, text: str) -> Resolved:
         """Attach every readable `@path` and drain pasted images; the text itself is left untouched."""
         resolved = Resolved(content=text)
-        blocks: list[str] = []
-        images: list[BinaryContent] = []
+        items: list[UserContent] = []
         for match in _REFERENCE.finditer(text):
-            reference = match.group(1)
+            reference = match.group(1) or match.group(2)
             try:
-                item = _load(reference, self.root / Path(reference).expanduser())
+                items.append(_load(reference, self.root / Path(reference).expanduser()))
             except (OSError, ValueError) as exc:
                 resolved.warnings.append(f'@{reference} left as text: {exc}')
-                continue
-            if isinstance(item, str):
-                blocks.append(item)
-            else:
-                images.append(item)
-        images.extend(self.pending)
+        items.extend(self.pending)
         self.pending.clear()
-        if blocks or images:
-            resolved.content = [text, *blocks, *images]
+        if items:
+            resolved.content = [text, *items]
         return resolved
 
 
@@ -87,4 +82,5 @@ def _load(reference: str, path: Path) -> str | BinaryContent:
 def _fenced(reference: str, content: str) -> str:
     longest = max((len(run) for run in _FENCE.findall(content)), default=2)
     fence = '`' * (longest + 1)
-    return f'{reference}:\n{fence}\n{content.rstrip()}\n{fence}'
+    newline = '' if content.endswith('\n') else '\n'
+    return f'{reference}:\n{fence}\n{content}{newline}{fence}'

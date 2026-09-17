@@ -58,12 +58,20 @@ def test_path_completion(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     (tmp_path / 'other.txt').touch()
     (tmp_path / 'sub').mkdir()
     (tmp_path / 'sub' / 'inner.md').touch()
+    (tmp_path / 'my dir').mkdir()
+    (tmp_path / 'my dir' / 'my notes.md').touch()
     completer = PathReferenceCompleter(root=tmp_path)
 
     def complete(text: str) -> list[str]:
         return [item.text for item in completer.get_completions(Document(text), CompleteEvent())]
 
-    assert complete('look at @') == ['file.py', 'other.txt', 'sub/']
+    assert complete('look at @') == ['file.py', '@"my dir/', 'other.txt', 'sub/']
+    assert complete('@my') == ['@"my dir/']
+    assert complete('see @"my dir/') == ['@"my dir/my notes.md"']
+    assert complete('see @"my dir/my n') == ['@"my dir/my notes.md"']
+    assert complete('@"sub/in') == ['@"sub/inner.md"']
+    quoted = next(iter(completer.get_completions(Document('see @"my dir/my n'), CompleteEvent())))
+    assert quoted.start_position == -len('@"my dir/my n')
     assert complete('@fi') == ['le.py']
     assert complete('@sub/') == ['inner.md']
     assert complete('@sub/in') == ['ner.md']
@@ -86,16 +94,18 @@ def test_resolve_references(tmp_path: Path) -> None:
     (tmp_path / 'binary.dat').write_bytes(b'\xff\xfe\x00')
     (tmp_path / 'big.txt').write_bytes(b'x' * (MAX_ATTACHMENT_BYTES + 1))
     (tmp_path / 'sub').mkdir()
+    (tmp_path / 'my notes.md').write_text('spaced\n', encoding='utf-8')
     attachments = Attachments(root=tmp_path, clipboard=FakeClipboard(None))
     plain = attachments.resolve('nothing to attach, mail me@example.com')
     assert plain.content == 'nothing to attach, mail me@example.com'
     assert plain.warnings == []
-    resolved = attachments.resolve('read @notes.md, then (@shot.PNG).')
+    resolved = attachments.resolve('read (@shot.PNG), then @notes.md and @"my notes.md".')
     assert isinstance(resolved.content, list)
-    text, block, image = resolved.content
-    assert text == 'read @notes.md, then (@shot.PNG).'
-    assert block == 'notes.md:\n````\n# Notes\n```py\nprint(1)\n```\n````'
+    text, image, block, spaced = resolved.content
+    assert text == 'read (@shot.PNG), then @notes.md and @"my notes.md".'
     assert isinstance(image, BinaryContent) and image.media_type == 'image/png' and image.data == PNG
+    assert block == 'notes.md:\n````\n# Notes\n```py\nprint(1)\n```\n````'
+    assert spaced == 'my notes.md:\n```\nspaced\n```'
     assert resolved.warnings == []
     problems = attachments.resolve('@missing.txt @sub @binary.dat @big.txt')
     assert problems.content == '@missing.txt @sub @binary.dat @big.txt'

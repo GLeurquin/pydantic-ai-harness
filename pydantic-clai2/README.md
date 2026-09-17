@@ -28,8 +28,9 @@ that contains newlines is inserted as one block for you to edit before sending.
 
 Reference workspace files with `@path`. Tab after `@` completes files and
 directories relative to the directory CLAI was launched in; `~` and absolute
-paths work too. When the prompt is sent, each `@path` is attached after your
-text: text files as a fenced block headed by the path, and `.png`, `.jpg`,
+paths work too. Quote a path that contains spaces, as in `@"my notes.md"`;
+completion adds the quotes for you. When the prompt is sent, each reference is
+attached after your text, in the order written: text files as a fenced block headed by the path, and `.png`, `.jpg`,
 `.jpeg`, `.gif`, and `.webp` files as images the model sees directly. The
 `@path` token itself stays in your text. A missing path, a directory, a file
 that is not UTF-8 text, a file over 1 MB, or one you cannot read prints a
