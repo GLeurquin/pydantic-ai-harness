@@ -161,7 +161,9 @@ async def test_export_command_uses_live_conversation(tmp_path: Path, monkeypatch
     output = io.StringIO()
     with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
         pipe.send_text('/export\nhello\n/export talk.md\n/export talk.md\n/exit\n')
-        await chat(agent, deps=None, console=Console(file=output), store=SettingsStore(tmp_path / 'config.db'))
+        await chat(
+            agent, deps=None, console=Console(file=output, width=400), store=SettingsStore(tmp_path / 'config.db')
+        )
     text = output.getvalue()
     assert 'Nothing to export yet.' in text
     assert 'Exported 4 messages to' in text
