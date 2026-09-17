@@ -1,6 +1,7 @@
 """The built-in `diff` plugin: a ledger of the agent's file changes, shown on `/diff`."""
 
 import io
+import os
 from collections.abc import Callable
 from pathlib import Path
 
@@ -136,10 +137,14 @@ async def test_one_path_and_a_reverted_file(tmp_path: Path, monkeypatch: pytest.
     assert plugin.command('/diff keep.txt') == 'No changes to keep.txt this conversation.\n'
 
     await plugin.change('\x1b]0;evil\x07.txt', write('x\n'))
+    await plugin.change('safe\n+++ b\tc', write('y\n'))
     for text in (plugin.command('/diff --stat'), plugin.command('/diff'), plugin.command('/diff \x1bnope')):
-        assert '\x1b' not in text and '\x07' not in text
+        assert '\x1b' not in text and '\x07' not in text and '\n+++ b\tc' not in text
     assert plugin.command('/diff \x1bnope') == 'No changes to \\x1bnope this conversation.\n'
-    assert '\n\\x1b]0;evil\\x07.txt  +1 -0\n' in plugin.command('/diff --stat')
+    stat = plugin.command('/diff --stat')
+    assert '\n\\x1b]0;evil\\x07.txt  +1 -0\n' in stat
+    assert '\nsafe\\n+++ b\\tc       +1 -0\n' in stat
+    assert '--- /dev/null\n+++ b/safe\\n+++ b\\tc\n' in plugin.command('/diff')
 
 
 async def test_nothing_changed_unparseable_arguments_and_reset(tmp_path: Path) -> None:
@@ -237,6 +242,8 @@ async def test_files_over_the_harness_diff_cap_are_listed_not_loaded(
     await plugin.change('dir', lambda path: None)
     (tmp_path / 'locked.txt').write_text('secret\n')
     await plugin.change('locked.txt', lambda path: path.chmod(0))
+    if os.access(tmp_path / 'locked.txt', os.R_OK):
+        pytest.skip('file mode bits are not enforced here')
     try:
         text = plugin.command('/diff')
     finally:

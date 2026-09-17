@@ -52,11 +52,16 @@ def _snapshot(path: Path) -> _Snapshot:
 
 
 def _label(path: Path) -> str:
-    """The path as the user would type it, relative to the working directory when inside it, made inert."""
+    """The path as the user would type it, relative to the working directory when inside it, on one line.
+
+    Control characters are made inert and a newline or tab is escaped the way
+    `git` quotes it, so a filename cannot forge a diff header or break a row.
+    """
     try:
-        return terminal_text(path.relative_to(Path.cwd()).as_posix())
+        text = path.relative_to(Path.cwd()).as_posix()
     except ValueError:
-        return terminal_text(path.as_posix())
+        text = path.as_posix()
+    return terminal_text(text).replace('\n', '\\n').replace('\t', '\\t')
 
 
 @dataclass(kw_only=True)
