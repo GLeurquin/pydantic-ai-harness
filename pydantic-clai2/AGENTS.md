@@ -52,9 +52,11 @@ contract. If code and `PLUGINS.md` disagree, fix one so they agree in the same P
   settings JSON boundary only.
 - **No `getattr`/`hasattr` on a plugin** to discover what it supports. It
   registered the thing or it did not.
-- **Only four host hooks.** `session_start`, `session_end`, `turn_start`,
-  `turn_end`. Adding a fifth needs a use case that core cannot serve; say which
-  core hook you checked and why it does not fit.
+- **Only five host hooks.** `session_start`, `session_end`, `turn_start`,
+  `turn_end`, `history_clear`. Adding a sixth needs a use case that core cannot
+  serve; say which core hook you checked and why it does not fit.
+  `history_clear` exists because `/new` happens between runs, where no core
+  hook fires, and unloading the plugin to reset it would drop its commands.
 
 ## Loading and unloading
 
@@ -75,7 +77,7 @@ Plugins load and unload while CLAI runs. The rules that make that safe:
   (`agent.run(capabilities=...)`), so "active for the next prompt" is the
   natural unit; nothing rebuilds the agent.
 - **Built-ins are declarations, not code paths.** `DEFAULT_PLUGINS` in
-  `_app.py` lists what CLAI ships enabled (`coder`). The loader treats them
+  `_app.py` lists what CLAI ships enabled (`coder`, `diff`). The loader treats them
   like drop-ins with the lowest precedence: a store declaration with the same
   id replaces one, `disable` persists an override, `remove` resets it. Do not
   special-case `Coder` anywhere else; the agent from `create_agent()` has no
@@ -153,6 +155,7 @@ the pydantic.dev `pydantic-visual-identity` skill's `brand-identity.md`.
 | `_session.py` | conversation state; `agent.run` with per-run plugins |
 | `_rendering.py` | streaming Markdown and thinking |
 | `plugins.py` | `PluginHost`, hook names, event dataclasses |
+| `session_diff.py` | the built-in `diff` plugin: the file-change ledger and `/diff` |
 | `plugin_loader.py` | discovery, load, unload, reload; the `/plugins` subcommands |
 | `plugin_menu.py` | the `/plugins` full-screen menu (`PluginMenu` plus its runner) |
 | `field_menu.py` | the shared field editor (`FieldSource`, `FieldMenu`, `Runners`, `run_flow`) |
@@ -164,6 +167,7 @@ the pydantic.dev `pydantic-visual-identity` skill's `brand-identity.md`.
 | `config.py` | `Settings`, `PluginSettings` |
 | `settings_store.py` | the SQLite store under `$XDG_CONFIG_HOME/pydantic-clai2/` |
 | `theme.py` | brand palette, colour roles, `sgr()` |
+| `tool_output.py` | per-tool previews and `print_diff`, the one diff renderer |
 
 Keep files concise - we don't need any 10,000 line files. Single responsibility.
 

@@ -150,7 +150,10 @@ Settings are validated before writes. `/set` updates the active settings snapsho
 legacy `/config` writes apply on restart; plugin changes apply on the next prompt.
 `--request-limit` controls the full prompt's model-request budget.
 
-Interactive commands: `/login`, `/set`, `/model`, `/help`, `/new`, `/exit`, `/config`, and `/plugins`.
+Interactive commands: `/login`, `/set`, `/model`, `/help`, `/new`, `/exit`, `/config`,
+`/plugins`, and `/diff`. `/diff` shows a unified diff of every file the agent
+changed this conversation; `/diff PATH` limits it to one file and `/diff --stat`
+prints one line per file with added and removed line counts.
 Tab completion suggests commands, settings, boolean values, plugin identifiers,
 and paths after `@`. Path completion inserts a path; it does not attach file contents.
 Unknown slash commands are not sent to the model. Up/down recall saved prompt
@@ -233,6 +236,19 @@ still wait for a newline or part boundary, as in Code Puppy's Markdown path.
 Tool calls print once with a filled-circle marker and the tool name, followed by one blank line. Long names
 are truncated to one terminal row. Completion activity remains in the footer
 rather than adding a separate `Finished:` line to the transcript.
+
+## What changed: `/diff`
+
+The built-in `diff` plugin keeps an in-memory ledger of the files the coding
+tools write or edit. For each path it remembers the content before the first
+change, captured when the change is announced and before it is applied, so the
+diff always runs from the state the conversation started with to what is on
+disk now. A file put back to its original content drops out of the list; a
+file that existed and is now gone shows as a deletion. `/new` empties the
+ledger. The ledger does not watch shell commands or your own editor, so changes
+made that way appear only for paths the agent also wrote. It does not use git,
+so it works in any directory. Both `/diff` and the per-write previews use the
+same Termflow diff renderer.
 
 ## Grep previews
 

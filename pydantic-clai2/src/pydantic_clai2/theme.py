@@ -46,6 +46,10 @@ DIFF_ADDITION = '#465258'
 """Aqua over Dark Purple, one quarter strength."""
 DIFF_DELETION = '#682B36'
 """Calcium over Dark Purple, one quarter strength."""
+DIFF_ADDED = AQUA
+"""Added-line counts in a diff summary."""
+DIFF_REMOVED = CALCIUM
+"""Removed-line counts in a diff summary."""
 
 _BASIC = {
     LITHIUM: 95,

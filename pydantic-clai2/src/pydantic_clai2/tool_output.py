@@ -30,6 +30,28 @@ def shell_text(text: str, decoder: AnsiDecoder) -> Text:
     return decoder.decode_line(safe)
 
 
+def print_diff(console: Console, diff: str, *, truncated: bool = False) -> None:
+    """Print a unified diff with Termflow highlighting on a terminal, plain text otherwise."""
+    safe_diff = terminal_text(diff)
+    if safe_diff:
+        if console.is_terminal:
+            console.file.write(
+                DiffRenderer(
+                    theme=DiffTheme(
+                        addition=theme.DIFF_ADDITION,
+                        deletion=theme.DIFF_DELETION,
+                        marker_brighten=2.0,
+                    )
+                ).render(safe_diff)
+            )
+            console.file.flush()
+        else:
+            console.print(safe_diff, markup=False, highlight=False)
+    if truncated:
+        console.print('Diff truncated.', style=theme.MUTED)
+    console.print()
+
+
 class DisplayArguments(BaseModel):
     """Optional display fields for file and shell tools."""
 
@@ -142,26 +164,6 @@ class ToolOutput:
         preview.pending = ''
         preview.completed_lines += 1
 
-    def _diff(self, diff: str, *, truncated: bool) -> None:
-        safe_diff = terminal_text(diff)
-        if safe_diff:
-            if self.console.is_terminal:
-                self.console.file.write(
-                    DiffRenderer(
-                        theme=DiffTheme(
-                            addition=theme.DIFF_ADDITION,
-                            deletion=theme.DIFF_DELETION,
-                            marker_brighten=2.0,
-                        )
-                    ).render(safe_diff)
-                )
-                self.console.file.flush()
-            else:
-                self.console.print(safe_diff, markup=False, highlight=False)
-        if truncated:
-            self.console.print('Diff truncated.', style=theme.MUTED)
-        self.console.print()
-
     def abort(self) -> None:
         """Release pending events when a run ends without tool results."""
         self._writes.clear()
@@ -208,7 +210,7 @@ class ToolOutput:
             if key not in self._headers:
                 self._header('edit_file', event.path)
             self._headers.discard(key)
-            self._diff(event.diff, truncated=event.truncated)
+            print_diff(self.console, event.diff, truncated=event.truncated)
         elif isinstance(event, FileWrittenEvent):
             key = (event.tool_call_id, 'write_file')
             if key not in self._headers:
@@ -216,7 +218,7 @@ class ToolOutput:
             self._headers.discard(key)
             request = self._writes.pop((event.tool_call_id, event.root_dir, event.path), None)
             if request is not None and not request.cancelled:
-                self._diff(request.diff, truncated=request.truncated)
+                print_diff(self.console, request.diff, truncated=request.truncated)
             else:
                 self.console.print()
         else:

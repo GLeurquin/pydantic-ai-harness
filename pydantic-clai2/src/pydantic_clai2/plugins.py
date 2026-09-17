@@ -96,12 +96,17 @@ class TurnEnd:
     error: BaseException | None = None
 
 
-HostEvent = SessionStart | SessionEnd | TurnStart | TurnEnd
+@dataclass(kw_only=True)
+class HistoryClear:
+    """`/new` emptied the conversation. Drop anything you keep per conversation."""
+
+
+HostEvent = SessionStart | SessionEnd | TurnStart | TurnEnd | HistoryClear
 HostEventT = TypeVar('HostEventT', bound=HostEvent)
 HostHandler = Callable[[HostEventT], Awaitable[None]]
 Renderer = Callable[[EventT], RenderableType | None]
 
-HostHookName = Literal['session_start', 'session_end', 'turn_start', 'turn_end']
+HostHookName = Literal['session_start', 'session_end', 'turn_start', 'turn_end', 'history_clear']
 CoreHookName = Literal[
     'before_run',
     'after_run',
@@ -142,6 +147,7 @@ HOST_HOOKS: dict[str, type[HostEvent]] = {
     'session_end': SessionEnd,
     'turn_start': TurnStart,
     'turn_end': TurnEnd,
+    'history_clear': HistoryClear,
 }
 CORE_HOOK_NAMES: frozenset[str] = frozenset(get_args(CoreHookName))
 
@@ -213,6 +219,10 @@ class PluginHost(Generic[DepsT]):
     def on(self, name: Literal['turn_start'], /) -> Callable[[HostHandler[TurnStart]], HostHandler[TurnStart]]: ...
     @overload
     def on(self, name: Literal['turn_end'], /) -> Callable[[HostHandler[TurnEnd]], HostHandler[TurnEnd]]: ...
+    @overload
+    def on(
+        self, name: Literal['history_clear'], /
+    ) -> Callable[[HostHandler[HistoryClear]], HostHandler[HistoryClear]]: ...
     @overload
     def on(self, name: Literal['before_run'], /) -> Callable[[BeforeRunHookFunc], BeforeRunHookFunc]: ...
     @overload

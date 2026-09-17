@@ -90,7 +90,10 @@ The coding tools are themselves the built-in plugin named coder, shown by
 second Coder under another name. To change its options, declare coder again
 with the same name and different JSON; that replaces the built-in. To run
 without coding tools, /plugins disable coder. /plugins remove coder resets the
-built-in to its defaults rather than removing it. Outside a session,
+built-in to its defaults rather than removing it. The /diff command is the
+second built-in plugin, named diff (pydantic_clai2.session_diff); it keeps a
+ledger of the files the agent changed and can be disabled the same way.
+Outside a session,
 clai2 plugins add NAME module[:attr] [JSON] saves for the next startup.
 /plugins opens the management menu. Removing a drop-in disables it persistently;
 delete its source file yourself to remove it from disk.
@@ -110,7 +113,7 @@ Do not mutate another plugin's host or the agent to register a plugin's tools.
 
 ## Hooks, tools and settings
 
-The four host hooks use async observers returning None:
+The five host hooks use async observers returning None:
 
 | Hook | Event | Use |
 | --- | --- | --- |
@@ -118,6 +121,7 @@ The four host hooks use async observers returning None:
 | session_end | SessionEnd(reason) | Clean up; reason is exit, eof, or error |
 | turn_start | TurnStart(text) | Rewrite event.text or event.cancel() |
 | turn_end | TurnEnd(text, outcome, result, error) | Observe completion or failure |
+| history_clear | HistoryClear() | Drop per-conversation state after /new |
 
 Import these event classes from pydantic_clai2.plugins. Event payloads are typed,
 keyword-only dataclasses. A raising turn_start handler cancels the turn. Do not

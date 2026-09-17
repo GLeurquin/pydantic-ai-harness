@@ -29,7 +29,7 @@ from .interrupts import Interrupts
 from .model_menu import open_model_menu
 from .plugin_loader import PluginError, PluginLoader
 from .plugin_menu import open_plugins_menu
-from .plugins import Renderer, SessionEndReason, SessionStart, TurnEnd, TurnStart
+from .plugins import HistoryClear, Renderer, SessionEndReason, SessionStart, TurnEnd, TurnStart
 from .set_menu import open_settings_menu
 from .settings_store import SettingsStore
 from .status import Status, StatusLine
@@ -41,6 +41,7 @@ _PLUGIN_ACTIONS = ('list', 'add', 'enable', 'disable', 'remove', 'reload')
 
 DEFAULT_PLUGINS: tuple[PluginSettings, ...] = (
     PluginSettings(id='coder', factory='pydantic_ai_harness.coder:Coder', settings={'unrestricted_filesystem': True}),
+    PluginSettings(id='diff', factory='pydantic_clai2.session_diff', settings={}),
 )
 """Plugins CLAI ships enabled. `/plugins disable coder` turns the coding tools off; `remove` restores this."""
 
@@ -121,13 +122,13 @@ async def chat(
         )
     )
     commands.register(Command(name='help', description='Show commands', handler=commands.help))
-    commands.register(
-        Command(
-            name='new',
-            description='Clear conversation history',
-            handler=lambda _: session.clear() or 'Conversation cleared.',
-        )
-    )
+
+    async def new_conversation(_: list[str]) -> str:
+        session.clear()
+        await loader.fire(HistoryClear())
+        return 'Conversation cleared.'
+
+    commands.register(Command(name='new', description='Clear conversation history', handler=new_conversation))
     commands.register(Command(name='exit', description='Quit CLAI', handler=lambda _: 'Goodbye.'))
     commands.register(
         Command(
@@ -273,7 +274,9 @@ def _report_interrupt(completed: bool, console: Console) -> None:
 
 async def _execute_command(commands: Commands, text: str, *, console: Console, status: Status) -> None:
     try:
-        console.print(await commands.execute_async(text), markup=False)
+        result = await commands.execute_async(text)
+        if result:
+            console.print(result, markup=False)
     except Exception as exc:  # noqa: BLE001 -- command failures must not exit the interactive shell.
         console.print(str(exc), style=theme.ERROR, markup=False)
     console.print()

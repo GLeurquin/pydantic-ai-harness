@@ -64,11 +64,14 @@ which can retain globals removed from source; initialize plugin state explicitly
 
 Plugins are trusted code running as you. Only install what you trust.
 
-## The built-in plugin
+## The built-in plugins
 
 The coding tools are a plugin too. `/plugins list` shows `coder`, backed by
 `pydantic_ai_harness.coder:Coder`, marked `(built-in)` and enabled unless you
-say otherwise. `/plugins disable coder` gives you a chat-only CLAI (a
+say otherwise. Next to it is `diff`, backed by `pydantic_clai2.session_diff`:
+it listens to the coding tools' file-change events and backs the `/diff`
+command. `/plugins disable diff` removes the command and its ledger; nothing
+else depends on it. `/plugins disable coder` gives you a chat-only CLAI (a
 writing or research setup with `ExaSearch` instead, say); `/plugins enable
 coder` brings the tools back; `/plugins remove coder` cannot forget a built-in,
 so it resets it to its defaults. To run `Coder` with different options, add your
@@ -188,7 +191,7 @@ def activate(host: PluginHost) -> None:
 `event` your handler receives for each name. A typo is an error, not silence.
 `host.on` is always used as a decorator.
 
-Four names belong to CLAI itself. They fire outside the agent run, in the shell:
+Five names belong to CLAI itself. They fire outside the agent run, in the shell:
 
 | Name | When | Event fields | Can change things? |
 |---|---|---|---|
@@ -196,6 +199,11 @@ Four names belong to CLAI itself. They fire outside the agent run, in the shell:
 | `session_end` | CLAI is quitting | `reason`: `exit`, `eof`, or `error` | no |
 | `turn_start` | you pressed Enter on a prompt | `text` | yes: edit `event.text`, or `event.cancel()` |
 | `turn_end` | the turn finished, failed, or was interrupted | `text`, `outcome`, `result`, `error` | no |
+| `history_clear` | `/new` emptied the conversation | none | no |
+
+`history_clear` is for state you keep per conversation, such as the `/diff`
+ledger. The plugin stays loaded and keeps everything it registered; only the
+conversation is new.
 
 Ctrl-C during an agent run keeps the prompt and captured partial messages in
 conversation history for the next turn. Cancellation still reaches the running
