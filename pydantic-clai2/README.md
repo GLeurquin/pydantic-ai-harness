@@ -235,7 +235,8 @@ current model, keeping the most recent 50,000 tokens as they were. If the
 summary request fails or would blow the run's usage limit, the chain falls back
 to plain truncation of the same older messages, so a broken summariser never
 fails the run. The summary request counts as one model request, billed to the
-model in use. Nothing in CLAI decides when; the capability does, with the same
+model in use unless `summarization_model` names a cheaper one. Nothing in CLAI
+decides when; the capability does, with the same
 rules it follows in any agent.
 
 `/compact` runs the same chain now, between turns. Add words to say what the
@@ -265,8 +266,8 @@ turns it off, `/compact` included:
 The context figure in the status line turns yellow when a request went out with
 the history still above `threshold`, which means compaction could not bring it
 under: the protected tail alone is that large, or the assumed window is too big.
-`/compact` with a smaller `protected_tokens`, `/new`, or a correct
-`context_window` fixes that. The figure and its colour describe the last request and refresh
+Redeclaring the plugin with a smaller `protected_tokens` or a correct
+`context_window`, or `/new`, fixes that. The figure and its colour describe the last request and refresh
 with the next one, so `/compact` alone does not change them.
 
 ## Ask CLAI to customize itself
