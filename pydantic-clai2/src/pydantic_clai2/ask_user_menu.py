@@ -104,7 +104,8 @@ class TerminalAnswerer:
                 result = await run_worker(partial(self._runners.run_choice, menu))
                 if result.cancelled:
                     return AskUserResponse(cancelled=True)
-                selected = tuple(item.value for item in result.items if isinstance(item.value, str))
+                # Never empty: on a multi-select menu, Enter with nothing toggled picks the highlighted row.
+                selected = tuple(str(item.value) for item in result.items)
                 answers.append(AskUserAnswer(header=question.header, selected=selected))
         return AskUserResponse(answers=tuple(answers))
 

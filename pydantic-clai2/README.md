@@ -357,8 +357,9 @@ When the task is ambiguous, the model can call `ask_user_question` instead of
 guessing. Each question opens a full-screen menu: options as rows, the question
 and the highlighted option's description alongside, `question 2 of 3` in the
 title when there are several. Enter picks one; on multi-select questions Space
-toggles and Enter confirms; Esc or Ctrl-C declines, which the model is told so
-it can make a stated choice and carry on. Your picks are printed to the
+toggles and Enter confirms (with nothing toggled, Enter picks the highlighted
+option); Esc or Ctrl-C declines, which the model is told so it can make a
+stated choice and carry on. Your picks are printed to the
 transcript afterwards.
 
 The menu is the built-in `ask_user` plugin around the harness's
