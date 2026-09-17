@@ -161,6 +161,9 @@ the pydantic.dev `pydantic-visual-identity` skill's `brand-identity.md`.
 | `model_catalog.py` | model sources (genai-prices today) merged by `catalog()` |
 | `model_settings.py` | `ModelSettingsForm`, the editable subset of `ModelSettings` |
 | `commands.py` | `Command`, the registry, completion |
+| `prompt_input.py` | prompt key bindings (newline keys) and the merged `/command` plus `@path` completer |
+| `attachments.py` | `@path` resolution into core `UserContent`, and the `/paste` queue |
+| `clipboard.py` | the `Clipboard` protocol and the `SystemClipboard` that shells out |
 | `config.py` | `Settings`, `PluginSettings` |
 | `settings_store.py` | the SQLite store under `$XDG_CONFIG_HOME/pydantic-clai2/` |
 | `theme.py` | brand palette, colour roles, `sgr()` |

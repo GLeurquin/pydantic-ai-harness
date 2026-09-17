@@ -4,7 +4,6 @@ import json
 import shlex
 from collections.abc import Awaitable, Callable, Iterable, Iterator
 from dataclasses import dataclass
-from pathlib import Path
 
 from pydantic import JsonValue, TypeAdapter
 from pydantic_ai.models import known_model_names
@@ -75,20 +74,9 @@ class Commands(Completer):
         return result if isinstance(result, str) else await result
 
     def get_completions(self, document: Document, complete_event: CompleteEvent) -> Iterator[Completion]:
-        """Complete slash commands, contextual arguments, and @file paths."""
+        """Complete slash commands and their contextual arguments; `@path` completion lives in `prompt_input`."""
         text = document.text_before_cursor
         if not text.startswith('/'):
-            word = document.get_word_before_cursor(WORD=True)
-            if word.startswith('@'):
-                path = Path(word[1:]).expanduser()
-                directory = path if word.endswith('/') else path.parent
-                prefix = '' if word.endswith('/') else path.name
-                try:
-                    for child in sorted(directory.iterdir()):
-                        if child.name.startswith(prefix):
-                            yield Completion(child.name[len(prefix) :] + ('/' if child.is_dir() else ''))
-                except OSError:
-                    return
             return
         words = text[1:].split()
         if len(words) <= 1 and not text.endswith(' '):

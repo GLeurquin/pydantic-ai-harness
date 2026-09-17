@@ -21,6 +21,31 @@ conversation history, so you can follow up with a clarification. No interrupted
 run is automatically retried. External application cancellation still propagates,
 and completed tool side effects cannot be undone.
 
+## Input
+
+Enter sends the prompt. Alt-Enter or Ctrl-J starts a new line, and a paste
+that contains newlines is inserted as one block for you to edit before sending.
+
+Reference workspace files with `@path`. Tab after `@` completes files and
+directories relative to the directory CLAI was launched in; `~` and absolute
+paths work too. When the prompt is sent, each `@path` is attached after your
+text: text files as a fenced block headed by the path, and `.png`, `.jpg`,
+`.jpeg`, `.gif`, and `.webp` files as images the model sees directly. The
+`@path` token itself stays in your text. A missing path, a directory, a file
+that is not UTF-8 text, a file over 1 MB, or one you cannot read prints a
+warning and is left as plain text. An `@` inside a word, as in an email
+address, is not a reference.
+
+`/paste` attaches the image on the system clipboard to your next prompt and
+reports its size; run it more than once to attach several. macOS uses
+`pngpaste` when installed, otherwise `osascript`. Linux uses `wl-paste` under
+Wayland or `xclip`. Other platforms, an empty clipboard, or a clipboard without
+an image report `No image on the clipboard.` Pasting an image with the
+terminal's own paste key is not supported; terminals only paste text.
+
+Images need a model that accepts them. The provider rejects the request
+otherwise, and the turn is reported as failed and not saved.
+
 ## Input history
 
 Submitted prompts and slash commands persist across restarts for Up/Down recall,
@@ -150,9 +175,9 @@ Settings are validated before writes. `/set` updates the active settings snapsho
 legacy `/config` writes apply on restart; plugin changes apply on the next prompt.
 `--request-limit` controls the full prompt's model-request budget.
 
-Interactive commands: `/login`, `/set`, `/model`, `/help`, `/new`, `/exit`, `/config`, and `/plugins`.
+Interactive commands: `/login`, `/set`, `/model`, `/help`, `/new`, `/exit`, `/config`, `/plugins`, and `/paste`.
 Tab completion suggests commands, settings, boolean values, plugin identifiers,
-and paths after `@`. Path completion inserts a path; it does not attach file contents.
+and paths after `@` (see Input above).
 Unknown slash commands are not sent to the model. Up/down recall saved prompt
 history. Ctrl-D exits. Ctrl-C at input clears the line; during a run it cancels
 the turn and returns to input. No cancelled run is automatically retried.

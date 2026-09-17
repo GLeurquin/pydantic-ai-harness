@@ -59,7 +59,7 @@ async def test_set_without_initial_model(tmp_path: Path) -> None:
     store = SettingsStore(tmp_path / 'config.db')
     with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
         pipe.send_text(
-            'hello\n/set model test\n/set display.thinking false\n/set run.request_limit 123\nhello\n/exit\n'
+            'hello\r/set model test\r/set display.thinking false\r/set run.request_limit 123\rhello\r/exit\r'
         )
         await chat(Agent(), deps=None, console=Console(file=output), store=store)
     assert 'Choose a model first' in output.getvalue()
@@ -94,7 +94,7 @@ async def test_drop_in_plugin_commands_and_hooks(tmp_path: Path) -> None:
     )
     output = io.StringIO()
     with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
-        pipe.send_text('/help\n/greet Mike\nhello\n/plugins list\n/exit\n')
+        pipe.send_text('/help\r/greet Mike\rhello\r/plugins list\r/exit\r')
         await chat(
             Agent(TestModel(custom_output_text='hi')),
             deps=None,
@@ -122,7 +122,7 @@ async def test_coder_is_a_builtin_plugin(tmp_path: Path) -> None:
 
     output = io.StringIO()
     with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
-        pipe.send_text('/plugins list\nhello\n/plugins disable coder\nhello\n/plugins remove coder\n/exit\n')
+        pipe.send_text('/plugins list\rhello\r/plugins disable coder\rhello\r/plugins remove coder\r/exit\r')
         await chat(
             Agent(TestModel(call_tools=[], custom_output_text='hi'), deps_type=type(None)),
             deps=None,
@@ -155,7 +155,7 @@ async def test_plugin_can_cancel_a_turn(tmp_path: Path) -> None:
     )
     output = io.StringIO()
     with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
-        pipe.send_text('stop\nboom\n/exit\n')
+        pipe.send_text('stop\rboom\r/exit\r')
         await chat(Agent(TestModel(custom_output_text='never')), deps=None, console=Console(file=output), store=store)
     text = output.getvalue()
     assert 'Turn cancelled by a plugin: not today' in text
@@ -206,7 +206,7 @@ def test_set_autocomplete() -> None:
 async def test_prompt_loop_commands(tmp_path: Path) -> None:
     output = io.StringIO()
     with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
-        pipe.send_text('/help\nhello\n/new\n/exit\n')
+        pipe.send_text('/help\rhello\r/new\r/exit\r')
         await chat(
             Agent(TestModel(custom_output_text='hello back')),
             deps=None,
@@ -240,13 +240,6 @@ def test_import_is_light() -> None:
         text=True,
     )
     assert result.returncode == 0, result.stderr
-
-
-def test_file_completion(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    (tmp_path / 'example.py').touch()
-    monkeypatch.chdir(tmp_path)
-    completions = list(Commands().get_completions(Document('read @exam'), CompleteEvent()))
-    assert any('ple.py' in completion.text for completion in completions)
 
 
 def test_splash_restores_streams(monkeypatch: pytest.MonkeyPatch) -> None:

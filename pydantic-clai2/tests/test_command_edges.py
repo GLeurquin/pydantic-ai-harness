@@ -24,18 +24,7 @@ def test_command_boundaries(tmp_path: Path) -> None:
     assert commands.execute('/') == '/hello: hello'
     with pytest.raises(ValueError, match='Unknown command'):
         commands.execute('/missing')
-    (tmp_path / 'file').touch()
-    (tmp_path / 'directory').mkdir()
-    for text in (
-        '/ ',
-        '/missing ',
-        '/hello n',
-        '/hello ',
-        f'@{tmp_path}/',
-        f'@{tmp_path}/fi',
-        f'@{tmp_path}/missing/',
-        'plain',
-    ):
+    for text in ('/ ', '/missing ', '/hello n', '/hello ', '@file', 'plain'):
         list(commands.get_completions(Document(text), CompleteEvent()))
     assert list(config_completions(['set', 'display.thinking', ''])) == ['true', 'false']
     assert list(config_completions([]))

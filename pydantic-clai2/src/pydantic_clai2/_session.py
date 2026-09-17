@@ -7,7 +7,7 @@ from anyio import get_cancelled_exc_class
 from pydantic_ai import AgentRunResult, AgentStreamEvent, RunContext, capture_run_messages
 from pydantic_ai.agent import AbstractAgent
 from pydantic_ai.capabilities import AgentCapability
-from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, UserPromptPart
+from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, UserContent, UserPromptPart
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import UsageLimits
@@ -56,8 +56,12 @@ class Session(Generic[DepsT, OutputT]):
             raise RuntimeError('Cannot clear a running conversation')
         self._messages.clear()
 
-    async def prompt(self, text: str) -> AgentRunResult[OutputT]:
-        """Execute the complete native agent loop, including tool calls."""
+    async def prompt(self, content: str | Sequence[UserContent]) -> AgentRunResult[OutputT]:
+        """Execute the complete native agent loop, including tool calls.
+
+        `content` is passed to `agent.run` as is: plain text, or text mixed with
+        core's `BinaryContent` and URL parts for images and documents.
+        """
         if self._running:
             raise RuntimeError('A conversation can only run one prompt at a time')
         self._running = True
@@ -68,7 +72,7 @@ class Session(Generic[DepsT, OutputT]):
             with capture_run_messages() as messages:
                 try:
                     result = await self.agent.run(
-                        text,
+                        content,
                         deps=self.deps,
                         model=model,
                         model_settings=self.model_settings,
@@ -82,7 +86,7 @@ class Session(Generic[DepsT, OutputT]):
                 except get_cancelled_exc_class():
                     # Core captures partial responses and tool results during cleanup.
                     # If cancellation precedes graph startup, retain at least the prompt.
-                    self._messages = messages or [*self._messages, ModelRequest(parts=[UserPromptPart(text)])]
+                    self._messages = messages or [*self._messages, ModelRequest(parts=[UserPromptPart(content)])]
                     raise
         finally:
             self._running = False

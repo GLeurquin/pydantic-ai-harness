@@ -3,23 +3,26 @@
 import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Generic, TypeVar
 
 from prompt_toolkit import PromptSession
 from pydantic_ai import Agent, AgentStreamEvent
 from pydantic_ai.agent import AbstractAgent
 from pydantic_ai.capabilities import AgentCapability
-from pydantic_ai.messages import ModelResponse
+from pydantic_ai.messages import ModelResponse, UserContent
 from pydantic_ai.models import Model
 from pydantic_ai.usage import UsageLimits
 from rich.console import Console
 
 from . import openrouter, theme, vllm
 from ._branding import print_banner
-from ._completion_adapter import COMPLETION_STYLE, PromptCompleter
+from ._completion_adapter import COMPLETION_STYLE
 from ._rendering import StreamRenderer
 from ._session import Session
+from .attachments import Attachments
 from .auth import CodexAuth
+from .clipboard import Clipboard, SystemClipboard
 from .command_context import CommandContext, CommandProvider
 from .commands import Command, Commands, config_command, config_completions, set_completions
 from .config import PluginSettings, Settings
@@ -30,6 +33,7 @@ from .model_menu import open_model_menu
 from .plugin_loader import PluginError, PluginLoader
 from .plugin_menu import open_plugins_menu
 from .plugins import Renderer, SessionEndReason, SessionStart, TurnEnd, TurnStart
+from .prompt_input import prompt_completer, prompt_key_bindings
 from .set_menu import open_settings_menu
 from .settings_store import SettingsStore
 from .status import Status, StatusLine
@@ -60,11 +64,13 @@ async def chat(
     settings: Settings | None = None,
     store: SettingsStore | None = None,
     builtin_plugins: Sequence[PluginSettings] = (),
+    clipboard: Clipboard | None = None,
 ) -> None:
     """Start an asyncio terminal conversation with a caller-supplied agent.
 
     Ctrl-C cancels the current turn or clears input; Ctrl-D and `/exit` quit.
     Failed and cancelled turns are not added to the retained history.
+    `clipboard` backs `/paste`; it defaults to the system clipboard.
     """
     console = console or Console()
     console.print()
@@ -129,6 +135,14 @@ async def chat(
         )
     )
     commands.register(Command(name='exit', description='Quit CLAI', handler=lambda _: 'Goodbye.'))
+    attachments = Attachments(root=Path.cwd(), clipboard=clipboard or SystemClipboard())
+    commands.register(
+        Command(
+            name='paste',
+            description='Attach the clipboard image to the next prompt',
+            handler=lambda _: attachments.paste(),
+        )
+    )
     commands.register(
         Command(
             name='config',
@@ -158,8 +172,9 @@ async def chat(
     status = Status()
     prompt = PromptSession[str](
         history=input_history(store.path.with_name('input-history')),
-        completer=PromptCompleter(commands),
+        completer=prompt_completer(commands, root=attachments.root),
         complete_while_typing=True,
+        key_bindings=prompt_key_bindings(),
         style=COMPLETION_STYLE,
         reserve_space_for_menu=6,
         bottom_toolbar=lambda: status.text(),
@@ -175,6 +190,7 @@ async def chat(
         status=status,
         prompt=prompt,
         interrupts=Interrupts(),
+        attachments=attachments,
     )
     reason: SessionEndReason = 'error'
     try:
@@ -199,6 +215,7 @@ class _Shell(Generic[DepsT, OutputT]):
     status: Status
     prompt: PromptSession[str]
     interrupts: Interrupts
+    attachments: Attachments
 
     async def run(self) -> SessionEndReason:
         while True:
@@ -246,6 +263,9 @@ class _Shell(Generic[DepsT, OutputT]):
             return False
         self.session.plugins = (*self.plugins, *self.loader.capabilities())
         self.session.model_settings = self.context.model_settings(self.session.model or _model_label(self.agent))
+        resolved = self.attachments.resolve(start.text)
+        for warning in resolved.warnings:
+            self.console.print(warning, style=theme.WARNING, markup=False)
         ended: TurnEnd | None = None
 
         async def run_prompt() -> None:
@@ -253,6 +273,7 @@ class _Shell(Generic[DepsT, OutputT]):
             ended = await _run_prompt(
                 self.session,
                 start.text,
+                content=resolved.content,
                 console=self.console,
                 settings=self.context.settings,
                 status=self.status,
@@ -298,6 +319,7 @@ async def _run_prompt(
     session: Session[DepsT, OutputT],
     text: str,
     *,
+    content: str | Sequence[UserContent],
     console: Console,
     settings: Settings,
     status: Status,
@@ -327,7 +349,7 @@ async def _run_prompt(
     session.on_stream_event = observe
     try:
         async with StatusLine(console, status):
-            result = await session.prompt(text)
+            result = await session.prompt(content)
             await renderer.finish()
         status.output_tokens = result.usage.output_tokens
         for message in reversed(result.all_messages()):  # pragma: no branch -- successful runs contain a response.
