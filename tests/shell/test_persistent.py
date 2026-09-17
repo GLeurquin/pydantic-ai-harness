@@ -44,13 +44,14 @@ async def receive_exactly(stream: SocketStream, size: int) -> bytes:
 
 
 async def wait_for_exit(pid: int) -> None:
+    """Wait for `pid` to be reaped; a process init reaps may linger as a zombie for a moment, or not at all."""
     with anyio.fail_after(10):
         while True:
             try:
                 os.kill(pid, 0)
             except ProcessLookupError:
                 return
-            await anyio.sleep(0.01)
+            await anyio.sleep(0.01)  # pragma: lax no cover
 
 
 async def shell(
