@@ -96,7 +96,10 @@ def _due(last: str | None, moment: datetime) -> bool:
 
 
 def _numbers(release: str) -> tuple[int, ...] | None:
-    """Plain `X.Y.Z` releases compare as integers; anything else (pre-releases, dev builds) is not compared."""
+    """Plain `X.Y.Z` releases compare as integers, `1.0` equal to `1.0.0`; pre-releases and dev builds are not compared."""
     if re.fullmatch(r'\d+(\.\d+)*', release) is None:
         return None
-    return tuple(int(number) for number in release.split('.'))
+    numbers = [int(number) for number in release.split('.')]
+    while len(numbers) > 1 and numbers[-1] == 0:
+        numbers.pop()
+    return tuple(numbers)

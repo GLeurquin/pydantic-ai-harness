@@ -16,6 +16,8 @@ from pydantic_ai.messages import (
     ModelMessagesTypeAdapter,
     ModelRequest,
     ModelResponse,
+    NativeToolCallPart,
+    NativeToolReturnPart,
     RetryPromptPart,
     SystemPromptPart,
     TextPart,
@@ -65,7 +67,11 @@ def conversation() -> list[ModelMessage]:
             ]
         ),
         ModelResponse(
-            parts=[TextPart(content='Two files: ' + 'x' * 200)],
+            parts=[
+                NativeToolCallPart(tool_name='web_search', args={'q': 'py'}, tool_call_id='native-1'),
+                NativeToolReturnPart(tool_name='web_search', content={'hits': 3}, tool_call_id='native-1'),
+                TextPart(content='Two files: ' + 'x' * 200),
+            ],
             timestamp=started + timedelta(seconds=2),
         ),
         ModelRequest(
@@ -88,6 +94,7 @@ def test_markdown_lists_prompts_answers_and_tool_summaries() -> None:
     assert '- `ls({"path":"."})`: a.py\n' in text
     assert '- `cat({"path": "x"})`: retry requested: wrong path' in text
     assert '- `lost({})`: no result recorded\n' in text
+    assert '- `web_search({"q":"py"})`: {"hits":3}\n' in text
     assert '\n## Assistant\n\nTwo files: ' in text
     assert '\n## User\n\nand this? [BinaryContent]\n' in text
     assert 'be terse' not in text

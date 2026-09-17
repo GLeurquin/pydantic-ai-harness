@@ -65,12 +65,19 @@ async def test_newer_release_prints_one_muted_line(tmp_path: Path) -> None:
     assert store.state(STATE_KEY) == NOW.isoformat()
 
 
-@pytest.mark.parametrize('latest', ['0.1.0', '0.0.9', '0.2.0rc1', ValueError('down')])
+@pytest.mark.parametrize('latest', ['0.1.0', '0.1', '0.1.0.0', '0.0.9', '0.2.0rc1', ValueError('down')])
 async def test_same_older_unparsable_or_failing_release_is_silent(tmp_path: Path, latest: str | Exception) -> None:
     store = SettingsStore(tmp_path / 'config.db')
     notice, printed = await run_check(store, FakePyPI(latest))
     assert notice is None and printed == ''
     assert store.state(STATE_KEY) == NOW.isoformat()
+
+
+async def test_trailing_zeros_do_not_count(tmp_path: Path) -> None:
+    notice, _ = await run_check(SettingsStore(tmp_path / 'config.db'), FakePyPI('1.0.0'), current='1.0')
+    assert notice is None
+    notice, _ = await run_check(SettingsStore(tmp_path / 'other.db'), FakePyPI('1.0.1'), current='1')
+    assert notice is not None
 
 
 async def test_dev_install_is_never_nagged(tmp_path: Path) -> None:

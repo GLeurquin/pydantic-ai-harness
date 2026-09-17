@@ -7,13 +7,13 @@ from datetime import datetime
 from pathlib import Path
 
 from pydantic_ai.messages import (
+    BaseToolCallPart,
+    BaseToolReturnPart,
     ModelMessage,
     ModelMessagesTypeAdapter,
     ModelResponse,
     RetryPromptPart,
     TextPart,
-    ToolCallPart,
-    ToolReturnPart,
     UserPromptPart,
 )
 
@@ -54,7 +54,7 @@ def to_json(messages: Sequence[ModelMessage], *, model: str, now: datetime) -> s
 
 
 def to_markdown(messages: Sequence[ModelMessage], *, model: str, now: datetime) -> str:
-    """Prompts, answers, and tool calls with a one-line result each; thinking and instructions are left out."""
+    """Prompts, answers, and every tool call (native ones too) with a one-line result; thinking and instructions are left out."""
     results = _tool_results(messages)
     stamps: list[datetime] = []
     body: list[str] = []
@@ -67,7 +67,7 @@ def to_markdown(messages: Sequence[ModelMessage], *, model: str, now: datetime) 
                 body.extend(['', '## User', '', _user_text(part)])
             elif isinstance(part, TextPart):
                 body.extend(['', '## Assistant', '', part.content])
-            elif isinstance(part, ToolCallPart):
+            elif isinstance(part, BaseToolCallPart):
                 summary = results.get(part.tool_call_id, 'no result recorded')
                 body.extend(['', f'- `{part.tool_name}({part.args_as_json_str()})`: {summary}'])
     header = [
@@ -85,7 +85,7 @@ def _tool_results(messages: Sequence[ModelMessage]) -> dict[str, str]:
     results: dict[str, str] = {}
     for message in messages:
         for part in message.parts:
-            if isinstance(part, ToolReturnPart):
+            if isinstance(part, BaseToolReturnPart):
                 results[part.tool_call_id] = _one_line(part.model_response_str())
             elif isinstance(part, RetryPromptPart):
                 results[part.tool_call_id] = 'retry requested: ' + _one_line(part.model_response())
