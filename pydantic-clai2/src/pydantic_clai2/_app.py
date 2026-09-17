@@ -95,13 +95,6 @@ async def chat(
     commands = Commands()
     commands.register(
         Command(
-            name='openrouter',
-            description='Authenticate with OpenRouter and select a model',
-            handler=lambda args: openrouter.connect(context, args),
-        )
-    )
-    commands.register(
-        Command(
             name='login',
             description='Connect your ChatGPT/Codex subscription',
             handler=auth.login,

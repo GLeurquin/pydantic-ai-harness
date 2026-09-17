@@ -4,18 +4,16 @@ import asyncio
 import json
 
 import httpx
-import keyring
 from prompt_toolkit import PromptSession
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, ValidationError
 from pydantic_ai.exceptions import UserError
 from pydantic_ai.models.openrouter import OpenRouterModel
 from pydantic_ai.providers.openrouter import OpenRouterProvider
 from termflow.tui import MenuBuilder, MenuItem  # pyright: ignore[reportMissingTypeStubs]
 
 from .command_context import CommandContext
+from .credential_store import load_codex_credentials, save_codex_credentials
 from .menu_worker import menu_key, run_worker
-
-_SERVICE = 'pydantic-clai2.openrouter'
 
 
 class Connection(BaseModel):
@@ -40,7 +38,7 @@ async def discover(connection: Connection, *, transport: httpx.AsyncBaseTranspor
     """Query only the requested endpoint; do not forward credentials across redirects."""
     token = connection.token.get_secret_value()
     headers = {'Authorization': f'Bearer {token}'} if token else {}
-    async with httpx.AsyncClient(transport=transport, timeout=20, follow_redirects=False, trust_env=False) as client:
+    async with httpx.AsyncClient(transport=transport, timeout=20, follow_redirects=False) as client:
         try:
             authentication = await client.get('https://openrouter.ai/api/v1/key', headers=headers)
             authentication.raise_for_status()
@@ -58,15 +56,18 @@ def save_connection(connection: Connection) -> None:
     """Keep credentials out of command history and SQLite."""
     value = connection.model_dump()
     value['token'] = connection.token.get_secret_value()
-    keyring.set_password(_SERVICE, 'connection', json.dumps(value))
+    save_codex_credentials(value=json.dumps(value), account='openrouter')
 
 
 def model(name: str) -> OpenRouterModel:
     """Resolve a saved OpenRouter selection through core, without global API-key fallbacks."""
-    raw = keyring.get_password(_SERVICE, 'connection')
+    raw = load_codex_credentials(account='openrouter')
     if raw is None:
-        raise UserError('Connect first with /openrouter.')
-    connection = Connection.model_validate_json(raw)
+        raise UserError('Connect first through /model > openrouter.')
+    try:
+        connection = Connection.model_validate_json(raw)
+    except ValidationError:
+        raise UserError('Stored connection is invalid. Reconfigure through /model > openrouter.') from None
     provider = OpenRouterProvider(api_key=connection.token.get_secret_value())
     return OpenRouterModel(name.removeprefix('openrouter:'), provider=provider)
 
@@ -88,17 +89,48 @@ async def connect(context: CommandContext, args: list[str]) -> str:
     """Prompt privately, discover models, then persist only after selection."""
     if args:
         raise ValueError('Usage: /openrouter (API key is prompted privately)')
-    prompt: PromptSession[str] = PromptSession()
+    raw = await asyncio.to_thread(load_codex_credentials, account='openrouter')
     try:
-        token = await prompt.prompt_async('OpenRouter API key (https://openrouter.ai/keys): ', is_password=True)
-    except (EOFError, KeyboardInterrupt):
+        connection = Connection.model_validate_json(raw) if raw else None
+    except (ValidationError, ValueError):
+        connection = None
+    if connection is not None:
+        action = await run_worker(connection_action)
+        if action is None:
+            return 'Connection cancelled.'
+        if action == 'configure':
+            connection = None
+    if connection is None:
+        connection = await prompt_connection()
+    if connection is None:
         return 'Connection cancelled.'
-    if not token.strip():
-        raise ValueError('An OpenRouter API key is required.')
-    connection = Connection(token=SecretStr(token.strip()))
     names = await discover(connection)
     selected = await run_worker(lambda: choose(names))
     if selected is None:
         return 'Connection cancelled.'
     await asyncio.to_thread(save_connection, connection)
     return context.set_setting(['model', f'openrouter:{selected}'])
+
+
+async def prompt_connection() -> Connection | None:
+    """Collect connection details without recording them in history."""
+    prompt: PromptSession[str] = PromptSession()
+    try:
+        token = await prompt.prompt_async('OpenRouter API key (https://openrouter.ai/keys): ', is_password=True)
+    except (EOFError, KeyboardInterrupt):
+        return None
+    if not token.strip():
+        raise ValueError('An OpenRouter API key is required.')
+    return Connection(token=SecretStr(token.strip()))
+
+
+def connection_action() -> str | None:  # pragma: no cover -- real terminal.
+    """Reuse saved authentication or replace it from the provider menu."""
+    result = (
+        MenuBuilder('openrouter connection')
+        .items([MenuItem('Browse models', value='browse'), MenuItem('Reconfigure connection', value='configure')])
+        .key_source(menu_key)
+        .build()
+        .run()
+    )
+    return result.item.value if not result.cancelled and result.item and isinstance(result.item.value, str) else None
