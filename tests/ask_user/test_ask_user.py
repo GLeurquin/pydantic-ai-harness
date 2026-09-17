@@ -205,6 +205,16 @@ class TestAskUser:
                 'Extra inputs are not permitted',
                 id='unsupported question field',
             ),
+            pytest.param(
+                [{**raw_questions()[0], 'options': [{'label': 'A\x1b]52;c;aGVsbG8=\x07'}, {'label': 'B'}]}],
+                'must not contain control characters',
+                id='escape sequence in a label',
+            ),
+            pytest.param(
+                [{**raw_questions()[0], 'header': 'Two\nlines'}],
+                'must not contain control characters',
+                id='newline in a header',
+            ),
         ],
     )
     async def test_bad_schemas_are_returned_to_the_model_as_retries(self, arguments: object, complaint: str) -> None:
@@ -322,6 +332,16 @@ class TestCheckResponse:
 
 
 class TestSchema:
+    def test_question_text_and_descriptions_may_span_lines(self) -> None:
+        asked = Question(
+            header='Style',
+            question='Which style?\nPick one.',
+            options=(QuestionOption(label='A', description='First\nline'), QuestionOption(label='B')),
+        )
+        assert asked.question == 'Which style?\nPick one.'
+        with pytest.raises(ValidationError, match='control characters'):
+            QuestionOption(label='A', description='tab\there')
+
     def test_whitespace_is_stripped(self) -> None:
         option = QuestionOption(label='  Keep  ')
         assert option.label == 'Keep' and option.description is None

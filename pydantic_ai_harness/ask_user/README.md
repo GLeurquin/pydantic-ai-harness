@@ -94,8 +94,11 @@ class WaitIndicator(AbstractCapability[None]):
 The tool schema mirrors Code Puppy's `ask_user_question`, so prompts written for it carry
 over. Limits: 1 to 10 questions per call, unique headers of at most 25 characters, question text
 of at most 500, 2 to 6 options per question with unique labels of at most 50 characters and
-descriptions of at most 200. A call outside those limits, or carrying a field the schema does
-not have, is returned to the model as a validation retry, not sent to the answerer. Once
+descriptions of at most 200; no control characters anywhere (headers and labels are one line;
+question text and descriptions may span lines), since these strings are drawn on terminals and
+an escape sequence in a prompt-injected call is an attack. A call outside those limits, or
+carrying a field the schema does not have, is returned to the model as a validation retry,
+not sent to the answerer. Once
 validated the questions are frozen: what the answerer sees is what the model asked.
 
 The result is a JSON object mapping each header to the list of picked labels, or the sentence

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 MAX_QUESTIONS = 10
 """Most questions one `ask_user_question` call may carry."""
@@ -17,6 +17,13 @@ MAX_HEADER_LENGTH = 25
 MAX_LABEL_LENGTH = 50
 MAX_DESCRIPTION_LENGTH = 200
 MAX_QUESTION_LENGTH = 500
+
+
+def _printable(value: str, *, newlines: bool) -> str:
+    """Reject control characters: these strings are drawn on terminals, and an escape sequence is an attack."""
+    if not all(char.isprintable() or (newlines and char == '\n') for char in value):
+        raise ValueError('must not contain control characters')
+    return value
 
 
 _SCHEMA_CONFIG = ConfigDict(str_strip_whitespace=True, extra='forbid', frozen=True)
@@ -37,6 +44,16 @@ class QuestionOption(BaseModel):
         default=None, max_length=MAX_DESCRIPTION_LENGTH, description='What choosing this option means.'
     )
 
+    @field_validator('label')
+    @classmethod
+    def _label_is_one_line(cls, value: str) -> str:
+        return _printable(value, newlines=False)
+
+    @field_validator('description')
+    @classmethod
+    def _description_is_printable(cls, value: str | None) -> str | None:
+        return None if value is None else _printable(value, newlines=True)
+
 
 class Question(BaseModel):
     """One multiple-choice question."""
@@ -53,6 +70,16 @@ class Question(BaseModel):
         min_length=MIN_OPTIONS, max_length=MAX_OPTIONS, description='The choices to offer.'
     )
     multi_select: bool = Field(default=False, description='Whether the user may pick more than one option.')
+
+    @field_validator('header')
+    @classmethod
+    def _header_is_one_line(cls, value: str) -> str:
+        return _printable(value, newlines=False)
+
+    @field_validator('question')
+    @classmethod
+    def _question_is_printable(cls, value: str) -> str:
+        return _printable(value, newlines=True)
 
     @model_validator(mode='after')
     def _unique_labels(self) -> Question:
