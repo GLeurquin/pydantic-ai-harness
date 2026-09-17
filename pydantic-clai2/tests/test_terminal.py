@@ -215,7 +215,7 @@ async def test_prompt_loop_commands(tmp_path: Path) -> None:
         )
     assert '/config' in output.getvalue()
     assert 'hello back' in output.getvalue()
-    assert '\n\nConversation cleared.' in output.getvalue()
+    assert '\n\nStarted session ' in output.getvalue()
 
 
 def test_cli_settings(tmp_path: Path) -> None:

@@ -4,10 +4,9 @@ import asyncio
 import io
 import signal
 from pathlib import Path
-from typing import Generic, TypeVar
 
 import pytest
-from prompt_toolkit.styles import BaseStyle
+from prompt_script import inputs
 from pydantic_ai import Agent, ModelRequestContext, RunContext
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.models.test import TestModel
@@ -19,29 +18,10 @@ from pydantic_clai2.commands import Command
 from pydantic_clai2.config import Settings
 from pydantic_clai2.settings_store import SettingsStore
 
-PromptT = TypeVar('PromptT')
-
 
 @pytest.fixture
 def anyio_backend() -> str:
     return 'asyncio'
-
-
-def inputs(monkeypatch: pytest.MonkeyPatch, values: list[str | BaseException]) -> None:
-    class Prompt(Generic[PromptT]):
-        def __init__(self, **kwargs: object) -> None:
-            style = kwargs['style']
-            assert isinstance(style, BaseStyle)
-            for selector in ('class:bottom-toolbar', 'class:bottom-toolbar.text'):
-                assert style.get_attrs_for_style_str(selector).color == '9B77FF'
-
-        async def prompt_async(self, label: str) -> str:
-            value = values.pop(0)
-            if isinstance(value, BaseException):
-                raise value
-            return value
-
-    monkeypatch.setattr('pydantic_clai2._app.PromptSession', Prompt)
 
 
 @pytest.mark.parametrize('mode', ['eof', 'interrupt', 'error', 'cancel', 'double', 'structured'])
@@ -87,7 +67,10 @@ async def test_chat_boundaries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, 
 
 
 async def test_model_string_and_non_command_plugin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    inputs(monkeypatch, ['/set', '/set display.thinking', '/config show', '/plugins list', '/new', '/exit'])
+    inputs(
+        monkeypatch,
+        ['/set', '/set display.thinking', '/config show', '/plugins list', '/new', '/resume', '/sessions', '/exit'],
+    )
 
     class Provider(AbstractCapability[None]):
         def get_commands(self, context: CommandContext) -> list[Command]:

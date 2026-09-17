@@ -10,7 +10,10 @@ import pytest
 from pydantic_clai2.settings_store import SettingsStore
 
 
-@pytest.mark.parametrize('args', [[], ['--model', 'test', '--request-limit', '12'], ['--request-limit', '0']])
+@pytest.mark.parametrize(
+    'args',
+    [[], ['--model', 'test', '--request-limit', '12'], ['--request-limit', '0'], ['--resume'], ['--resume', 'nope']],
+)
 def test_cli_startup(tmp_path: Path, args: list[str]) -> None:
     env = dict(os.environ, CLAI_NO_SPLASH='1')
     env.pop('CLAI_MODEL', None)
