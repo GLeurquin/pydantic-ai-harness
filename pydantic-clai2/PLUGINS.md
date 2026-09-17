@@ -77,7 +77,7 @@ otherwise:
 |---|---|---|---|
 | `coder` | `pydantic_ai_harness.coder:Coder` | `{"unrestricted_filesystem": true, "repo_context": false}` | the file and shell tools |
 | `repo_context` | `pydantic_clai2.repo_context` | `{}` | reads `CLAUDE.md` or `AGENTS.md` from the launch directory into the instructions |
-| `compaction` | `pydantic_clai2.compaction` | `{}` | `SummarizingCompaction` at 80% of the context window, `/compact`, and the status row's context warning |
+| `compaction` | `pydantic_clai2.compaction` | `{}` | summarise-then-truncate at 85% of the context window, `/compact`, and the status row's context warning |
 
 `/plugins disable coder` gives you a chat-only CLAI (a writing or research setup
 with `ExaSearch` instead, say); `/plugins enable coder` brings the tools back;
@@ -113,11 +113,11 @@ ones waiting at startup, and `/plugins enable NAME` approves one. See
 
 `compaction` works the same way. `/plugins disable compaction` turns automatic
 compaction and `/compact` off together; a declaration under the same name
-changes its settings (`max_fraction`, `keep_messages`, `context_window`; see the
-README):
+changes its settings (`strategy`, `threshold`, `protected_tokens`,
+`context_window`, `summarization_model`; see the README):
 
 ```text
-/plugins add compaction pydantic_clai2.compaction '{"max_fraction": 0.7, "context_window": 200000}'
+/plugins add compaction pydantic_clai2.compaction '{"threshold": 0.7, "context_window": 200000}'
 ```
 
 ## Managing plugins

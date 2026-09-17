@@ -228,18 +228,21 @@ the turn and returns to input. No cancelled run is automatically retried.
 ## Compacting the conversation
 
 A long conversation eventually fills the model's context window. The built-in
-`compaction` plugin binds `pydantic_ai_harness`'s `SummarizingCompaction` to
-every run: once the history fills 80% of the window, the next request first
-replaces the older messages with a summary written by the current model,
-keeping the 20 most recent messages as they were. The summary request counts
-as one model request, billed to the model in use. Nothing in CLAI decides
-when; the capability does, with the same rules it follows in any agent.
+`compaction` plugin binds the same chain Code Puppy uses, built from
+`pydantic_ai_harness` strategies: once the history fills 85% of the window, the
+next request first replaces the older messages with a summary written by the
+current model, keeping the most recent 50,000 tokens as they were. If the
+summary request fails or would blow the run's usage limit, the chain falls back
+to plain truncation of the same older messages, so a broken summariser never
+fails the run. The summary request counts as one model request, billed to the
+model in use. Nothing in CLAI decides when; the capability does, with the same
+rules it follows in any agent.
 
-`/compact` runs the same strategy now, between turns. Add words to say what the
+`/compact` runs the same chain now, between turns. Add words to say what the
 summary must keep: `/compact the auth refactor, not the CSS`. You get one line
 with the message counts before and after and an estimate of the tokens saved.
-An empty conversation, or one shorter than the messages it always keeps, says
-so and sends nothing.
+An empty conversation, or one that fits inside the protected tail, says so and
+sends nothing.
 
 The window comes from genai-prices, the same catalog the `/model` menu shows
 context sizes from. A model it does not list (`test`, a local endpoint) is
@@ -248,17 +251,22 @@ redeclare the plugin with your own settings; `/plugins disable compaction`
 turns it off, `/compact` included:
 
 ```text
-/plugins add compaction pydantic_clai2.compaction '{"max_fraction": 0.7, "keep_messages": 10, "context_window": 200000}'
+/plugins add compaction pydantic_clai2.compaction '{"threshold": 0.7, "protected_tokens": 20000, "context_window": 200000}'
 ```
 
-`max_fraction` is the trigger, `keep_messages` the untouched tail, and
-`context_window` overrides the catalog when it is wrong or silent for your model.
+| Key | Default | Does |
+|---|---|---|
+| `strategy` | `"summarization"` | `"truncation"` skips the summary and only drops older messages |
+| `threshold` | `0.85` | fraction of the window that triggers compaction |
+| `protected_tokens` | `50000` | tokens of the most recent messages never compacted |
+| `context_window` | unset | overrides the catalog when it is wrong or silent for your model |
+| `summarization_model` | unset | a cheaper model to write the summary; unset uses the one in use |
 
 The context figure in the status line turns yellow when a request went out with
-the history still above `max_fraction`, which means compaction could not bring
-it under: the kept tail alone is that large, or the assumed window is too big.
-`/compact` with a smaller `keep_messages`, `/new`, or a correct `context_window`
-fixes that. The figure and its colour describe the last request and refresh
+the history still above `threshold`, which means compaction could not bring it
+under: the protected tail alone is that large, or the assumed window is too big.
+`/compact` with a smaller `protected_tokens`, `/new`, or a correct
+`context_window` fixes that. The figure and its colour describe the last request and refresh
 with the next one, so `/compact` alone does not change them.
 
 ## Ask CLAI to customize itself
