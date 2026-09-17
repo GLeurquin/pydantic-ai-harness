@@ -3,6 +3,7 @@
 import json
 import os
 import shlex
+import signal
 import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -33,6 +34,13 @@ pytestmark = [pytest.mark.anyio, pytest.mark.skipif(os.name == 'nt', reason='POS
 @pytest.fixture
 def anyio_backend() -> str:
     return 'asyncio'
+
+
+async def receive_exactly(stream: SocketStream, size: int) -> bytes:
+    data = b''
+    while len(data) < size:
+        data += await stream.receive(size - len(data))
+    return data
 
 
 async def wait_for_exit(pid: int) -> None:
@@ -186,6 +194,16 @@ class TestShellTool:
     async def test_missing_working_directory(self, tmp_path: Path) -> None:
         assert 'no longer exists' in await shell(tmp_path / 'absent', {'command': 'echo hi'})
 
+    async def test_supervisor_killed_mid_command_returns_stale_status(self, tmp_path: Path) -> None:
+        recorder = Recorder()
+        # The command kills its own supervisor (its parent) and keeps running.
+        output = await shell(tmp_path, {'command': 'kill $PPID; sleep 30', 'timeout': 5}, capabilities=[recorder])
+        assert '"exit_code": null' in output
+        assert recorder.finished.exit_code is None
+        started = recorder.events[0]
+        assert isinstance(started, CommandStartedEvent)
+        os.killpg(started.pid, signal.SIGKILL)
+
     async def test_supervisor_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv('PYTHONHOME', str(tmp_path / 'missing-python'))
         assert 'Shell supervisor exited' in await shell(tmp_path, {'command': 'echo hi'})
@@ -203,11 +221,11 @@ class TestLifecycle:
 
         async def serve(stream: SocketStream) -> None:
             async with stream:
-                assert await stream.receive() == b'ready'
+                assert await receive_exactly(stream, 5) == b'ready'
                 connected.set()
                 await release.wait()
                 await stream.send(b'finish')
-                assert await stream.receive() == b'done'
+                assert await receive_exactly(stream, 4) == b'done'
                 completed.set()
 
         script = (
@@ -244,8 +262,9 @@ class TestLifecycle:
         assert '"exit_code": 0' in result
         assert status.with_name('output.log').read_text() == 'completed\n'
 
+    @pytest.mark.parametrize('command', ['sleep 60', 'true'])
     async def test_cancelled_finalization_terminates_process(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str
     ) -> None:
         entered = anyio.Event()
         pids: list[int] = []
@@ -267,7 +286,7 @@ class TestLifecycle:
         monkeypatch.setattr('pydantic_ai_harness.shell._persistent.run_sync', block_line_count)
 
         async def run() -> None:
-            await shell(tmp_path, {'command': 'sleep 60', 'mode': 'background'})
+            await shell(tmp_path, {'command': command, 'mode': 'background'})
 
         async with anyio.create_task_group() as group:
             group.start_soon(run)
@@ -287,7 +306,7 @@ class TestLifecycle:
 
         async def serve(stream: SocketStream) -> None:
             async with stream:
-                assert await stream.receive() == b'ready'
+                assert await receive_exactly(stream, 5) == b'ready'
                 connected.set()
                 await anyio.sleep_forever()
 

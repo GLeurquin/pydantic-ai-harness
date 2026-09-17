@@ -116,6 +116,10 @@ class _CommandOutput(Generic[AgentDepsT]):
         )
 
 
+def _finished(status_path: Path) -> bool:
+    return status_path.exists() and json.loads(status_path.read_text())['exit_code'] is not None
+
+
 def _kill_session(process: subprocess.Popen[bytes]) -> None:
     """Terminate the supervisor's whole session; a cancelled call cannot hand back its handles."""
     if os.name == 'nt':  # pragma: no cover
@@ -169,9 +173,13 @@ async def run_persistent_command(
         await ctx.emit(CommandStartedEvent(tool_call_id=ctx.tool_call_id, command=command, pid=process.pid))
         if mode == 'foreground':
             with anyio.move_on_after(timeout):
-                while not status_path.exists() or json.loads(status_path.read_text())['exit_code'] is None:
-                    if process.returncode is not None and not status_path.exists():
-                        raise ModelRetry(f'Shell supervisor exited with {process.returncode}; logs: {directory}')
+                while not _finished(status_path):
+                    if process.returncode is not None:
+                        if not status_path.exists():
+                            raise ModelRetry(f'Shell supervisor exited with {process.returncode}; logs: {directory}')
+                        # The supervisor is gone, so the status will never be completed;
+                        # the handles still name the command it may have left running.
+                        break
                     await output.emit()
                     await anyio.sleep(_POLL_INTERVAL)
             await output.drain()

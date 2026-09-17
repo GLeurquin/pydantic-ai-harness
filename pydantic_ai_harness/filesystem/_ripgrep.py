@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import subprocess
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar
@@ -88,7 +89,8 @@ async def run_ripgrep(
                             results.append(kept)
                     if truncated or len(pending) > _MAX_RECORD_BYTES:
                         truncated = True
-                        process.terminate()
+                        with suppress(ProcessLookupError):  # a fast search may already have exited
+                            process.terminate()
                         break
             await process.wait()
     except FileNotFoundError as exc:
