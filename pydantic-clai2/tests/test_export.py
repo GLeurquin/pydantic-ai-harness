@@ -83,7 +83,7 @@ def conversation() -> list[ModelMessage]:
                         BinaryContent(data=b'1', media_type='image/png'),
                         TextContent(content='tagged'),
                     ],
-                    timestamp=started + timedelta(seconds=3),
+                    timestamp=(started + timedelta(seconds=3)).replace(tzinfo=None),
                 )
             ]
         ),
@@ -93,7 +93,7 @@ def conversation() -> list[ModelMessage]:
 def test_markdown_lists_prompts_answers_and_tool_summaries() -> None:
     text = to_markdown(conversation(), model='test:model', now=NOW)
     assert text.startswith('# CLAI session\n\n- Model: `test:model`\n')
-    assert '- Started: 2026-09-17T12:25:45+00:00\n- Last message: 2026-09-17T12:25:48+00:00\n' in text
+    assert '- Started: 2026-09-17T12:25:45+00:00\n- Last message: 2026-09-17T12:25:48\n' in text
     assert f'- Exported: {NOW.isoformat()}\n' in text
     assert '\n## User\n\nlist files\n' in text
     assert '- `ls({"path":"."})`: a.py\n' in text

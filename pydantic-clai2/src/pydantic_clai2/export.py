@@ -58,7 +58,7 @@ def to_json(messages: Sequence[ModelMessage], *, model: str, now: datetime) -> s
 def to_markdown(messages: Sequence[ModelMessage], *, model: str, now: datetime) -> str:
     """Prompts, answers, and every tool call (native ones too) with a one-line result; thinking and instructions are left out."""
     results = _tool_results(messages)
-    stamps: list[datetime] = []
+    stamps: list[datetime] = []  # In message order; never compared, so naive and aware values can mix.
     body: list[str] = []
     for message in messages:
         if isinstance(message, ModelResponse):
@@ -76,8 +76,8 @@ def to_markdown(messages: Sequence[ModelMessage], *, model: str, now: datetime) 
         '# CLAI session',
         '',
         f'- Model: `{model}`',
-        f'- Started: {min(stamps).isoformat() if stamps else "unknown"}',
-        f'- Last message: {max(stamps).isoformat() if stamps else "unknown"}',
+        f'- Started: {stamps[0].isoformat() if stamps else "unknown"}',
+        f'- Last message: {stamps[-1].isoformat() if stamps else "unknown"}',
         f'- Exported: {now.isoformat()}',
     ]
     return '\n'.join(header + body) + '\n'
