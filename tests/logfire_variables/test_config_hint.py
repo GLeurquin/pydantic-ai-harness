@@ -18,8 +18,7 @@ from typing import Any
 
 import logfire
 import pytest
-from logfire.agent_control import SCHEMA_SHA256
-from logfire.agent_control import canonical_json
+from logfire.agent_control import SCHEMA_SHA256, canonical_json
 from logfire.testing import CaptureLogfire
 from logfire.variables import Rollout, VariableConfig, VariablesConfig
 from logfire.variables.local import LocalVariableProvider
@@ -219,10 +218,7 @@ async def test_the_hint_is_reported_as_written_with_scrubbing_at_its_default(cap
     # The two promises a reduction of `'none'` makes to a consumer, checked against the document the
     # span carries rather than the one this process built.
     assert attributes['agent_control.baseline_reduction'] == 'none'
-    assert (
-        attributes['agent_control.baseline_sha256']
-        == hashlib.sha256(canonical_json(carried)).hexdigest()
-    )
+    assert attributes['agent_control.baseline_sha256'] == hashlib.sha256(canonical_json(carried)).hexdigest()
     assert attributes['agent_control.baseline_bytes'] == len(attributes['agent_control.baseline'].encode())
     # Scrubbing records what it rewrote, so its absence covers every attribute of the span rather
     # than the ones named above -- including the run's own `logfire.variables.agent__auth_router`,
