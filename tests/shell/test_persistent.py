@@ -37,6 +37,16 @@ def anyio_backend() -> str:
     return 'asyncio'
 
 
+async def wait_for_exit(pid: int) -> None:
+    with anyio.fail_after(10):
+        while True:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            await anyio.sleep(0.01)
+
+
 async def shell(
     cwd: Path,
     arguments: dict[str, object],
@@ -228,8 +238,11 @@ class TestLifecycle:
         entered = anyio.Event()
         pids: list[int] = []
 
-        async def blocked_count(function: Callable[[Path], int | None], path: Path) -> int | None:
-            status = path.with_name('status.json')
+        async def block_line_count(function: Callable[..., object], *args: object) -> object:
+            # Only the log scan is held open; the cancellation path's own `run_sync` must still run.
+            if function.__name__ != '_count_lines':
+                return await run_sync(function, *args)
+            status = Path(str(args[0])).with_name('status.json')
             with anyio.fail_after(10):
                 while not status.exists():
                     await anyio.sleep(0.01)
@@ -237,7 +250,7 @@ class TestLifecycle:
             entered.set()
             await anyio.sleep_forever()
 
-        monkeypatch.setattr('pydantic_ai_harness.shell._persistent.run_sync', blocked_count)
+        monkeypatch.setattr('pydantic_ai_harness.shell._persistent.run_sync', block_line_count)
 
         async def run() -> None:
             await shell(tmp_path, {'command': 'sleep 60', 'mode': 'background'})
@@ -247,8 +260,9 @@ class TestLifecycle:
             with anyio.fail_after(10):
                 await entered.wait()
             group.cancel_scope.cancel()
-        with pytest.raises(ProcessLookupError):
-            os.kill(pids[0], 0)
+        # The killed command is reparented and reaped by init, not by us, so it may
+        # linger as a zombie for a moment after the tool call has unwound.
+        await wait_for_exit(pids[0])
 
     async def test_cancelled_foreground_terminates_process(self, tmp_path: Path) -> None:
         connected = anyio.Event()
