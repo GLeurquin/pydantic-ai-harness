@@ -25,7 +25,7 @@ router = ModelRouter(
             'Architecture, security, or a decision that is expensive to get wrong.',
         ),
     },
-    router_model='typesafe:jev-latest',
+    router_model='openai:gpt-5.6-luna',
     default='capable',
 )
 
@@ -38,21 +38,21 @@ result = agent.run_sync('Explain why this authentication design is safe.')
 print(result.output)
 ```
 
-This example needs the TypeSafe and OpenAI provider groups:
+This example needs the OpenAI provider group:
 
 uv:
 
 ```bash
-uv add pydantic-ai-harness 'pydantic-ai-slim[typesafe,openai]'
+uv add pydantic-ai-harness 'pydantic-ai-slim[openai]'
 ```
 
 pip:
 
 ```bash
-pip install pydantic-ai-harness 'pydantic-ai-slim[typesafe,openai]'
+pip install pydantic-ai-harness 'pydantic-ai-slim[openai]'
 ```
 
-The router creates an internal agent named `model_router`. Its `output_type` is a `Literal` built from the choice keys. Language models answer through structured output, while typed models such as TypeSafe Jev can make the same choice without generating text. The router instructions contain each choice description.
+The router creates an internal agent named `model_router`. Its `output_type` is a `Literal` built from the choice keys. Language models answer through structured output, while typed models can make the same choice without generating text. The router instructions contain each choice description.
 
 The routing input is the normalized message history serialized as JSON. On the first step it also contains the new run prompt, which Pydantic AI's bootstrap `ModelSelectionContext` does not yet contain. A router on another provider therefore receives the conversation content used to make the decision.
 
@@ -71,23 +71,9 @@ Pydantic AI calls model selectors once per logical step. Provider polling or con
 
 ## Confidence and failure
 
-Set `confidence_threshold` to require a reported confidence before accepting the router's pick:
+Set `confidence_threshold` when constructing `ModelRouter` to reject a reported confidence below that cutoff. For example, with `confidence_threshold=0.8`, a reported value below `0.8` falls back. The threshold has no effect when the router reports no confidence.
 
-```python
-from pydantic_ai_harness.model_router import ModelChoice, ModelRouter
-
-router = ModelRouter(
-    choices={
-        'fast': ModelChoice('openai:gpt-5.6-luna', 'Routine work.'),
-        'capable': ModelChoice('openai:gpt-5.6-sol', 'High-impact or difficult work.'),
-    },
-    router_model='typesafe:jev-latest',
-    default='capable',
-    confidence_threshold=0.8,
-)
-```
-
-When the router response has `provider_details['confidence']`, a value below the threshold selects `default`. TypeSafe reports the confidence for a bare `Literal` under the `response` key. The capability also accepts a numeric confidence directly and uses the least numeric value when a provider reports a mapping without `response`.
+When the router response has `provider_details['confidence']`, a value below the threshold selects `default`. TypeSafe reports the confidence for a bare `Literal` under the `response` key. The capability also accepts a numeric confidence directly and uses the least numeric value when a provider reports a mapping without `response`. Reported confidence must be finite and between `0` and `1`; an invalid value selects `default` as a routing error.
 
 A router model that reports no confidence keeps its pick. This lets ordinary language models route without provider-specific metadata.
 

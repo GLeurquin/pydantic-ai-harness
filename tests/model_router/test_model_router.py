@@ -150,6 +150,10 @@ class TestModelRouter:
             pytest.param({'confidence': {'other': 0.4}}, 'capable', id='mapping'),
             pytest.param({'confidence': {'response': 0.8, 'other': 0.1}}, 'fast', id='response-key'),
             pytest.param({'confidence': {'other': 'unknown'}}, 'fast', id='non-numeric'),
+            pytest.param({'confidence': float('nan')}, 'capable', id='not-a-number'),
+            pytest.param({'confidence': {'response': float('inf')}}, 'capable', id='infinite'),
+            pytest.param({'confidence': -0.1}, 'capable', id='below-range'),
+            pytest.param({'confidence': {'other': 1.1}}, 'capable', id='above-range'),
         ],
     )
     async def test_confidence_shapes(self, provider_details: Mapping[str, Any] | None, expected: str) -> None:

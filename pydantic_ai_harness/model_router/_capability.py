@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from json import dumps
+from math import isfinite
 from typing import Literal, TypeGuard
 
 from opentelemetry.trace import NoOpTracer, Status, StatusCode, Tracer
@@ -127,6 +128,7 @@ class ModelRouter(AbstractCapability[AgentDepsT]):
                     picked = self.default
                     fallback_reason = 'low_confidence'
             except Exception as error:
+                picked = self.default
                 fallback_reason = 'error'
                 if span.is_recording():
                     span.set_attribute('model_router.error.type', type(error).__name__)
@@ -173,17 +175,26 @@ def _confidence(provider_details: Mapping[str, object] | None) -> float | None:
     if isinstance(raw, bool):
         return None
     if isinstance(raw, int | float):
-        return float(raw)
+        return _checked_confidence(raw)
     if _is_object_mapping(raw):
         response = raw.get('response')
         if not isinstance(response, bool) and isinstance(response, int | float):
-            return float(response)
+            return _checked_confidence(response)
         values = [
-            float(value) for value in raw.values() if not isinstance(value, bool) and isinstance(value, int | float)
+            _checked_confidence(value)
+            for value in raw.values()
+            if not isinstance(value, bool) and isinstance(value, int | float)
         ]
         if values:
             return min(values)
     return None
+
+
+def _checked_confidence(value: int | float) -> float:
+    confidence = float(value)
+    if not isfinite(confidence) or not 0 <= confidence <= 1:
+        raise ValueError(f'Router reported invalid confidence: {value!r}')
+    return confidence
 
 
 def _is_object_mapping(value: object) -> TypeGuard[Mapping[object, object]]:
