@@ -21,7 +21,7 @@
     "zustand": "^5.0.2"
   },
   "devDependencies": {
-    "@ladle/react": "^5.0.1",
+    "@ladle/react": "^4.1.2",
     "@stryker-mutator/core": "^8.7.1",
     "@stryker-mutator/vitest-runner": "^8.7.1",
     "@testing-library/jest-dom": "^6.6.3",
@@ -33,7 +33,7 @@
     "@vitest/coverage-v8": "^2.1.8",
     "jsdom": "^25.0.1",
     "typescript": "^5.7.2",
-    "vite": "^6.0.7",
+    "vite": "^5.4.11",
     "vitest": "^2.1.8"
   }
 }

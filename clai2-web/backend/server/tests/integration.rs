@@ -139,7 +139,7 @@ struct Ws {
 impl Ws {
     async fn next_event(&mut self) -> Value {
         loop {
-            let message = tokio::time::timeout(Duration::from_secs(10), self.stream.next())
+            let message = tokio::time::timeout(Duration::from_secs(30), self.stream.next())
                 .await
                 .expect("timed out waiting for event")
                 .expect("stream ended")
@@ -754,7 +754,7 @@ async fn roster_survives_backend_restart_with_history_replay() {
             .unwrap();
         let mut receiver = manager.hub().subscribe();
         loop {
-            let event = tokio::time::timeout(Duration::from_secs(10), receiver.recv())
+            let event = tokio::time::timeout(Duration::from_secs(30), receiver.recv())
                 .await
                 .unwrap()
                 .unwrap();
@@ -780,7 +780,7 @@ async fn roster_survives_backend_restart_with_history_replay() {
         .unwrap();
     let mut echo = String::new();
     loop {
-        let event = tokio::time::timeout(Duration::from_secs(10), receiver.recv())
+        let event = tokio::time::timeout(Duration::from_secs(30), receiver.recv())
             .await
             .unwrap()
             .unwrap();

@@ -78,8 +78,13 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
         }
         _ => return Err(format!("one of --agent-cmd or --stub is required\n\n{USAGE}")),
     };
-    let data_dir = data_dir.unwrap_or_else(|| repo.join(".clai2-web"));
-    let worktrees_dir = worktrees_dir.unwrap_or_else(|| data_dir.join("worktrees"));
+    // Absolutize so git worktree paths and the agent cwd resolve to the same
+    // place regardless of how the server was launched.
+    let cwd = std::env::current_dir().map_err(|err| err.to_string())?;
+    let absolutize = |path: PathBuf| if path.is_absolute() { path } else { cwd.join(path) };
+    let repo = absolutize(repo);
+    let data_dir = absolutize(data_dir.unwrap_or_else(|| repo.join(".clai2-web")));
+    let worktrees_dir = absolutize(worktrees_dir.unwrap_or_else(|| data_dir.join("worktrees")));
     Ok(Args {
         config: ManagerConfig {
             repo_root: repo,

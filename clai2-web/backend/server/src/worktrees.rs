@@ -65,6 +65,20 @@ fn utf8(path: &Path) -> Result<&str, GitError> {
     path.to_str().ok_or_else(|| GitError::NonUtf8Path(path.to_owned()))
 }
 
+/// Make a path absolute without touching the filesystem.
+///
+/// Worktree paths are handed to `git -C <repo> worktree add`, which resolves a
+/// relative path against the repo directory rather than the process working
+/// directory. Absolutizing first keeps the stored path (used as the agent's
+/// cwd) and the created worktree in the same place.
+fn absolutize(path: &Path) -> Result<PathBuf, GitError> {
+    if path.is_absolute() {
+        Ok(path.to_owned())
+    } else {
+        Ok(std::env::current_dir()?.join(path))
+    }
+}
+
 /// Reduce an agent name to a filesystem- and branch-safe slug.
 pub fn slugify(name: &str) -> String {
     let mut slug = String::with_capacity(name.len());
@@ -111,7 +125,7 @@ impl WorktreeService {
         unique_slug: &str,
     ) -> Result<WorktreeInfo, GitError> {
         tokio::fs::create_dir_all(&self.worktrees_dir).await?;
-        let path = self.worktrees_dir.join(unique_slug);
+        let path = absolutize(&self.worktrees_dir.join(unique_slug))?;
         let branch = format!("clai2/agents/{unique_slug}");
         git(
             repo_root,
@@ -130,7 +144,7 @@ impl WorktreeService {
     /// parent's uncommitted tracked edits and untracked files.
     pub async fn fork(&self, parent: &WorktreeInfo, unique_slug: &str) -> Result<WorktreeInfo, GitError> {
         tokio::fs::create_dir_all(&self.worktrees_dir).await?;
-        let path = self.worktrees_dir.join(unique_slug);
+        let path = absolutize(&self.worktrees_dir.join(unique_slug))?;
         let branch = format!("clai2/agents/{unique_slug}");
         let parent_head = git(&parent.path, &["rev-parse", "HEAD"]).await?.trim().to_owned();
         git(
@@ -231,7 +245,21 @@ async fn untracked_file_diff(worktree: &Path, file: &str) -> Result<String, GitE
 
 #[cfg(test)]
 mod tests {
-    use super::slugify;
+    use super::{absolutize, slugify};
+    use std::path::Path;
+
+    #[test]
+    fn absolutize_keeps_absolute_paths() {
+        let path = Path::new("/tmp/worktrees/agent");
+        assert_eq!(absolutize(path).unwrap(), path);
+    }
+
+    #[test]
+    fn absolutize_roots_relative_paths_at_cwd() {
+        let resolved = absolutize(Path::new("wt/agent")).unwrap();
+        assert!(resolved.is_absolute());
+        assert!(resolved.ends_with("wt/agent"));
+    }
 
     #[test]
     fn slugify_lowercases_and_dashes() {

@@ -1,0 +1,174 @@
+import { expect, test, type Page } from '@playwright/test';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+let counter = 0;
+
+/** Create an agent through the UI and wait for it to be selected and idle. */
+async function createAgent(
+  page: Page,
+  options: { name?: string; worktree?: boolean; mode?: 'Always ask' | 'Accept edits' | 'Auto-approve everything' } = {},
+): Promise<string> {
+  counter += 1;
+  const name = options.name ?? `agent-${Date.now()}-${counter}`;
+  await page.getByRole('button', { name: 'New', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'New agent' });
+  await dialog.getByLabel('Name').fill(name);
+  if (options.worktree === false) {
+    await dialog.getByLabel('Create an isolated worktree and branch').uncheck();
+  }
+  if (options.mode) {
+    await dialog.getByLabel('Approval mode').selectOption({ label: options.mode });
+  }
+  await dialog.getByRole('button', { name: 'Start agent' }).click();
+  await expect(dialog).not.toBeVisible();
+  await expect(page.getByRole('button', { name: new RegExp(name) })).toBeVisible();
+  return name;
+}
+
+async function send(page: Page, text: string): Promise<void> {
+  await page.getByLabel('Prompt').fill(text);
+  await page.getByRole('button', { name: 'Send' }).click();
+}
+
+test.beforeEach(async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByText('connected')).toBeVisible();
+});
+
+test('creating an agent provisions a worktree branch in the sidebar', async ({ page }) => {
+  const name = await createAgent(page, { worktree: true });
+  const row = page.getByRole('button', { name: new RegExp(name) });
+  await expect(row).toContainText(/clai2\/agents\//);
+  await expect(page.getByRole('tab', { name: 'Conversation' })).toBeVisible();
+});
+
+test('chat round-trips through the stub agent', async ({ page }) => {
+  await createAgent(page, { worktree: false });
+  await send(page, 'hello e2e');
+  await expect(page.getByText('echo: hello e2e')).toBeVisible();
+  await expect(page.getByText('turn finished')).toBeVisible();
+});
+
+test('thought chunks render as reasoning', async ({ page }) => {
+  await createAgent(page, { worktree: false });
+  await send(page, 'think: pondering deeply');
+  await expect(page.locator('.block-thought')).toHaveText('pondering deeply');
+});
+
+test('always-ask parks an approval that allow resolves', async ({ page }) => {
+  await createAgent(page, { worktree: false, mode: 'Always ask' });
+  await send(page, 'approve:execute run tests');
+  const banner = page.getByRole('alertdialog');
+  await expect(banner).toContainText('stub execute');
+  await banner.getByRole('button', { name: 'Allow', exact: true }).click();
+  await expect(page.getByText('tool ran')).toBeVisible();
+  await expect(page.getByText('turn finished')).toBeVisible();
+});
+
+test('rejecting an approval fails the tool call', async ({ page }) => {
+  await createAgent(page, { worktree: false, mode: 'Always ask' });
+  await send(page, 'approve:execute rm -rf');
+  await page.getByRole('alertdialog').getByRole('button', { name: 'Reject', exact: true }).click();
+  await expect(page.getByText('tool rejected')).toBeVisible();
+});
+
+test('the header inbox surfaces approvals from any agent', async ({ page }) => {
+  const name = await createAgent(page, { worktree: false, mode: 'Always ask' });
+  await send(page, 'approve:execute risky thing');
+  await expect(page.getByLabel('Approval inbox')).toContainText('1');
+  await page.getByLabel('Approval inbox').click();
+  const inbox = page.getByRole('dialog', { name: 'Pending approvals' });
+  await expect(inbox).toContainText(name);
+  await inbox.getByRole('button', { name: 'Allow', exact: true }).click();
+  await expect(page.getByText('tool ran')).toBeVisible();
+});
+
+test('auto mode runs tools without asking', async ({ page }) => {
+  await createAgent(page, { worktree: false, mode: 'Auto-approve everything' });
+  await send(page, 'approve:execute anything');
+  await expect(page.getByText('tool ran')).toBeVisible();
+  await expect(page.getByRole('alertdialog')).not.toBeVisible();
+});
+
+test('switching approval mode applies live', async ({ page }) => {
+  await createAgent(page, { worktree: false, mode: 'Always ask' });
+  await page.getByRole('tab', { name: 'Settings' }).click();
+  await page.getByLabel('Approval mode').selectOption('auto');
+  await expect(page.getByText('Every tool call runs without asking.')).toBeVisible();
+  await page.getByRole('tab', { name: 'Conversation' }).click();
+  await send(page, 'approve:execute now fine');
+  await expect(page.getByText('tool ran')).toBeVisible();
+});
+
+test('cancel stops a running turn', async ({ page }) => {
+  await createAgent(page, { worktree: false });
+  await send(page, 'slow');
+  await expect(page.getByText('working...')).toBeVisible();
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(page.getByText('cancelled')).toBeVisible();
+});
+
+test('forking carries the conversation into a new worktree agent', async ({ page }) => {
+  const name = await createAgent(page, { worktree: true });
+  await send(page, 'remember: the sky is teal');
+  await expect(page.getByText('echo: remember: the sky is teal')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Fork', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: `Fork ${name}` });
+  await dialog.getByLabel('Name').fill(`${name}-fork`);
+  await dialog.getByRole('button', { name: 'Fork agent' }).click();
+  await expect(dialog).not.toBeVisible();
+
+  // The fork is selected, carries the transcript, and records its parentage.
+  await expect(page.getByRole('button', { name: new RegExp(`${name}-fork`) })).toBeVisible();
+  await expect(page.getByText('echo: remember: the sky is teal')).toBeVisible();
+  await page.getByRole('tab', { name: 'Settings' }).click();
+  await expect(page.getByText('Forked from')).toBeVisible();
+
+  // Its first prompt replays history to the fresh agent process.
+  await page.getByRole('tab', { name: 'Conversation' }).click();
+  await send(page, 'continue please');
+  await expect(page.getByText(/User: remember: the sky is teal/)).toBeVisible();
+});
+
+test('side conversations stay isolated from the main thread', async ({ page }) => {
+  await createAgent(page, { worktree: false });
+  await send(page, 'main topic');
+  await expect(page.getByText('echo: main topic')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Side conversation' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Side conversation' });
+  await dialog.getByLabel('Name').fill('quick question');
+  await dialog.getByRole('button', { name: 'Open', exact: true }).click();
+
+  await expect(page.getByRole('tab', { name: 'quick question' })).toHaveAttribute('aria-selected', 'true');
+  await send(page, 'side topic');
+  await expect(page.getByText('echo: side topic')).toBeVisible();
+  await expect(page.getByText('echo: main topic')).not.toBeVisible();
+
+  await page.getByRole('tab', { name: 'Conversation' }).click();
+  await expect(page.getByText('echo: main topic')).toBeVisible();
+  await expect(page.getByText('echo: side topic')).not.toBeVisible();
+});
+
+test('the changes tab shows the worktree diff', async ({ page, request }) => {
+  const name = await createAgent(page, { worktree: true });
+  const agents = await (await request.get('/api/agents')).json();
+  const agent = agents.find((candidate: { name: string }) => candidate.name === name);
+  writeFileSync(join(agent.worktree.path, 'README.md'), '# e2e demo\nedited by test\n');
+  writeFileSync(join(agent.worktree.path, 'fresh.txt'), 'brand new\n');
+
+  await page.getByRole('tab', { name: 'Changes' }).click();
+  await expect(page.getByLabel('Changes')).toContainText('+edited by test');
+  await expect(page.getByLabel('Changes')).toContainText('brand new');
+});
+
+test('archiving hides the agent from the live groups', async ({ page }) => {
+  const name = await createAgent(page, { worktree: false });
+  await page.getByRole('tab', { name: 'Settings' }).click();
+  await page.getByRole('button', { name: 'Archive', exact: true }).click();
+  const row = page.getByRole('button', { name: new RegExp(name) });
+  await expect(page.getByText('Archived')).toBeVisible();
+  await expect(row).toBeVisible();
+});
