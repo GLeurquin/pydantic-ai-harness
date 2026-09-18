@@ -184,6 +184,7 @@ Bounding what the agent may do, and keeping it on-instructions.
 | [Handle Deferred Tool Calls](/ai/capabilities/handle-deferred-tool-calls/) | Core | Resolve approval-deferred tool calls programmatically |
 | [System Reminders](system-reminders.md) | Harness | Cache-safe re-injection of guidance mid-run to counter instruction fade |
 | [Trajectory Judge](trajectory-judge.md) | Harness | A second model reviews the live run every N requests over a sliding token window and steers it mid-run |
+| [Model Router](model-router.md) | Harness | Select from described models per run or request step, with confidence-based fallback |
 
 ### Self-extension
 

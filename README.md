@@ -201,6 +201,7 @@ Bounding what the agent may do, and keeping it on-instructions.
 | [Handle Deferred Tool Calls](https://ai.pydantic.dev/capabilities/handle-deferred-tool-calls/) | Core | Resolve approval-deferred tool calls programmatically |
 | [System Reminders](pydantic_ai_harness/system_reminders/) | Harness | Cache-safe re-injection of guidance mid-run to counter instruction fade |
 | [Trajectory Judge](pydantic_ai_harness/trajectory_judge/) | Harness | A second model reviews the live run every N requests over a sliding token window and steers it mid-run |
+| [Model Router](pydantic_ai_harness/model_router/) | Harness | Select from described models per run or request step, with confidence-based fallback |
 
 ### Self-extension
 
