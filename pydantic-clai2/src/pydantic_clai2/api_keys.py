@@ -3,6 +3,9 @@
 import asyncio
 import json
 import re
+import sqlite3
+from collections.abc import Generator
+from contextlib import closing, contextmanager
 from typing import Protocol
 
 from prompt_toolkit import PromptSession
@@ -32,6 +35,14 @@ def resolve_key(*, token: SecretStr | KeyReference) -> str:
     return keys[token.name].get_secret_value()
 
 
+def save_key_connection(*, account: str, token: SecretStr | KeyReference, value: str) -> None:
+    """Validate references and save atomically with respect to key renames and deletions."""
+    with key_transaction():
+        if isinstance(token, KeyReference) and token.name not in _load_keys():
+            raise UserError('The selected API key no longer exists. Select a saved key again through /model.')
+        save_codex_credentials(account=account, value=value)
+
+
 class SecretPrompt(Protocol):
     """The masked input used by provider connection flows."""
 
@@ -48,8 +59,26 @@ def normalize_name(*, name: str) -> str:
     return name
 
 
+@contextmanager
+def key_transaction() -> Generator[None]:
+    """Serialize bundle access across processes; the SQLite lock file holds no secrets."""
+    path = credentials_path(account='api-keys').with_suffix('.lock')
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with closing(sqlite3.connect(path, timeout=20)) as connection, connection:
+            connection.execute('BEGIN IMMEDIATE')
+            yield
+    except sqlite3.Error:
+        raise UserError('Cannot lock API keys. Close other key editors and check the credential directory.') from None
+
+
 def load_keys() -> dict[str, SecretStr]:
-    """Read the named bundle from the existing credential backend."""
+    """Read a complete bundle without racing keyring chunk replacement."""
+    with key_transaction():
+        return _load_keys()
+
+
+def _load_keys() -> dict[str, SecretStr]:
     raw = load_codex_credentials(account='api-keys')
     if raw is None:
         return {}
@@ -65,9 +94,10 @@ def save_key(*, name: str, value: str) -> str:
     value = value.strip()
     if not value:
         raise ValueError('An API key is required.')
-    keys = load_keys()
-    keys[name] = SecretStr(value)
-    _save_keys(keys=keys)
+    with key_transaction():
+        keys = _load_keys()
+        keys[name] = SecretStr(value)
+        _save_keys(keys=keys)
     path = credentials_path(account='api-keys')
     if path.is_file():
         return f'Saved {name}. No OS keyring is available; keys are stored in plaintext at {path}.'
@@ -102,26 +132,28 @@ def key_users(*, name: str) -> list[str]:
 def rename_key(*, name: str, new_name: str) -> str:
     """Rename unused keys; do not strand saved connections or overwrite another key."""
     new_name = normalize_name(name=new_name)
-    keys = load_keys()
-    if name not in keys:
-        raise ValueError('The saved key no longer exists.')
-    if new_name == name:
-        return 'API key unchanged.'
-    if new_name in keys:
-        raise ValueError('That key name already exists.')
-    users = key_users(name=name)
-    if users:
-        raise ValueError(f'Key is used by {", ".join(users)}. Reconfigure those connections before renaming.')
-    keys[new_name] = keys.pop(name)
-    _save_keys(keys=keys)
+    with key_transaction():
+        keys = _load_keys()
+        if name not in keys:
+            raise ValueError('The saved key no longer exists.')
+        if new_name == name:
+            return 'API key unchanged.'
+        if new_name in keys:
+            raise ValueError('That key name already exists.')
+        users = key_users(name=name)
+        if users:
+            raise ValueError(f'Key is used by {", ".join(users)}. Reconfigure those connections before renaming.')
+        keys[new_name] = keys.pop(name)
+        _save_keys(keys=keys)
     return f'Renamed {name} to {new_name}.'
 
 
 def delete_key(*, name: str) -> str:
     """Remove a named secret; references will fail closed on their next use."""
-    keys = load_keys()
-    keys.pop(name, None)
-    _save_keys(keys=keys)
+    with key_transaction():
+        keys = _load_keys()
+        keys.pop(name, None)
+        _save_keys(keys=keys)
     return f'Deleted {name}. Connections referencing it can no longer authenticate.'
 
 

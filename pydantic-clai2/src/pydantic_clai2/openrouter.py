@@ -15,9 +15,9 @@ from termflow.tui import MenuBuilder, MenuItem  # pyright: ignore[reportMissingT
 from termflow.tui.menu import Menu  # pyright: ignore[reportMissingTypeStubs]
 
 from ._rendering import markdown_style
-from .api_keys import KeyReference, prompt_api_key, resolve_key
+from .api_keys import KeyReference, prompt_api_key, resolve_key, save_key_connection
 from .command_context import CommandContext
-from .credential_store import load_codex_credentials, save_codex_credentials
+from .credential_store import load_codex_credentials
 from .menu_worker import menu_key, run_worker
 from .openrouter_auth import OpenRouterAuth
 
@@ -66,7 +66,7 @@ def save_connection(connection: Connection) -> None:
     value = connection.model_dump(mode='json')
     if isinstance(connection.token, SecretStr):
         value['token'] = connection.token.get_secret_value()
-    save_codex_credentials(value=json.dumps(value), account='openrouter')
+    save_key_connection(value=json.dumps(value), account='openrouter', token=connection.token)
 
 
 def model(name: str) -> OpenRouterModel:
