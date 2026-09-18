@@ -326,13 +326,18 @@ Four names belong to CLAI itself. They fire outside the agent run, in the shell:
 |---|---|---|---|
 | `session_start` | CLAI has started, before the first prompt | `agent`, `settings` | no |
 | `session_end` | CLAI is quitting | `reason`: `exit`, `eof`, or `error` | no |
-| `turn_start` | you pressed Enter on a prompt | `text` | yes: edit `event.text`, or `event.cancel()` |
+| `turn_start` | an idle or queued prompt starts a new turn | `text` | yes: edit `event.text`, or `event.cancel()` |
 | `turn_end` | the turn finished, failed, or was interrupted | `text`, `outcome`, `result`, `error` | no |
 
 Ctrl-C during an agent run keeps the prompt and captured partial messages in
 conversation history for the next turn. Cancellation still reaches the running
 tools for cleanup; it does not undo completed side effects or retry the run.
 A prompt cancelled by `turn_start` never starts an agent run and is not retained.
+Steering adds input to an existing turn; it does not fire another `turn_start`
+or `turn_end`. Do not use `turn_start` alone to validate all text sent to a model.
+For validation that must include steering, register core's `before_model_request`
+hook and inspect `request_context.messages`. It runs after queued steering is
+included and can rewrite the request or raise to stop it before the model is called.
 
 Every other name is a Pydantic AI lifecycle hook, spelled exactly as on core's
 `Hooks().on`, with the same handler signature. The ones people reach for:

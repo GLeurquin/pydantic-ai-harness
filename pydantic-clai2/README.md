@@ -65,6 +65,8 @@ streamed output while CLAI works, and remains editable:
 
 The footer confirms steering or the queued count. If steering arrives after the
 run stops accepting messages, it becomes a queued follow-up instead.
+Steering stays within the active turn. Plugin authors who validate all model
+input should use `before_model_request`, not only the once-per-turn `turn_start`.
 Full-screen question menus temporarily own the terminal; your draft returns
 when the menu closes.
 Small terminals omit the border to leave room for output.

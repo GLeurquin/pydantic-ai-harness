@@ -11,7 +11,7 @@ from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.filters import Never
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent, ModelRequestContext, RunContext
 from pydantic_ai.exceptions import UserError
 from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
@@ -21,6 +21,7 @@ from rich.console import Console
 from pydantic_clai2 import Session
 from pydantic_clai2.interrupts import Interrupts
 from pydantic_clai2.live_prompt import LivePrompt
+from pydantic_clai2.plugins import PluginHost
 from pydantic_clai2.prompt_output import PromptOutput
 from pydantic_clai2.status import Status
 
@@ -252,6 +253,42 @@ async def test_session_steering_reaches_core_and_history(before_stream: bool) ->
         and any(isinstance(p, UserPromptPart) and p.content == 'correction' for p in m.parts)
         for m in session.messages
     )
+
+
+async def test_model_request_guard_blocks_steering_before_provider_call() -> None:
+    streaming = asyncio.Event()
+    release = asyncio.Event()
+    requests: list[list[ModelMessage]] = []
+    plugin = PluginHost[None](name='input-guard', console=Console(file=io.StringIO()), settings={})
+
+    @plugin.on('before_model_request')
+    async def guard(ctx: RunContext[None], request_context: ModelRequestContext) -> ModelRequestContext:
+        if any(
+            isinstance(part, UserPromptPart) and part.content == 'blocked steering'
+            for message in request_context.messages
+            if isinstance(message, ModelRequest)
+            for part in message.parts
+        ):
+            raise ValueError('Input rejected by guard')
+        return request_context
+
+    async def stream(messages: list[ModelMessage], info: AgentInfo) -> AsyncIterator[str]:
+        requests.append(list(messages))
+        yield 'initial '
+        streaming.set()
+        await release.wait()
+        yield 'answer'
+
+    session = Session(Agent(FunctionModel(stream_function=stream)), deps=None, plugins=plugin.capabilities)
+    task = asyncio.create_task(session.prompt('allowed input'))
+    with anyio.fail_after(5):
+        await streaming.wait()
+        assert session.steer('blocked steering')
+        release.set()
+        with pytest.raises(ValueError, match='Input rejected by guard'):
+            await task
+    assert len(requests) == 1
+    assert not session.steer('after failed run')
 
 
 async def test_rejected_steering_is_returned_to_the_caller(monkeypatch: pytest.MonkeyPatch) -> None:
