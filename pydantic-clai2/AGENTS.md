@@ -199,6 +199,8 @@ Keep files concise - we don't need any 10,000 line files. Single responsibility.
 
 ## Testing
 
+- Test all CLI UX features using tmux in a fresh window with your changes before
+  opening a PR. Ensure that the behavior matches the intended behavior.
 - `pytest-anyio`; real model calls are blocked globally.
 - Drive the shell with `TestModel` and a `Console(file=StringIO())`.
 - Test a hook by building a `PluginHost`, registering a handler, and firing the
