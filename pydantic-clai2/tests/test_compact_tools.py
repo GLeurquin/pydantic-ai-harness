@@ -8,8 +8,9 @@ from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 from pydantic_ai_harness.filesystem import FileChangeRequestEvent, FileEditedEvent, FileWrittenEvent
 from pydantic_ai_harness.shell import CommandFinishedEvent, CommandOutputEvent, CommandStartedEvent
 from rich.console import Console
+from rich.text import Text
 
-from pydantic_clai2 import StreamRenderer
+from pydantic_clai2 import StreamRenderer, theme
 from pydantic_clai2.config import Settings, resolve_settings
 
 
@@ -91,6 +92,32 @@ async def test_grep_summary_does_not_wrap_or_print_results() -> None:
     assert output.getvalue().endswith('\n\n')
     assert 'secret match' not in output.getvalue()
     assert part.content == 'secret match\n' * 30
+
+
+@pytest.mark.parametrize('show_tool_output', [False, True])
+@pytest.mark.parametrize(
+    ('name', 'arguments'),
+    [
+        ('shell', {'command': 'echo hello'}),
+        ('write_file', {'path': 'file.py'}),
+        ('edit_file', {'path': 'file.py'}),
+        ('read_file', {'path': 'file.py'}),
+        ('list_files', {'path': 'src'}),
+        ('grep', {'pattern': 'hello'}),
+        ('custom_tool', {}),
+    ],
+)
+async def test_tool_header_colors(name: str, arguments: dict[str, str], show_tool_output: bool) -> None:
+    output = io.StringIO()
+    console = Console(file=output, force_terminal=True, color_system='truecolor')
+    renderer = StreamRenderer(console, stop_loading=lambda: None, show_tool_output=show_tool_output)
+    await renderer.on_stream_event(FunctionToolCallEvent(part=ToolCallPart(name, arguments)))
+    text = Text.from_ansi(output.getvalue())
+    assert text.plain.endswith('\n\n')
+    assert text.get_style_at_offset(console, 0).color == console.get_style(theme.MUTED).color
+    assert text.get_style_at_offset(console, 2).color == console.get_style(theme.ACCENT).color
+    if arguments:
+        assert text.get_style_at_offset(console, 3 + len(name)).color == console.get_style(theme.MUTED).color
 
 
 def test_output_setting_is_opt_in() -> None:
