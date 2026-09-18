@@ -32,7 +32,8 @@ async def main(root: Path, mode: str) -> None:
     package = root / 'pydantic_clai2'
     app = package / '_app.py'
     original = app.read_text()
-    updated = original.replace("prompt_async('> ',", "prompt_async('updated> ',")
+    updated = original.replace("'> ',", "'updated> ',")
+    assert updated != original
     updated = updated.replace('New session started.', 'Updated session started.')
     commands = package / 'commands.py'
     commands.write_text(commands.read_text().replace('Use /help.', 'Use updated /help.'))

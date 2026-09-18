@@ -439,14 +439,16 @@ never lands in the middle of a paragraph.
 ### Take the whole screen mid-run: `async with host.full_screen()`
 
 A full-screen widget opened from inside a tool call (the built-in `ask_user` menu
-is one) has to wait for streamed text to finish and the busy prompt frame and
-status row to get out of the way. Otherwise it draws over unfinished output and
-the footer keeps repainting into it. `host.full_screen()` clears the whole prompt
-area and restores it when the block exits. The idle editor stays compact above
-the footer, growing for input or completions rather than filling the terminal.
-The busy frame is not an editor; users enter their next prompt after the turn
-finishes or they cancel it. Busy-time typing is discarded without terminal echo.
-`host.full_screen()` also releases input so the widget can read its own keys:
+is one) has to wait for streamed text to finish and the live editor and status
+row to get out of the way. Otherwise it draws over unfinished output and the
+footer keeps repainting into it. `host.full_screen()` releases the editor's input
+and output ownership, then restores it with the draft intact when the block exits.
+The editor stays compact above the footer, growing for input or completions.
+Enter steers through core's `RunContext.enqueue`; Alt+Enter queues a new turn.
+Steering stays inside the current turn's hooks. Queued prompts run the normal
+`turn_start` and `turn_end` hooks. Slash commands wait until the turn ends, so
+plugin loading and configuration still happen between turns.
+Use the screen context so your widget can read its own keys:
 
 ```python
 from pydantic_clai2.plugins import PluginHost

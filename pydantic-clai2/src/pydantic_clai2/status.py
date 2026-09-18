@@ -3,14 +3,11 @@
 import asyncio
 import contextlib
 import math
-import signal
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Self
 
-from prompt_toolkit.input import Input
-from prompt_toolkit.keys import Keys
 from pydantic_ai import AgentStreamEvent, FunctionToolCallEvent, FunctionToolResultEvent, PartDeltaEvent, PartStartEvent
 from pydantic_ai.messages import (
     TextPart,
@@ -39,6 +36,7 @@ class Status:
     """Retained-history cost; `None` (hidden) until a priced response exists."""
     streamed_chars: int = 0
     activity: str = 'ready'
+    input_hint: str = ''
 
     def observe(self, event: AgentStreamEvent) -> None:
         """Include text, thinking, and streamed tool arguments in the estimate."""
@@ -77,7 +75,8 @@ class Status:
     def toolbar(self) -> list[tuple[str, str]]:
         """prompt-toolkit fragments for the input prompt; the figure is `WARNING` while `context_alert` is set."""
         head, figure, tail = self.segments()
-        return [('', head), (theme.WARNING if self.context_alert else '', figure), ('', tail)]
+        hint = f' | {self.input_hint}' if self.input_hint else ''
+        return [('', head), (theme.WARNING if self.context_alert else '', figure), ('', tail + hint)]
 
 
 def _interrupted() -> bool:
@@ -89,15 +88,13 @@ def _interrupted() -> bool:
 class StatusLine:
     """Keep the prompt frame and status visible below streamed output during a run."""
 
-    def __init__(self, console: Console, status: Status, *, input: Input | None = None) -> None:
+    def __init__(self, console: Console, status: Status) -> None:
         """Bind the footer to the same output stream as the renderer."""
         self.console = console
         self.status = status
         self._task: asyncio.Task[None] | None = None
         self._height = 0
         self._rows = 0
-        self._input = input
-        self._input_context = contextlib.ExitStack()
 
     async def __aenter__(self) -> Self:
         """Reserve the prompt area only on an interactive terminal."""
@@ -119,22 +116,11 @@ class StatusLine:
 
     def _reserve(self) -> None:
         if self.console.is_terminal and not self.console.is_dumb_terminal:
-            if self._input is not None:
-                self._input_context.enter_context(self._input.raw_mode())
-                self._input_context.enter_context(self._input.attach(self._read_input))
             self.console.show_cursor(False)
             self._draw(0)
             self._task = asyncio.create_task(self._animate())
 
-    def _read_input(self) -> None:
-        """Discard busy-time typing, but keep the shared Ctrl-C interrupt policy."""
-        assert self._input is not None
-        for key in self._input.read_keys():
-            if key.key == Keys.ControlC:
-                signal.raise_signal(signal.SIGINT)
-
     async def _release(self) -> None:
-        self._input_context.close()
         task, self._task = self._task, None
         if task is not None:
             task.cancel()
