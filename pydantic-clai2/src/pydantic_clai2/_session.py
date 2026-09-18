@@ -5,7 +5,7 @@ import os
 from collections.abc import AsyncIterable, Awaitable, Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import Generic, TypeVar
+from typing import Generic, Literal, TypeVar
 from uuid import uuid4
 
 from anyio import get_cancelled_exc_class, move_on_after
@@ -121,11 +121,9 @@ class Session(Generic[DepsT, OutputT]):
         finally:
             self._running = False
 
-    async def _save_turn(self, *, outcome: str) -> None:
+    async def _save_turn(self, *, outcome: Literal['running', 'completed', 'failed', 'cancelled']) -> None:
         if self.conversations is None:
             return
-        if outcome not in ('running', 'completed', 'failed', 'cancelled'):
-            raise ValueError(f'Invalid turn outcome: {outcome}')
         self.summary = await self.conversations.save(
             summary=replace(self.summary, outcome=outcome, model=self.model, owner_pid=None), messages=self._messages
         )

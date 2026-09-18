@@ -183,3 +183,30 @@ def test_render_long_cards_all_modes_and_empty_projects() -> None:
     widget.handle_key('q')
     widget.handle_key('q')
     assert widget.handle_key('q') == ''
+
+
+def test_preview_work_is_bounded_and_truncation_visible() -> None:
+    widget, _ = browser()
+    widget.mode = 'preview'
+    widget.preview_text = 'x' * 1_000_000
+    widget.preview_offset = 1_000_000
+    assert 'Preview truncated' in '\n'.join(widget.frame(width=120, height=24))
+
+
+def test_ignored_keys_and_empty_rename() -> None:
+    widget, entries = browser()
+    widget.handle_key(Key.ENTER)
+    widget.handle_key('unknown')
+    widget.handle_key('r')
+    widget.buffer = ''
+    widget.handle_key(Key.ENTER)
+    assert entries[0].title == 'Fix renderer'
+    widget.mode = 'rename'
+    widget.handle_key('ctrl-p')
+    entries.clear()
+    widget.reload()
+    widget.handle_key(Key.DOWN)
+    widget.handle_key(Key.ENTER)
+    assert not widget.entries
+    widget.mode = 'sessions'
+    widget.handle_key(Key.DOWN)

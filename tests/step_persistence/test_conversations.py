@@ -2,6 +2,8 @@
 
 import os
 import sqlite3
+import subprocess
+import sys
 from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
@@ -13,7 +15,9 @@ from pydantic_ai.messages import (
     ModelMessagesTypeAdapter,
     ModelRequest,
     ModelResponse,
+    TextContent,
     TextPart,
+    ToolReturnPart,
     UserPromptPart,
 )
 
@@ -149,3 +153,53 @@ async def test_stale_naming_usage_is_still_accounted(tmp_path: Path) -> None:
     assert current.title == second.title
     assert current.revision == second.revision
     assert current.naming_tokens == 123
+
+
+async def test_unicode_and_multimodal_search(tmp_path: Path) -> None:
+
+    store = SqliteConversationStore(database=tmp_path / 'sessions.db')
+    messages = [
+        ModelRequest(
+            parts=[UserPromptPart(['école', TextContent('Straße'), BinaryContent(data=b'x', media_type='image/png')])]
+        )
+    ]
+    saved = await store.save(
+        summary=ConversationSummary(workspace='/a', title='Éducation', tags=('Übung',)), messages=messages
+    )
+    assert conversation_text(messages) == 'user: école\nuser: Straße'
+    assert conversation_text([ModelRequest(parts=[ToolReturnPart('tool', 'secret', tool_call_id='x')])]) == ''
+    for query in ('ÉCOLE', 'STRASSE', 'éDUCATION', 'üBUNG'):
+        assert [entry.id for entry in await store.listing(query=query)] == [saved.id]
+
+
+@pytest.mark.parametrize(
+    'output,busy',
+    [('"python.exe","123","Console","1","2 K"\n', True), ('INFO: no tasks\n', False), ('"other.exe","456"\n', False)],
+)
+def test_windows_owner_probe(monkeypatch: pytest.MonkeyPatch, output: str, busy: bool) -> None:
+
+    def tasklist(
+        args: list[str], *, capture_output: bool, text: bool, check: bool, timeout: int
+    ) -> subprocess.CompletedProcess[str]:
+        assert args == ['tasklist', '/FI', 'PID eq 123', '/FO', 'CSV', '/NH']
+        assert capture_output and text and check and timeout == 10
+        return subprocess.CompletedProcess(args, 0, stdout=output)
+
+    monkeypatch.setattr(sys, 'platform', 'win32')
+    monkeypatch.setattr(subprocess, 'run', tasklist)
+    running = ConversationSummary(workspace='/a', outcome='running', owner_pid=123)
+    if busy:
+        with pytest.raises(ConversationConflict, match='busy'):
+            ensure_inactive(running)
+    else:
+        ensure_inactive(running)
+
+
+async def test_delete_with_only_run_catalog(tmp_path: Path) -> None:
+    store = SqliteConversationStore(database=tmp_path / 'sessions.db')
+    saved = await store.save(summary=ConversationSummary(workspace='/a'), messages=[])
+    with closing(sqlite3.connect(store.database)) as conn:
+        conn.execute('CREATE TABLE runs (run_id TEXT, conversation_id TEXT)')
+        conn.commit()
+    await store.delete(source=saved)
+    assert await store.listing() == []

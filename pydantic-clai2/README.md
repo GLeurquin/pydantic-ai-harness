@@ -269,6 +269,10 @@ The browser counts loaded summaries, not a separate unbounded catalog. Search
 runs against the full catalog before pagination. It does not index tool output,
 reasoning, or content removed by compaction.
 
+The resume transcript preview displays at most 24,000 characters of the newest-first
+text, with a truncation notice for longer histories. Search is Unicode
+case-insensitive and includes text instructions in multimodal prompts.
+
 ### Background names
 
 A saved session immediately gets a fallback title from its first prompt. A

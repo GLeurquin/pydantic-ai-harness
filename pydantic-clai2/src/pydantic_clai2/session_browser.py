@@ -126,9 +126,12 @@ class SessionBrowser:
         budget = max(1, height - 5)
         header = colored(f'CLAI > Resume session    {len(self.entries)} sessions / {len(self.projects)} projects')
         if self.mode == 'preview':
+            preview = self.preview_text[:24_000]
+            if len(self.preview_text) > len(preview):
+                preview += '\n[Preview truncated to 24,000 characters.]'
             body = [
                 line
-                for paragraph in plain(self.preview_text).splitlines()
+                for paragraph in plain(preview).splitlines()
                 for line in (textwrap.wrap(paragraph, width=width) or [''])
             ] or ['No messages.']
             offset = min(self.preview_offset, max(0, len(body) - budget))

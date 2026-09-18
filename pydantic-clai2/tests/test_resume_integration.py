@@ -3,16 +3,21 @@
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from io import StringIO
 from pathlib import Path
 
+import anyio
 import pytest
 from prompt_toolkit.application import create_app_session
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from pydantic_ai import Agent
+from pydantic_ai.messages import ModelRequest, UserPromptPart
 from pydantic_ai.models.test import TestModel
+from pydantic_ai_harness.step_persistence import ContinuableSnapshot, RunRecord, StepEvent, ToolEffectRecord
 from pydantic_ai_harness.step_persistence.conversations import SqliteConversationStore
+from pydantic_ai_harness.step_persistence.naming import SessionNamer
 from rich.console import Console
 
 from pydantic_clai2 import DEFAULT_PLUGINS, chat
@@ -132,3 +137,78 @@ def test_resume_cli_errors_are_normal_parser_errors(tmp_path: Path, args: list[s
     assert result.returncode == 2
     assert 'error:' in result.stderr
     assert 'Traceback' not in result.stderr
+
+
+async def test_empty_usage_missing_model_and_recovery_preview(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+
+    store = SqliteConversationStore(database=tmp_path / 'sessions.db')
+    session = Session(Agent(), deps=None, conversations=store, workspace=tmp_path)
+    context = CommandContext(
+        settings=Settings(model=None),
+        store=SettingsStore(tmp_path / 'config.db'),
+        clear_history=session.clear,
+        apply_setting=lambda key, settings: None,
+    )
+    service = Sessions(session=session, store=store, context=context)
+    assert await service.generate('no model') is None
+    assert 'Background naming:' not in await service.usage(console=Console(file=StringIO()))
+    saved = await store.save(summary=replace(session.summary, outcome='running', run_id='interrupted'), messages=[])
+    steps = session.step_store
+    assert steps is not None
+    await steps.register_run(RunRecord(run_id='interrupted', conversation_id=saved.id))
+    await steps.save_snapshot(
+        ContinuableSnapshot(
+            run_id='interrupted', step_index=0, messages=[ModelRequest(parts=[UserPromptPart('checkpoint text')])]
+        )
+    )
+    await steps.append_event(
+        StepEvent(run_id='interrupted', kind='tool_call_completed', step_index=0, tool_name='done')
+    )
+    await steps.append_event(StepEvent(run_id='interrupted', kind='tool_call_failed', step_index=0, tool_name='failed'))
+    await steps.record_tool_effect(
+        ToolEffectRecord(run_id='interrupted', tool_call_id='t1', tool_name='unknown', status='started')
+    )
+
+    no_snapshot = await store.save(summary=replace(saved, id='no-snapshot', revision=0, run_id='absent'), messages=[])
+
+    def inspect(browser: SessionBrowser) -> str:
+        browser.selected_id = saved.id
+        assert browser.selected is not None
+        text = browser.preview(saved.id)
+        assert 'checkpoint text' in text and 'unknown (t1)' in text and 'done' in text and 'failed' in text
+        assert 'checkpoint text' not in browser.preview(no_snapshot.id)
+        browser.rename(browser.selected, 'first')
+        with pytest.raises(ValueError, match='Session changed'):
+            browser.rename(browser.selected, 'stale')
+        return ''
+
+    monkeypatch.setattr(SessionBrowser, 'run', inspect)
+    await service.command([])
+
+
+async def test_simultaneous_service_failures_remain_grouped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+
+    entered = anyio.Event()
+
+    async def broken_worker(self: SessionNamer) -> None:
+        entered.set()
+        try:
+            await anyio.sleep_forever()
+        finally:
+            raise ValueError('worker cleanup failed')
+
+    async def broken_command(self: Sessions[None, str], args: list[str]) -> str:
+        await entered.wait()
+        raise ValueError('browser failed')
+
+    monkeypatch.setattr(SessionNamer, 'run', broken_worker)
+    monkeypatch.setattr(Sessions, 'command', broken_command)
+    with pytest.raises(BaseExceptionGroup) as caught:
+        await chat(
+            Agent(TestModel()),
+            deps=None,
+            console=Console(file=StringIO()),
+            store=SettingsStore(tmp_path / 'settings.db'),
+            resume='',
+        )
+    assert len(caught.value.exceptions) == 2

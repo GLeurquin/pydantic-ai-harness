@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -15,7 +18,14 @@ from uuid import uuid4
 
 from anyio.to_thread import run_sync
 from pydantic import TypeAdapter
-from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, ModelResponse, TextPart, UserPromptPart
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelMessagesTypeAdapter,
+    ModelResponse,
+    TextContent,
+    TextPart,
+    UserPromptPart,
+)
 
 from pydantic_ai_harness.media import SqliteMediaStore, externalize_media, restore_media
 
@@ -56,13 +66,31 @@ def ensure_inactive(summary: ConversationSummary) -> None:
     """
     if summary.outcome != 'running' or summary.owner_pid is None:
         return
+    if sys.platform == 'win32':
+        result = subprocess.run(
+            ['tasklist', '/FI', f'PID eq {summary.owner_pid}', '/FO', 'CSV', '/NH'],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+        if not any(len(row) > 1 and row[1] == str(summary.owner_pid) for row in csv.reader(result.stdout.splitlines())):
+            return
+    else:
+        ensure_posix_inactive(pid=summary.owner_pid)
+        return
+    raise ConversationConflict(f'Session is busy in process {summary.owner_pid}.')
+
+
+def ensure_posix_inactive(*, pid: int) -> None:
+    """Signal zero probes existence without delivering a signal on POSIX."""
     try:
-        os.kill(summary.owner_pid, 0)
+        os.kill(pid, 0)
     except ProcessLookupError:
         return
     except PermissionError:
         pass
-    raise ConversationConflict(f'Session is busy in process {summary.owner_pid}.')
+    raise ConversationConflict(f'Session is busy in process {pid}.')
 
 
 @dataclass(kw_only=True)
@@ -75,12 +103,22 @@ class SavedConversation:
 
 def conversation_text(messages: Sequence[ModelMessage]) -> str:
     """Searchable user/assistant text, excluding tool output and reasoning."""
-    return '\n'.join(
-        f'{"user" if isinstance(part, UserPromptPart) else "assistant"}: {part.content}'
-        for message in messages
-        for part in message.parts
-        if isinstance(part, (UserPromptPart, TextPart)) and isinstance(part.content, str)
-    )
+    lines: list[str] = []
+    for message in messages:
+        for part in message.parts:
+            if isinstance(part, TextPart):
+                lines.append(f'assistant: {part.content}')
+            elif isinstance(part, UserPromptPart):
+                content = part.content
+                if isinstance(content, str):
+                    lines.append(f'user: {content}')
+                else:
+                    for item in content:
+                        if isinstance(item, str):
+                            lines.append(f'user: {item}')
+                        elif isinstance(item, TextContent):
+                            lines.append(f'user: {item.content}')
+    return '\n'.join(lines)
 
 
 class SqliteConversationStore:
@@ -107,6 +145,7 @@ class SqliteConversationStore:
             os.close(descriptor)
         conn = sqlite3.connect(self.database, timeout=10)
         try:
+            conn.create_function('casefold', 1, str.casefold, deterministic=True)
             conn.execute('PRAGMA journal_mode=WAL')
             conn.execute(
                 'CREATE TABLE IF NOT EXISTS conversations ('
@@ -207,7 +246,7 @@ class SqliteConversationStore:
     def _listing(self, query: str, limit: int, offset: int) -> list[ConversationSummary]:
         with self._connection() as conn:
             rows = conn.execute(
-                'SELECT metadata FROM conversations WHERE instr(lower(search_text || metadata), lower(?)) > 0 '
+                'SELECT metadata FROM conversations WHERE instr(casefold(search_text || metadata), casefold(?)) > 0 '
                 'ORDER BY updated_at DESC, id LIMIT ? OFFSET ?',
                 (query, limit, offset),
             ).fetchall()

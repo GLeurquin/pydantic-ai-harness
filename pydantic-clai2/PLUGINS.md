@@ -558,3 +558,7 @@ not fire plugin load/unload hooks or restore previous plugin approvals. The
 project/session browser is a dedicated Termflow widget: unlike a single-pane
 `MenuBuilder`, it has two independently navigable panes and two-line cards. Its
 pure frame and scripted-key tests follow the same headless menu conventions.
+
+The resume transcript preview displays at most 24,000 characters of the newest-first
+text, with a truncation notice for longer histories. Search is Unicode
+case-insensitive and includes text instructions in multimodal prompts.

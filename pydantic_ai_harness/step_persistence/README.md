@@ -695,7 +695,8 @@ returns the committed summary. A stale writer or a deleted session raises
 `ConversationConflict`. `get(conversation_id=...)` restores messages through the
 same media format used by step snapshots. `listing(query=..., limit=..., offset=...)`
 returns summaries without loading messages; search matches saved user/assistant
-text and metadata. Search does not include tool output, reasoning, or discarded
+text and metadata using Unicode case folding, including text entries within
+multimodal prompts. Search does not include tool output, reasoning, or discarded
 pre-compaction history. Unknown metadata schema versions are rejected.
 
 Metadata naming uses a separate version. `name(source=..., title=..., ...)` cannot

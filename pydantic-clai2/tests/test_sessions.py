@@ -205,3 +205,16 @@ async def test_cancellation_still_propagates_when_saving_fails(
             group.cancel_scope.cancel()
     assert session.messages
     assert 'Could not save cancelled turn: disk full' in caplog.text
+
+
+async def test_memory_only_commit_and_missing_recovery_snapshot(tmp_path: Path) -> None:
+    bare = Session(Agent(TestModel()), deps=None)
+    await bare.commit_messages([ModelRequest(parts=[UserPromptPart('memory')])])
+    assert bare.messages
+    session = saved_session(tmp_path)
+    assert session.conversations is not None
+    saved = await session.conversations.save(
+        summary=replace(session.summary, outcome='running', run_id='no-checkpoint'), messages=bare.messages
+    )
+    await session.resume(saved.id)
+    assert session.messages == bare.messages

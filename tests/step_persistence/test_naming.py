@@ -21,6 +21,8 @@ async def test_structured_name_and_auxiliary_usage(anyio_backend: str) -> None:
     assert result.tokens > 0
     with pytest.raises(ValidationError):
         SessionName(title='')
+    with pytest.raises(ValidationError, match='printable'):
+        SessionName(title='\x1b  ')
     name = SessionName(title='Fix\nrenderer\x1b', tags=['#SQLite', 'sqlite', '  ', 'tools'])
     assert name.title == 'Fix renderer'
     assert name.tags == ['sqlite', 'tools']
@@ -131,3 +133,24 @@ async def test_backfill_disabled_and_failure_containment(tmp_path: Path) -> None
             await called.wait()
             group.cancel_scope.cancel()
     assert (await store.get(conversation_id=summary.id)).summary.title_source == 'fallback'
+
+
+async def test_queued_work_disabled_before_execution(tmp_path: Path) -> None:
+    store = SqliteConversationStore(database=tmp_path / 'sessions.db')
+    checked = anyio.Event()
+
+    async def generate(prompt: str) -> NamingResult:
+        pytest.fail('Disabled work must not call the model')
+
+    def disabled() -> bool:
+        checked.set()
+        return False
+
+    namer = SessionNamer(store=store, generate=generate)
+    assert namer.submit('queued')
+    namer.enabled = disabled
+    with anyio.fail_after(10):
+        async with anyio.create_task_group() as group:
+            group.start_soon(namer.run)
+            await checked.wait()
+            group.cancel_scope.cancel()

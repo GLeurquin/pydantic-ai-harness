@@ -30,10 +30,8 @@ def anyio_backend() -> str:
     return 'asyncio'
 
 
-async def test_input_checkpoint_on_first_model_failure() -> None:
-    def fail(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        raise ValueError('provider failed')
-
+@pytest.mark.parametrize('stream', [False, True])
+async def test_input_checkpoint_on_first_model_failure(stream: bool) -> None:
     store = InMemoryStepStore()
     notices: list[SnapshotSaved] = []
     hooks = Hooks()
@@ -49,11 +47,15 @@ async def test_input_checkpoint_on_first_model_failure() -> None:
         yield ''  # pragma: no cover
 
     agent = Agent(
-        FunctionModel(fail, stream_function=fail_stream),
+        FunctionModel(stream_function=fail_stream),
         capabilities=[StepPersistence(store=store, capture_frontier=True), hooks],
     )
     with pytest.raises(ValueError, match='provider failed'):
-        await agent.run('preserve this prompt', run_id='first')
+        if stream:
+            async with agent.run_stream('preserve this prompt', run_id='first') as result:
+                await result.get_output()  # pragma: no cover
+        else:
+            await agent.run('preserve this prompt', run_id='first')
     snapshot = await store.latest_snapshot(run_id='first')
     assert snapshot is not None
     assert any(
@@ -75,7 +77,10 @@ async def test_same_length_after_run_rewrite_gets_final_checkpoint(tmp_path: Pat
         return result
 
     memory = SqliteStepStore(database=tmp_path / 'steps.db')
-    agent = Agent(TestModel(custom_output_text='before'), capabilities=[StepPersistence(store=memory), hooks])
+    agent = Agent(
+        TestModel(custom_output_text='before'),
+        capabilities=[StepPersistence(store=memory, capture_frontier=True), hooks],
+    )
     result = await agent.run('hello', run_id='rewrite')
     snapshot = await memory.latest_snapshot(run_id='rewrite')
     assert snapshot is not None

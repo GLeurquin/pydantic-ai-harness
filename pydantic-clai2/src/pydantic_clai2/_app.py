@@ -451,7 +451,10 @@ async def _run_prompt(
     except Exception as exc:  # noqa: BLE001 -- interactive boundary reports plugin/provider failures.
         await renderer.finish()
         console.print(f'{type(exc).__name__}: {exc}', style=theme.ERROR, markup=False)
-        console.print('Turn not saved. External tool side effects may already have occurred.', style=theme.MUTED)
+        console.print(
+            'Turn failed. Retained history may include partial progress. External tool side effects may already have occurred.',
+            style=theme.MUTED,
+        )
         console.print()
         return TurnEnd(text=text, outcome='failed', error=exc)
     finally:
