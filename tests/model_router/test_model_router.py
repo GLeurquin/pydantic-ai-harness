@@ -6,10 +6,11 @@ from typing import Literal
 
 import pytest
 from pydantic_ai import Agent
-from pydantic_ai.exceptions import UserError
+from pydantic_ai.exceptions import UsageLimitExceeded, UserError
 from pydantic_ai.messages import ModelMessage, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.usage import UsageLimits
 
 from pydantic_ai_harness.model_router import ModelChoice, ModelRouter
 
@@ -44,7 +45,7 @@ class TestModelRouter:
         router = ModelRouter[object](model=FunctionModel(select), choices=choices(), default='fast')
         result = await Agent(capabilities=[router]).run('Solve my difficult problem')
         assert result.output == 'deep'
-        assert result.usage.requests == 1
+        assert result.usage.requests == 2
 
     @pytest.mark.parametrize('scope,expected', [('run', 1), ('step', 2)])
     async def test_scope_and_run_isolation(self, scope: Literal['run', 'step'], expected: int) -> None:
@@ -92,6 +93,11 @@ class TestModelRouter:
         router = ModelRouter[object](model='unknown:router', choices=choices(), default='fast')
         assert (await Agent(capabilities=[router]).run('hello')).output == 'fast'
 
+    async def test_router_usage_limit_propagates(self) -> None:
+        router = ModelRouter[object](model=router_model('missing'), choices=choices(), default='fast')
+        with pytest.raises(UsageLimitExceeded):
+            await Agent(capabilities=[router]).run('hello', usage_limits=UsageLimits(request_limit=1))
+
     async def test_router_error(self) -> None:
         def fail(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
             raise RuntimeError('router unavailable')
@@ -101,7 +107,7 @@ class TestModelRouter:
 
     async def test_explicit_model_bypasses_router(self) -> None:
         def fail(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-            pytest.fail('router should not be called')
+            pytest.fail('router should not be called')  # pragma: no cover
 
         agent = Agent(capabilities=[ModelRouter(model=FunctionModel(fail), choices=choices(), default='fast')])
         assert (await agent.run('hello', model=TestModel(custom_output_text='explicit'))).output == 'explicit'

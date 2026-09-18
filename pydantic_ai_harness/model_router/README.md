@@ -44,12 +44,12 @@ The routing model receives descriptions, not candidate model IDs. Its structured
 - `scope='run'` (default) caches the first decision for that run, including fallback decisions. Separate and concurrent runs do not share decisions.
 - `scope='step'` selects once per logical model request step. Core owns step boundaries and transport retries; the capability does not add a request loop.
 - `min_confidence` defaults to `0.0`. A score below the threshold selects `default`; a score equal to it is accepted.
-- Provider failures, exhausted output-validation retries, and other routing exceptions select `default`. Cancellation and process-control exceptions propagate.
+- Provider failures, exhausted output-validation retries, and other routing exceptions select `default`. Usage-limit failures, cancellation, and process-control exceptions propagate.
 - Failure of the selected model is not a routing failure and is not retried with `default`. Use core's `FallbackModel` inside a `ModelChoice` for provider fallback.
 
 ## Cost and data routing
 
-Each uncached decision adds an internal agent run and its model requests, latency, and token cost. Output-validation retries can make more than one request per decision. Router usage is separate from the parent run's usage and limits. The internal agent is named `model_router` so global Pydantic AI instrumentation attributes its requests and spend separately.
+Each uncached decision adds an internal agent run and its model requests, latency, and token cost. Output-validation retries can make more than one request per decision. Router requests and tokens share the parent run's usage and limits, including output-validation retries. Exhausting a limit stops the run rather than selecting the default. The internal agent is named `model_router` so global Pydantic AI instrumentation attributes its requests and spend separately.
 
 The router receives core's model-selection history, plus the current user prompt on the first step. Core excludes the pending request: on later steps, the newest tool results, retry feedback, and queued messages are not yet visible to the router. Routing is therefore based on the preceding conversation, not the exact payload about to reach the selected model. This can include system messages, tool arguments and results, image URLs, or encoded binary content. These are sent as JSON text, not as native multimodal inputs. The router does not receive dependencies, tool definitions, or the outer agent's separately configured instructions. Choose a routing provider authorized to receive that data, not just the providers for the candidates. Prompt injection can influence the selection; descriptions and confidence are not authorization controls.
 

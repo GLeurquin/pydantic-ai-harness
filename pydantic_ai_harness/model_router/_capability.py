@@ -10,7 +10,7 @@ from typing import Literal, Protocol, TypeVar, runtime_checkable
 from pydantic import BaseModel, Field, create_model
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.capabilities import AbstractCapability, ModelSelector
-from pydantic_ai.exceptions import UserError
+from pydantic_ai.exceptions import UsageLimitExceeded, UserError
 from pydantic_ai.messages import ModelMessagesTypeAdapter, ModelRequest, UserPromptPart
 from pydantic_ai.models import Model, ModelSelectionContext
 
@@ -119,13 +119,19 @@ class ModelRouter(AbstractCapability[AgentDepsT]):
             confidence: float | None = None
             reason = 'router_error'
             try:
-                result = await self._agent.run(ModelMessagesTypeAdapter.dump_json(messages).decode())
+                result = await self._agent.run(
+                    ModelMessagesTypeAdapter.dump_json(messages).decode(),
+                    usage=selection.usage,
+                    usage_limits=ctx.usage_limits,
+                )
                 confidence = result.output.confidence
                 if confidence >= self.min_confidence:
                     selected = result.output.choice
                     reason = 'selected'
                 else:
                     reason = 'low_confidence'
+            except UsageLimitExceeded:
+                raise
             except Exception:
                 # Cancellation and process-control exceptions are not router failures.
                 pass
