@@ -136,8 +136,8 @@ class SessionBrowser:
                 for paragraph in plain(preview, multiline=True).splitlines()
                 for line in (textwrap.wrap(paragraph, width=width) or [''])
             ] or ['No messages.']
-            offset = min(self.preview_offset, max(0, len(body) - budget))
-            body = body[offset : offset + budget]
+            self.preview_offset = min(self.preview_offset, max(0, len(body) - budget))
+            body = body[self.preview_offset : self.preview_offset + budget]
         else:
             left = self._projects_frame(budget=budget)
             pane_width = width if collapsed(width) else width - min(30, max(12, width // 3)) - 3

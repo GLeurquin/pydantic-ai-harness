@@ -191,6 +191,14 @@ def test_preview_work_is_bounded_and_truncation_visible() -> None:
     widget.preview_text = 'x' * 1_000_000
     widget.preview_offset = 1_000_000
     assert 'Preview truncated' in '\n'.join(widget.frame(width=120, height=24))
+    bottom = widget.preview_offset
+    assert 0 < bottom < 1_000_000
+    widget.handle_key(Key.UP)
+    widget.frame(width=120, height=24)
+    assert widget.preview_offset == bottom - 1
+    widget.preview_text = 'short'
+    widget.frame(width=120, height=24)
+    assert widget.preview_offset == 0
 
 
 def test_ignored_keys_and_empty_rename() -> None:
