@@ -27,14 +27,14 @@ const approvals: ApprovalView[] = [
 
 export const ConnectedWithApprovals: Story = () => (
   <div style={{ border: '1px solid var(--border)' }}>
-    <Header connected={true} approvals={approvals} agents={agents} onResolveApproval={noop} />
+    <Header connected={true} approvals={approvals} agents={agents} onResolveApproval={noop} onManageModels={noop} />
     <div style={{ height: 200 }} />
   </div>
 );
 
 export const Disconnected: Story = () => (
   <div style={{ border: '1px solid var(--border)' }}>
-    <Header connected={false} approvals={[]} agents={[]} onResolveApproval={noop} />
+    <Header connected={false} approvals={[]} agents={[]} onResolveApproval={noop} onManageModels={noop} />
     <div style={{ height: 200 }} />
   </div>
 );

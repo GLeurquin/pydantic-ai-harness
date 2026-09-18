@@ -170,6 +170,31 @@ Fork is "duplicate my situation, not my process":
    history preamble on the first prompt).
 5. The parent keeps running untouched.
 
+## Model profiles
+
+A model profile is an environment overlay plus a provider-qualified model
+string, defined and edited in the browser. Agents reference a profile by id;
+the process for an agent is spawned with that profile's environment applied on
+top of the server's own, isolating provider configuration per agent.
+
+- `models::ModelProfile` derives the spawn environment from the provider and
+  fields: `CLAI_MODEL` always, the provider's API-key variable for key-based
+  providers, `GOOGLE_CLOUD_PROJECT`/`GOOGLE_CLOUD_LOCATION` for Vertex, and any
+  explicit extra variables. Vertex service-account JSON is written to a
+  per-agent file at spawn and referenced by `GOOGLE_APPLICATION_CREDENTIALS`;
+  the file is removed when the agent is archived.
+- Profiles persist in `models.json` under the data dir, written owner-only on
+  Unix because they hold secrets. Reads return a redacted view: secret values
+  are replaced by presence flags, and an edit that omits a secret keeps the
+  stored one, so the browser never has to round-trip a secret it was never
+  shown.
+- Deleting a profile in use by a live agent is refused. Switching an idle
+  agent's profile restarts its process (reusing the history-replay path) so the
+  new environment takes effect; switching is refused while a turn is running.
+- The stub agent's `env:<NAME>` directive echoes an environment variable, which
+  lets the tests assert that a profile's environment actually reached the
+  process without a real provider.
+
 ## Approval modes
 
 ACP permission requests carry option kinds (`allow_once`, `allow_always`,

@@ -16,6 +16,8 @@ function makeAgent(id: string, name: string, status: AgentStatus): AgentSummary 
     sessions: [{ id: 'main', acpSessionId: null, label: 'Main', isMain: true }],
     pendingApprovals: 0,
     forkedFrom: null,
+    modelProfileId: null,
+    modelLabel: null,
     lastError: null,
   };
 }

@@ -13,16 +13,18 @@ use serde_json::json;
 
 use crate::manager::{AgentManager, CreateAgent, ManagerError};
 use crate::model::ApprovalMode;
+use crate::models::ProfileEdit;
 
 pub type AppState = Arc<AgentManager>;
 
 impl IntoResponse for ManagerError {
     fn into_response(self) -> Response {
         let status = match &self {
-            ManagerError::AgentNotFound | ManagerError::SessionNotFound | ManagerError::ApprovalNotFound => {
-                StatusCode::NOT_FOUND
-            }
-            ManagerError::CapReached(_) => StatusCode::CONFLICT,
+            ManagerError::AgentNotFound
+            | ManagerError::SessionNotFound
+            | ManagerError::ApprovalNotFound
+            | ManagerError::ModelNotFound => StatusCode::NOT_FOUND,
+            ManagerError::CapReached(_) | ManagerError::ModelInUse | ManagerError::Busy => StatusCode::CONFLICT,
             ManagerError::Archived | ManagerError::NoWorktree | ManagerError::Invalid(_) => StatusCode::BAD_REQUEST,
             ManagerError::Git(_) | ManagerError::Store(_) | ManagerError::Spawn(_) | ManagerError::Rpc(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
@@ -41,6 +43,8 @@ struct CreateAgentBody {
     #[serde(default)]
     base_branch: Option<String>,
     approval_mode: ApprovalMode,
+    #[serde(default)]
+    model_profile_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -77,6 +81,13 @@ struct ArchiveQuery {
     remove_worktree: bool,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetModelBody {
+    #[serde(default)]
+    model_profile_id: Option<String>,
+}
+
 async fn health() -> Json<serde_json::Value> {
     Json(json!({"ok": true}))
 }
@@ -95,6 +106,7 @@ async fn create_agent(
             use_worktree: body.use_worktree,
             base_branch: body.base_branch,
             approval_mode: body.approval_mode,
+            model_profile_id: body.model_profile_id,
         })
         .await?;
     Ok(Json(json!(agent)))
@@ -192,6 +204,41 @@ async fn diff(
     Ok(Json(json!(manager.diff(&agent_id).await?)))
 }
 
+async fn list_models(State(manager): State<AppState>) -> Json<serde_json::Value> {
+    Json(json!(manager.list_models().await))
+}
+
+async fn create_model(
+    State(manager): State<AppState>,
+    Json(body): Json<ProfileEdit>,
+) -> Result<Json<serde_json::Value>, ManagerError> {
+    Ok(Json(json!(manager.create_model(body).await?)))
+}
+
+async fn update_model(
+    State(manager): State<AppState>,
+    Path(model_id): Path<String>,
+    Json(body): Json<ProfileEdit>,
+) -> Result<Json<serde_json::Value>, ManagerError> {
+    Ok(Json(json!(manager.update_model(&model_id, body).await?)))
+}
+
+async fn delete_model(
+    State(manager): State<AppState>,
+    Path(model_id): Path<String>,
+) -> Result<Json<serde_json::Value>, ManagerError> {
+    manager.delete_model(&model_id).await?;
+    Ok(Json(json!({"ok": true})))
+}
+
+async fn set_agent_model(
+    State(manager): State<AppState>,
+    Path(agent_id): Path<String>,
+    Json(body): Json<SetModelBody>,
+) -> Result<Json<serde_json::Value>, ManagerError> {
+    Ok(Json(json!(manager.set_model(&agent_id, body.model_profile_id).await?)))
+}
+
 async fn ws_upgrade(State(manager): State<AppState>, upgrade: WebSocketUpgrade) -> Response {
     upgrade.on_upgrade(move |socket| ws_connection(socket, manager))
 }
@@ -247,8 +294,11 @@ pub fn build_router(manager: AppState) -> Router {
         .route("/api/agents/{agent_id}/approval-mode", patch(set_approval_mode))
         .route("/api/agents/{agent_id}/approvals", get(agent_approvals))
         .route("/api/agents/{agent_id}/diff", get(diff))
+        .route("/api/agents/{agent_id}/model", patch(set_agent_model))
         .route("/api/approvals", get(all_approvals))
         .route("/api/approvals/{approval_id}", post(resolve_approval))
+        .route("/api/models", get(list_models).post(create_model))
+        .route("/api/models/{model_id}", patch(update_model).delete(delete_model))
         .route("/api/ws", get(ws_upgrade))
         .with_state(manager)
 }

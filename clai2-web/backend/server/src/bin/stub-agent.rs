@@ -142,6 +142,17 @@ async fn handle_prompt(stub: Arc<Stub>, request_id: Value, params: Value) {
         return;
     }
 
+    // Echo an environment variable so tests can assert the model profile's
+    // environment reached this process: `env:NAME`.
+    if let Some(rest) = text.split("env:").nth(1) {
+        let name = rest.split_whitespace().next().unwrap_or_default();
+        let value = std::env::var(name).unwrap_or_default();
+        stub.send_text_chunk(&session_id, "agent_message_chunk", &format!("env {name}={value}"))
+            .await;
+        stub.respond(&request_id, json!({"stopReason": "end_turn"})).await;
+        return;
+    }
+
     // Drop the connection mid-turn without responding, to exercise the
     // manager's unexpected-exit handling.
     if text.contains("crash") {

@@ -4,6 +4,7 @@ import { api } from './api/client';
 import type { CreateAgentRequest } from './api/types';
 import { Header } from './components/Header';
 import { MainPane } from './components/MainPane';
+import { ModelsDialog } from './components/ModelsDialog';
 import { NameDialog } from './components/NameDialog';
 import { NewAgentDialog } from './components/NewAgentDialog';
 import { Sidebar } from './components/Sidebar';
@@ -13,7 +14,7 @@ import { connectWs, wsUrl } from './ws';
 
 export const MAX_AGENTS = 50;
 
-type Dialog = 'none' | 'new-agent' | 'fork' | 'side-session';
+type Dialog = 'none' | 'new-agent' | 'fork' | 'side-session' | 'models';
 
 export function App() {
   const store = useAppStore();
@@ -26,6 +27,7 @@ export function App() {
       onEvent: useAppStore.getState().applyEvent,
       onConnected: useAppStore.getState().setConnected,
     });
+    void api.listModels().then(useAppStore.getState().setModels, () => undefined);
     return connection.close;
   }, []);
 
@@ -74,6 +76,7 @@ export function App() {
         approvals={store.approvals}
         agents={store.agents}
         onResolveApproval={resolveApproval}
+        onManageModels={() => setDialog('models')}
       />
       <Sidebar
         agents={store.agents}
@@ -95,7 +98,10 @@ export function App() {
           onFork={() => setDialog('fork')}
           onSideSession={() => setDialog('side-session')}
           loadDiff={loadDiff}
+          models={store.models}
           onSetApprovalMode={(mode) => void api.setApprovalMode(selected.id, mode)}
+          onSetModel={(modelProfileId) => void api.setAgentModel(selected.id, modelProfileId)}
+          onManageModels={() => setDialog('models')}
           onArchive={(removeWorktree) => void api.archiveAgent(selected.id, removeWorktree)}
         />
       ) : (
@@ -103,7 +109,17 @@ export function App() {
           <div className="main-empty">Start an agent to get going.</div>
         </main>
       )}
-      {dialog === 'new-agent' ? <NewAgentDialog onCreate={createAgent} onClose={() => setDialog('none')} /> : null}
+      {dialog === 'new-agent' ? (
+        <NewAgentDialog
+          models={store.models}
+          onCreate={createAgent}
+          onClose={() => setDialog('none')}
+          onManageModels={() => setDialog('models')}
+        />
+      ) : null}
+      {dialog === 'models' ? (
+        <ModelsDialog onClose={() => setDialog('none')} onChanged={useAppStore.getState().setModels} />
+      ) : null}
       {dialog === 'fork' && selected ? (
         <NameDialog
           title={`Fork ${selected.name}`}

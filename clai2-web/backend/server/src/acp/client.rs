@@ -155,12 +155,19 @@ async fn dispatch_loop(
 }
 
 impl AcpClient {
-    /// Spawn the agent process and wire the protocol over its stdio.
-    pub fn spawn(command: &[String], cwd: &Path) -> Result<(Arc<Self>, mpsc::Receiver<AcpEvent>), SpawnError> {
+    /// Spawn the agent process and wire the protocol over its stdio. `env` is
+    /// overlaid on the inherited environment, so a model profile can set the
+    /// provider credentials and `CLAI_MODEL` for this agent alone.
+    pub fn spawn(
+        command: &[String],
+        cwd: &Path,
+        env: &[(String, String)],
+    ) -> Result<(Arc<Self>, mpsc::Receiver<AcpEvent>), SpawnError> {
         let (program, args) = command.split_first().ok_or(SpawnError::EmptyCommand)?;
         let mut child = Command::new(program)
             .args(args)
             .current_dir(cwd)
+            .envs(env.iter().map(|(name, value)| (name, value)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -323,7 +330,7 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let _guard = runtime.enter();
         assert!(matches!(
-            AcpClient::spawn(&[], Path::new("/tmp")),
+            AcpClient::spawn(&[], Path::new("/tmp"), &[]),
             Err(SpawnError::EmptyCommand)
         ));
     }
@@ -332,7 +339,7 @@ mod tests {
     fn spawn_with_missing_binary_fails() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let _guard = runtime.enter();
-        let result = AcpClient::spawn(&["/nonexistent/agent-binary".to_owned()], Path::new("/tmp"));
+        let result = AcpClient::spawn(&["/nonexistent/agent-binary".to_owned()], Path::new("/tmp"), &[]);
         assert!(matches!(result, Err(SpawnError::Spawn { .. })));
     }
 

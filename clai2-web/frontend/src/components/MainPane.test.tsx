@@ -24,6 +24,8 @@ function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
     ],
     pendingApprovals: 0,
     forkedFrom: null,
+    modelProfileId: null,
+    modelLabel: null,
     lastError: null,
     ...overrides,
   };
@@ -44,7 +46,10 @@ function renderPane(overrides: Partial<Parameters<typeof MainPane>[0]> = {}) {
     onFork: vi.fn(),
     onSideSession: vi.fn(),
     loadDiff: vi.fn<(agentId: string) => Promise<WorktreeDiff>>(() => new Promise<WorktreeDiff>(() => undefined)),
+    models: [],
     onSetApprovalMode: vi.fn(),
+    onSetModel: vi.fn(),
+    onManageModels: vi.fn(),
     onArchive: vi.fn(),
     ...overrides,
   };

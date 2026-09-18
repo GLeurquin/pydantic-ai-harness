@@ -2,7 +2,7 @@
 
 import { create } from 'zustand';
 
-import type { AgentSummary, ApprovalView, ServerEvent, TranscriptItem } from '../api/types';
+import type { AgentSummary, ApprovalView, RedactedProfile, ServerEvent, TranscriptItem } from '../api/types';
 import { appendItem, transcriptKey } from './transcript';
 
 export interface Snapshot {
@@ -16,6 +16,7 @@ export interface AppState {
   connected: boolean;
   agents: AgentSummary[];
   approvals: ApprovalView[];
+  models: RedactedProfile[];
   transcripts: Record<string, TranscriptItem[]>;
   selectedAgentId: string | null;
   view: MainView;
@@ -23,6 +24,7 @@ export interface AppState {
   setConnected: (connected: boolean) => void;
   applySnapshot: (snapshot: Snapshot) => void;
   applyEvent: (event: ServerEvent) => void;
+  setModels: (models: RedactedProfile[]) => void;
   selectAgent: (agentId: string) => void;
   setView: (view: MainView) => void;
   setTranscript: (agentId: string, sessionId: string, items: TranscriptItem[]) => void;
@@ -115,6 +117,7 @@ export const useAppStore = create<AppState>((set) => ({
   connected: false,
   agents: [],
   approvals: [],
+  models: [],
   transcripts: {},
   selectedAgentId: null,
   view: { kind: 'session', sessionId: 'main' },
@@ -130,6 +133,7 @@ export const useAppStore = create<AppState>((set) => ({
           : (snapshot.agents[0]?.id ?? null),
     })),
   applyEvent: (event) => set((state) => reduceEvent(state, event)),
+  setModels: (models) => set({ models }),
   selectAgent: (agentId) => set({ selectedAgentId: agentId, view: { kind: 'session', sessionId: 'main' } }),
   setView: (view) => set({ view }),
   setTranscript: (agentId, sessionId, items) =>

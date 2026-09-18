@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import type { AgentSummary, ApprovalView, ServerEvent, ToolCallView, TranscriptItem } from '../api/types';
+import type {
+  AgentSummary,
+  ApprovalView,
+  RedactedProfile,
+  ServerEvent,
+  ToolCallView,
+  TranscriptItem,
+} from '../api/types';
 import { reduceEvent, useAppStore, type AppState } from './store';
 
 function agent(id: string, name = id): AgentSummary {
@@ -14,6 +21,8 @@ function agent(id: string, name = id): AgentSummary {
     sessions: [],
     pendingApprovals: 0,
     forkedFrom: null,
+    modelProfileId: null,
+    modelLabel: null,
     lastError: null,
   };
 }
@@ -37,6 +46,7 @@ function resetStore(partial: Partial<AppState> = {}): void {
     connected: false,
     agents: [],
     approvals: [],
+    models: [],
     transcripts: {},
     selectedAgentId: null,
     view: { kind: 'session', sessionId: 'main' },
@@ -215,6 +225,27 @@ describe('useAppStore actions', () => {
     expect(state().view).toEqual({ kind: 'settings' });
     state().setView({ kind: 'session', sessionId: 'side-1' });
     expect(state().view).toEqual({ kind: 'session', sessionId: 'side-1' });
+  });
+
+  it('setModels replaces the model list', () => {
+    const profiles: RedactedProfile[] = [
+      {
+        id: 'm1',
+        label: 'Claude Sonnet',
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-6',
+        hasApiKey: true,
+        projectId: null,
+        region: null,
+        hasCredentials: false,
+        extraEnv: [],
+      },
+    ];
+    expect(state().models).toEqual([]);
+    state().setModels(profiles);
+    expect(state().models).toEqual(profiles);
+    state().setModels([]);
+    expect(state().models).toEqual([]);
   });
 
   it('setTranscript replaces one transcript and keeps the others', () => {

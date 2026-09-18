@@ -1,4 +1,4 @@
-import type { AgentSummary, ApprovalView, TranscriptItem, WorktreeDiff } from '../api/types';
+import type { AgentSummary, ApprovalView, RedactedProfile, TranscriptItem, WorktreeDiff } from '../api/types';
 import type { MainView } from '../state/store';
 import { Conversation } from './Conversation';
 import { DiffPanel } from './DiffPanel';
@@ -17,7 +17,10 @@ export interface MainPaneProps {
   onFork: () => void;
   onSideSession: () => void;
   loadDiff: (agentId: string) => Promise<WorktreeDiff>;
+  models: RedactedProfile[];
   onSetApprovalMode: SettingsPanelProps['onSetApprovalMode'];
+  onSetModel: SettingsPanelProps['onSetModel'];
+  onManageModels: SettingsPanelProps['onManageModels'];
   onArchive: SettingsPanelProps['onArchive'];
 }
 
@@ -82,7 +85,14 @@ export function MainPane(props: MainPaneProps) {
       ) : null}
       {view.kind === 'changes' ? <DiffPanel agentId={agent.id} loadDiff={props.loadDiff} /> : null}
       {view.kind === 'settings' ? (
-        <SettingsPanel agent={agent} onSetApprovalMode={props.onSetApprovalMode} onArchive={props.onArchive} />
+        <SettingsPanel
+          agent={agent}
+          models={props.models}
+          onSetApprovalMode={props.onSetApprovalMode}
+          onSetModel={props.onSetModel}
+          onManageModels={props.onManageModels}
+          onArchive={props.onArchive}
+        />
       ) : null}
     </main>
   );

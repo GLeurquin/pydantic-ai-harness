@@ -1,9 +1,34 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
 
-import type { CreateAgentRequest } from '../api/types';
+import type { CreateAgentRequest, RedactedProfile } from '../api/types';
 import { NewAgentDialog } from './NewAgentDialog';
+
+const models: RedactedProfile[] = [
+  {
+    id: 'm1',
+    label: 'Claude Sonnet',
+    provider: 'anthropic',
+    model: 'claude-sonnet-4-6',
+    hasApiKey: true,
+    projectId: null,
+    region: null,
+    hasCredentials: false,
+    extraEnv: [],
+  },
+  {
+    id: 'm2',
+    label: 'GPT',
+    provider: 'openai',
+    model: 'gpt-6',
+    hasApiKey: true,
+    projectId: null,
+    region: null,
+    hasCredentials: false,
+    extraEnv: [],
+  },
+];
 
 function deferred() {
   let resolve!: () => void;
@@ -18,7 +43,7 @@ describe('NewAgentDialog', () => {
     const user = userEvent.setup();
     const onCreate = vi.fn<(request: CreateAgentRequest) => Promise<void>>();
     const onClose = vi.fn();
-    render(<NewAgentDialog onCreate={onCreate} onClose={onClose} />);
+    render(<NewAgentDialog models={[]} onManageModels={vi.fn()} onCreate={onCreate} onClose={onClose} />);
     await user.click(screen.getByRole('button', { name: 'Start agent' }));
     expect(screen.getByText('Give the agent a name.')).toHaveClass('form-error');
     expect(onCreate).not.toHaveBeenCalled();
@@ -29,7 +54,7 @@ describe('NewAgentDialog', () => {
     const user = userEvent.setup();
     const onCreate = vi.fn<(request: CreateAgentRequest) => Promise<void>>().mockResolvedValue(undefined);
     const onClose = vi.fn();
-    render(<NewAgentDialog onCreate={onCreate} onClose={onClose} />);
+    render(<NewAgentDialog models={[]} onManageModels={vi.fn()} onCreate={onCreate} onClose={onClose} />);
     await user.type(screen.getByPlaceholderText('fix-auth-bug'), '  my agent  ');
     await user.type(screen.getByPlaceholderText('main'), '  develop  ');
     await user.click(screen.getByRole('button', { name: 'Start agent' }));
@@ -42,7 +67,7 @@ describe('NewAgentDialog', () => {
   it('omits baseBranch when it is blank', async () => {
     const user = userEvent.setup();
     const onCreate = vi.fn<(request: CreateAgentRequest) => Promise<void>>().mockResolvedValue(undefined);
-    render(<NewAgentDialog onCreate={onCreate} onClose={vi.fn()} />);
+    render(<NewAgentDialog models={[]} onManageModels={vi.fn()} onCreate={onCreate} onClose={vi.fn()} />);
     await user.type(screen.getByPlaceholderText('fix-auth-bug'), 'agent');
     await user.type(screen.getByPlaceholderText('main'), '   ');
     await user.click(screen.getByRole('button', { name: 'Start agent' }));
@@ -52,12 +77,12 @@ describe('NewAgentDialog', () => {
   it('hides the base branch field and omits it when the worktree is unchecked', async () => {
     const user = userEvent.setup();
     const onCreate = vi.fn<(request: CreateAgentRequest) => Promise<void>>().mockResolvedValue(undefined);
-    render(<NewAgentDialog onCreate={onCreate} onClose={vi.fn()} />);
+    render(<NewAgentDialog models={[]} onManageModels={vi.fn()} onCreate={onCreate} onClose={vi.fn()} />);
     await user.type(screen.getByPlaceholderText('main'), 'develop');
     await user.click(screen.getByLabelText('Create an isolated worktree and branch'));
     expect(screen.queryByPlaceholderText('main')).toBeNull();
     await user.type(screen.getByPlaceholderText('fix-auth-bug'), 'agent');
-    await user.selectOptions(screen.getByRole('combobox'), 'accept_edits');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Approval mode' }), 'accept_edits');
     await user.click(screen.getByRole('button', { name: 'Start agent' }));
     expect(onCreate.mock.calls).toStrictEqual([[{ name: 'agent', useWorktree: false, approvalMode: 'accept_edits' }]]);
   });
@@ -68,7 +93,7 @@ describe('NewAgentDialog', () => {
       .fn<(request: CreateAgentRequest) => Promise<void>>()
       .mockRejectedValue(new Error('too many agents'));
     const onClose = vi.fn();
-    render(<NewAgentDialog onCreate={onCreate} onClose={onClose} />);
+    render(<NewAgentDialog models={[]} onManageModels={vi.fn()} onCreate={onCreate} onClose={onClose} />);
     await user.type(screen.getByPlaceholderText('fix-auth-bug'), 'agent');
     await user.click(screen.getByRole('button', { name: 'Start agent' }));
     expect(await screen.findByText('too many agents')).toHaveClass('form-error');
@@ -79,7 +104,7 @@ describe('NewAgentDialog', () => {
   it('stringifies non-Error failures', async () => {
     const user = userEvent.setup();
     const onCreate = vi.fn<(request: CreateAgentRequest) => Promise<void>>().mockRejectedValue('plain refusal');
-    render(<NewAgentDialog onCreate={onCreate} onClose={vi.fn()} />);
+    render(<NewAgentDialog models={[]} onManageModels={vi.fn()} onCreate={onCreate} onClose={vi.fn()} />);
     await user.type(screen.getByPlaceholderText('fix-auth-bug'), 'agent');
     await user.click(screen.getByRole('button', { name: 'Start agent' }));
     expect(await screen.findByText('plain refusal')).toBeInTheDocument();
@@ -90,7 +115,7 @@ describe('NewAgentDialog', () => {
     const gate = deferred();
     const onCreate = vi.fn<(request: CreateAgentRequest) => Promise<void>>(() => gate.promise);
     const onClose = vi.fn();
-    render(<NewAgentDialog onCreate={onCreate} onClose={onClose} />);
+    render(<NewAgentDialog models={[]} onManageModels={vi.fn()} onCreate={onCreate} onClose={onClose} />);
     await user.type(screen.getByPlaceholderText('fix-auth-bug'), 'agent');
     await user.click(screen.getByRole('button', { name: 'Start agent' }));
     expect(screen.getByRole('button', { name: 'Starting...' })).toBeDisabled();
@@ -98,10 +123,51 @@ describe('NewAgentDialog', () => {
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
   });
 
+  it('lists the model profiles under a default option', () => {
+    render(<NewAgentDialog models={models} onManageModels={vi.fn()} onCreate={vi.fn()} onClose={vi.fn()} />);
+    const select = screen.getByRole('combobox', { name: 'Model' });
+    const options = within(select).getAllByRole('option');
+    expect(options.map((option) => [option.getAttribute('value'), option.textContent])).toStrictEqual([
+      ['', 'Default (server environment)'],
+      ['m1', 'Claude Sonnet'],
+      ['m2', 'GPT'],
+    ]);
+    expect(select).toHaveValue('');
+  });
+
+  it('includes the chosen modelProfileId in the created request', async () => {
+    const user = userEvent.setup();
+    const onCreate = vi.fn<(request: CreateAgentRequest) => Promise<void>>().mockResolvedValue(undefined);
+    render(<NewAgentDialog models={models} onManageModels={vi.fn()} onCreate={onCreate} onClose={vi.fn()} />);
+    await user.type(screen.getByPlaceholderText('fix-auth-bug'), 'agent');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Model' }), 'm2');
+    await user.click(screen.getByRole('button', { name: 'Start agent' }));
+    expect(onCreate.mock.calls).toStrictEqual([
+      [{ name: 'agent', useWorktree: true, approvalMode: 'always_ask', modelProfileId: 'm2' }],
+    ]);
+  });
+
+  it('omits modelProfileId when the default option is left selected', async () => {
+    const user = userEvent.setup();
+    const onCreate = vi.fn<(request: CreateAgentRequest) => Promise<void>>().mockResolvedValue(undefined);
+    render(<NewAgentDialog models={models} onManageModels={vi.fn()} onCreate={onCreate} onClose={vi.fn()} />);
+    await user.type(screen.getByPlaceholderText('fix-auth-bug'), 'agent');
+    await user.click(screen.getByRole('button', { name: 'Start agent' }));
+    expect(onCreate.mock.calls).toStrictEqual([[{ name: 'agent', useWorktree: true, approvalMode: 'always_ask' }]]);
+  });
+
+  it('fires onManageModels from the manage button', async () => {
+    const user = userEvent.setup();
+    const onManageModels = vi.fn();
+    render(<NewAgentDialog models={models} onManageModels={onManageModels} onCreate={vi.fn()} onClose={vi.fn()} />);
+    await user.click(screen.getByRole('button', { name: 'Manage model profiles' }));
+    expect(onManageModels).toHaveBeenCalledTimes(1);
+  });
+
   it('closes on backdrop click and Cancel, but not on clicks inside', async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
-    const { container } = render(<NewAgentDialog onCreate={vi.fn()} onClose={onClose} />);
+    const { container } = render(<NewAgentDialog models={[]} onManageModels={vi.fn()} onCreate={vi.fn()} onClose={onClose} />);
     await user.click(screen.getByRole('dialog', { name: 'New agent' }));
     expect(onClose).not.toHaveBeenCalled();
     const backdrop = container.querySelector('.dialog-backdrop');

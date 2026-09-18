@@ -4,6 +4,7 @@ import type {
   AgentSummary,
   ApprovalView,
   PermissionOption,
+  RedactedProfile,
   SessionSummary,
   ToolCallView,
   TranscriptItem,
@@ -42,10 +43,46 @@ export function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
     sessions: [makeSession()],
     pendingApprovals: 0,
     forkedFrom: null,
+    modelProfileId: null,
+    modelLabel: null,
     lastError: null,
     ...overrides,
   };
 }
+
+export function makeProfile(overrides: Partial<RedactedProfile> = {}): RedactedProfile {
+  return {
+    id: 'profile-1',
+    label: 'Claude Sonnet',
+    provider: 'anthropic',
+    model: 'claude-sonnet-4-6',
+    hasApiKey: true,
+    projectId: null,
+    region: null,
+    hasCredentials: false,
+    extraEnv: [],
+    ...overrides,
+  };
+}
+
+export const sampleProfiles: RedactedProfile[] = [
+  makeProfile(),
+  makeProfile({ id: 'profile-2', label: 'GPT', provider: 'openai', model: 'gpt-6' }),
+  makeProfile({
+    id: 'profile-3',
+    label: 'Vertex Gemini',
+    provider: 'google_vertex',
+    model: 'gemini-2.5-pro',
+    hasApiKey: false,
+    projectId: 'my-project',
+    region: 'us-central1',
+    hasCredentials: true,
+    extraEnv: [
+      { name: 'HTTP_PROXY', value: 'http://proxy:8080', secret: false },
+      { name: 'VERTEX_TOKEN', value: null, secret: true },
+    ],
+  }),
+];
 
 export function makeToolCall(overrides: Partial<ToolCallView> = {}): ToolCallView {
   return {

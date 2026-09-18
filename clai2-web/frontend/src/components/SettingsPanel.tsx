@@ -1,8 +1,11 @@
-import type { AgentSummary, ApprovalMode } from '../api/types';
+import type { AgentSummary, ApprovalMode, RedactedProfile } from '../api/types';
 
 export interface SettingsPanelProps {
   agent: AgentSummary;
+  models: RedactedProfile[];
   onSetApprovalMode: (mode: ApprovalMode) => void;
+  onSetModel: (modelProfileId: string | null) => void;
+  onManageModels: () => void;
   onArchive: (removeWorktree: boolean) => void;
 }
 
@@ -12,10 +15,43 @@ export const MODE_LABELS: Record<ApprovalMode, string> = {
   auto: 'Auto-approve everything',
 };
 
-export function SettingsPanel({ agent, onSetApprovalMode, onArchive }: SettingsPanelProps) {
+export function SettingsPanel({
+  agent,
+  models,
+  onSetApprovalMode,
+  onSetModel,
+  onManageModels,
+  onArchive,
+}: SettingsPanelProps) {
   const archived = agent.status === 'archived';
+  const busy = agent.status === 'working' || agent.status === 'waiting_approval';
   return (
     <div className="settings">
+      <section>
+        <h3>Model</h3>
+        <div className="settings-row">
+          <select
+            value={agent.modelProfileId ?? ''}
+            onChange={(change) => onSetModel(change.target.value === '' ? null : change.target.value)}
+            disabled={archived || busy}
+            aria-label="Model profile"
+          >
+            <option value="">Default (server environment)</option>
+            {models.map((model) => (
+              <option key={model.id} value={model.id}>
+                {model.label}
+              </option>
+            ))}
+          </select>
+          <button onClick={onManageModels}>Manage profiles</button>
+        </div>
+        <p className="hint">
+          {busy
+            ? 'Finish or cancel the current turn before switching models.'
+            : 'Switching restarts the agent and replays the conversation to the new model.'}
+        </p>
+      </section>
+
       <section>
         <h3>Approval mode</h3>
         <div className="settings-row">

@@ -1,18 +1,21 @@
 import { useState } from 'react';
 
-import type { ApprovalMode, CreateAgentRequest } from '../api/types';
+import type { ApprovalMode, CreateAgentRequest, RedactedProfile } from '../api/types';
 import { MODE_LABELS } from './SettingsPanel';
 
 export interface NewAgentDialogProps {
+  models: RedactedProfile[];
   onCreate: (request: CreateAgentRequest) => Promise<void>;
   onClose: () => void;
+  onManageModels: () => void;
 }
 
-export function NewAgentDialog({ onCreate, onClose }: NewAgentDialogProps) {
+export function NewAgentDialog({ models, onCreate, onClose, onManageModels }: NewAgentDialogProps) {
   const [name, setName] = useState('');
   const [useWorktree, setUseWorktree] = useState(true);
   const [baseBranch, setBaseBranch] = useState('');
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('always_ask');
+  const [modelProfileId, setModelProfileId] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -27,6 +30,9 @@ export function NewAgentDialog({ onCreate, onClose }: NewAgentDialogProps) {
       const request: CreateAgentRequest = { name: name.trim(), useWorktree, approvalMode };
       if (useWorktree && baseBranch.trim()) {
         request.baseBranch = baseBranch.trim();
+      }
+      if (modelProfileId) {
+        request.modelProfileId = modelProfileId;
       }
       await onCreate(request);
       onClose();
@@ -74,6 +80,20 @@ export function NewAgentDialog({ onCreate, onClose }: NewAgentDialogProps) {
             ))}
           </select>
         </label>
+        <label>
+          Model
+          <select value={modelProfileId} onChange={(change) => setModelProfileId(change.target.value)}>
+            <option value="">Default (server environment)</option>
+            {models.map((model) => (
+              <option key={model.id} value={model.id}>
+                {model.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button className="link-button" onClick={onManageModels}>
+          Manage model profiles
+        </button>
         {error ? <div className="form-error">{error}</div> : null}
         <div className="dialog-actions">
           <button onClick={onClose}>Cancel</button>

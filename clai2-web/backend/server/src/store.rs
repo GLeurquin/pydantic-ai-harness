@@ -10,6 +10,23 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
 use crate::model::{AgentSummary, TranscriptItem};
+use crate::models::ModelProfile;
+
+/// Restrict a file to owner read/write on Unix; a no-op elsewhere.
+async fn restrict_permissions(path: &Path) -> Result<(), StoreError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .await
+            .map_err(io_err(path))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -84,6 +101,55 @@ impl Store {
         Ok(())
     }
 
+    fn models_path(&self) -> PathBuf {
+        self.data_dir.join("models.json")
+    }
+
+    pub async fn load_models(&self) -> Result<Vec<ModelProfile>, StoreError> {
+        let path = self.models_path();
+        match tokio::fs::read(&path).await {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|source| StoreError::Corrupt { path, source }),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(vec![]),
+            Err(source) => Err(StoreError::Io { path, source }),
+        }
+    }
+
+    /// Rewrite the model profiles atomically. The file holds provider secrets,
+    /// so it is created with owner-only permissions on Unix.
+    pub async fn save_models(&self, profiles: &[ModelProfile]) -> Result<(), StoreError> {
+        tokio::fs::create_dir_all(&self.data_dir)
+            .await
+            .map_err(io_err(&self.data_dir))?;
+        let path = self.models_path();
+        let tmp = self.data_dir.join("models.json.tmp");
+        let bytes = serde_json::to_vec_pretty(profiles).map_err(corrupt_err(&path))?;
+        tokio::fs::write(&tmp, bytes).await.map_err(io_err(&tmp))?;
+        restrict_permissions(&tmp).await?;
+        tokio::fs::rename(&tmp, &path).await.map_err(io_err(&path))?;
+        Ok(())
+    }
+
+    /// Write a Vertex service-account credentials file for one agent, owner-only,
+    /// and return its path.
+    pub async fn write_credentials(&self, agent_id: &str, contents: &str) -> Result<PathBuf, StoreError> {
+        let dir = self.data_dir.join("credentials");
+        tokio::fs::create_dir_all(&dir).await.map_err(io_err(&dir))?;
+        let path = dir.join(format!("{agent_id}.json"));
+        tokio::fs::write(&path, contents).await.map_err(io_err(&path))?;
+        restrict_permissions(&path).await?;
+        Ok(path)
+    }
+
+    /// Remove an agent's credentials file if present.
+    pub async fn remove_credentials(&self, agent_id: &str) -> Result<(), StoreError> {
+        let path = self.data_dir.join("credentials").join(format!("{agent_id}.json"));
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(StoreError::Io { path, source }),
+        }
+    }
+
     pub async fn append_transcript(
         &self,
         agent_id: &str,
@@ -144,6 +210,8 @@ mod tests {
                 sessions: vec![],
                 pending_approvals: 0,
                 forked_from: None,
+                model_profile_id: None,
+                model_label: None,
                 last_error: None,
             },
             command: vec!["stub-agent".to_owned()],
@@ -277,6 +345,113 @@ mod tests {
         let store = Store::new(dir.path().to_owned());
         assert!(matches!(
             store.load_transcript("a1", "s1").await,
+            Err(StoreError::Io { .. })
+        ));
+    }
+
+    fn profile(id: &str) -> ModelProfile {
+        ModelProfile {
+            id: id.to_owned(),
+            label: "M".to_owned(),
+            provider: crate::models::Provider::Openai,
+            model: "gpt-6".to_owned(),
+            api_key: Some("k".to_owned()),
+            project_id: None,
+            region: None,
+            credentials_json: None,
+            extra_env: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn models_missing_file_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().to_owned());
+        assert!(store.load_models().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn models_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().to_owned());
+        store.save_models(&[profile("m1")]).await.unwrap();
+        assert_eq!(store.load_models().await.unwrap(), vec![profile("m1")]);
+    }
+
+    #[tokio::test]
+    async fn corrupt_models_reports_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::write(dir.path().join("models.json"), b"{not json")
+            .await
+            .unwrap();
+        let store = Store::new(dir.path().to_owned());
+        assert!(matches!(store.load_models().await, Err(StoreError::Corrupt { .. })));
+    }
+
+    #[tokio::test]
+    async fn load_models_reports_io_error_when_path_is_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::create_dir(dir.path().join("models.json")).await.unwrap();
+        let store = Store::new(dir.path().to_owned());
+        assert!(matches!(store.load_models().await, Err(StoreError::Io { .. })));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn save_models_writes_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().to_owned());
+        store.save_models(&[profile("m1")]).await.unwrap();
+        let meta = std::fs::metadata(dir.path().join("models.json")).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+    }
+
+    #[tokio::test]
+    async fn write_credentials_stores_contents_owner_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().to_owned());
+        let path = store
+            .write_credentials("a1", "{\"type\":\"service_account\"}")
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::fs::read_to_string(&path).await.unwrap(),
+            "{\"type\":\"service_account\"}"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let meta = std::fs::metadata(&path).unwrap();
+            assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        }
+    }
+
+    #[tokio::test]
+    async fn remove_credentials_deletes_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().to_owned());
+        let path = store.write_credentials("a1", "x").await.unwrap();
+        store.remove_credentials("a1").await.unwrap();
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn remove_credentials_absent_is_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().to_owned());
+        assert!(store.remove_credentials("nope").await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn remove_credentials_reports_io_error_when_path_is_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::create_dir_all(dir.path().join("credentials").join("a1.json"))
+            .await
+            .unwrap();
+        let store = Store::new(dir.path().to_owned());
+        assert!(matches!(
+            store.remove_credentials("a1").await,
             Err(StoreError::Io { .. })
         ));
     }

@@ -14,6 +14,8 @@ function agent(id: string, name: string, status: AgentStatus): AgentSummary {
     sessions: [],
     pendingApprovals: 0,
     forkedFrom: null,
+    modelProfileId: null,
+    modelLabel: null,
     lastError: null,
   };
 }

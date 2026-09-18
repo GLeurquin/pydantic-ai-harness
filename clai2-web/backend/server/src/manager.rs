@@ -19,6 +19,7 @@ use crate::events::{Event, EventHub};
 use crate::model::{
     AgentStatus, AgentSummary, ApprovalMode, ApprovalView, SessionSummary, StopReason, ToolCallView, TranscriptItem,
 };
+use crate::models::{ModelProfile, ProfileEdit, RedactedProfile};
 use crate::store::{PersistedAgent, Store, StoreError};
 use crate::worktrees::{slugify, GitError, WorktreeDiff, WorktreeService};
 
@@ -36,6 +37,12 @@ pub enum ManagerError {
     CapReached(usize),
     #[error("agent has no worktree")]
     NoWorktree,
+    #[error("model profile not found")]
+    ModelNotFound,
+    #[error("model profile is in use by an agent")]
+    ModelInUse,
+    #[error("agent is busy")]
+    Busy,
     #[error("invalid request: {0}")]
     Invalid(String),
     #[error(transparent)]
@@ -64,6 +71,7 @@ pub struct CreateAgent {
     pub use_worktree: bool,
     pub base_branch: Option<String>,
     pub approval_mode: ApprovalMode,
+    pub model_profile_id: Option<String>,
 }
 
 struct Runtime {
@@ -115,6 +123,7 @@ pub struct AgentManager {
     hub: EventHub,
     ledger: Arc<ApprovalLedger>,
     agents: Mutex<Vec<AgentEntry>>,
+    models: Mutex<Vec<ModelProfile>>,
     /// Serializes process spawns and ACP session opens, so two concurrent
     /// prompts cannot double-spawn an agent or double-open a session.
     spawn_lock: Mutex<()>,
@@ -167,6 +176,7 @@ impl AgentManager {
         let store = Store::new(config.data_dir.clone());
         let worktrees = WorktreeService::new(config.worktrees_dir.clone());
         let persisted = store.load_roster().await?;
+        let models = store.load_models().await?;
         let agents = persisted
             .into_iter()
             .map(|agent| {
@@ -196,6 +206,7 @@ impl AgentManager {
             hub: EventHub::new(),
             ledger: Arc::new(ApprovalLedger::default()),
             agents: Mutex::new(agents),
+            models: Mutex::new(models),
             spawn_lock: Mutex::new(()),
         }))
     }
@@ -266,6 +277,7 @@ impl AgentManager {
                 return Err(ManagerError::CapReached(self.config.max_agents));
             }
         }
+        let model_label = self.resolve_model_label(request.model_profile_id.as_deref()).await?;
         let agent_id = Uuid::new_v4().to_string();
         let unique_slug = format!("{}-{}", slugify(&name), &agent_id[..8]);
         let worktree = if request.use_worktree {
@@ -300,9 +312,54 @@ impl AgentManager {
             }],
             pending_approvals: 0,
             forked_from: None,
+            model_profile_id: request.model_profile_id,
+            model_label,
             last_error: None,
         };
         self.finish_creation(summary, None).await
+    }
+
+    /// Look up a model profile's label, erroring if the id is unknown.
+    async fn resolve_model_label(&self, model_profile_id: Option<&str>) -> Result<Option<String>, ManagerError> {
+        let Some(id) = model_profile_id else {
+            return Ok(None);
+        };
+        let models = self.models.lock().await;
+        models
+            .iter()
+            .find(|profile| profile.id == id)
+            .map(|profile| Some(profile.label.clone()))
+            .ok_or(ManagerError::ModelNotFound)
+    }
+
+    /// Compute the spawn environment for an agent from its model profile,
+    /// writing a Vertex credentials file when the profile carries one.
+    async fn spawn_env(
+        &self,
+        agent_id: &str,
+        model_profile_id: Option<&str>,
+    ) -> Result<Vec<(String, String)>, ManagerError> {
+        let Some(id) = model_profile_id else {
+            return Ok(Vec::new());
+        };
+        let profile = {
+            let models = self.models.lock().await;
+            models.iter().find(|profile| profile.id == id).cloned()
+        };
+        let Some(profile) = profile else {
+            // The profile was deleted after the agent referenced it; run with
+            // no overlay rather than refusing to start.
+            return Ok(Vec::new());
+        };
+        let mut env = profile.base_env();
+        if let Some(credentials) = profile.credentials() {
+            let path = self.store.write_credentials(agent_id, credentials).await?;
+            env.push((
+                "GOOGLE_APPLICATION_CREDENTIALS".to_owned(),
+                path.to_string_lossy().into_owned(),
+            ));
+        }
+        Ok(env)
     }
 
     /// Shared tail of create and fork: register, spawn, persist, announce.
@@ -360,7 +417,7 @@ impl AgentManager {
     /// Spawn the agent process if it is not running, and initialize ACP.
     async fn ensure_running(self: &Arc<Self>, agent_id: &str) -> Result<(), ManagerError> {
         let _spawn_guard = self.spawn_lock.lock().await;
-        let (command, cwd, already_running) = {
+        let (command, cwd, model_profile_id, already_running) = {
             let agents = self.agents.lock().await;
             let entry = agents
                 .iter()
@@ -372,13 +429,15 @@ impl AgentManager {
             (
                 entry.command.clone(),
                 entry.summary.cwd.clone(),
+                entry.summary.model_profile_id.clone(),
                 entry.runtime.is_some(),
             )
         };
         if already_running {
             return Ok(());
         }
-        let (client, mut events) = AcpClient::spawn(&command, &cwd)?;
+        let env = self.spawn_env(agent_id, model_profile_id.as_deref()).await?;
+        let (client, mut events) = AcpClient::spawn(&command, &cwd, &env)?;
         // The pump must run before `initialize`: it is the single consumer of
         // the ordered event stream, and responses resolve through it.
         let manager = Arc::clone(self);
@@ -697,11 +756,122 @@ impl AgentManager {
             }],
             pending_approvals: 0,
             forked_from: Some(parent_id.to_owned()),
+            model_profile_id: parent_summary.model_profile_id.clone(),
+            model_label: parent_summary.model_label.clone(),
             last_error: None,
         };
         let mut needs_replay = HashSet::new();
         needs_replay.insert("main".to_owned());
         self.finish_creation(summary, Some(needs_replay)).await
+    }
+
+    /// Model profiles, with secrets removed, for the config UI.
+    pub async fn list_models(&self) -> Vec<RedactedProfile> {
+        let models = self.models.lock().await;
+        models.iter().map(ModelProfile::redacted).collect()
+    }
+
+    pub async fn create_model(&self, edit: ProfileEdit) -> Result<RedactedProfile, ManagerError> {
+        edit.validate().map_err(ManagerError::Invalid)?;
+        let profile = edit.into_profile(Uuid::new_v4().to_string());
+        let redacted = profile.redacted();
+        {
+            let mut models = self.models.lock().await;
+            models.push(profile);
+            self.store.save_models(&models).await?;
+        }
+        Ok(redacted)
+    }
+
+    pub async fn update_model(&self, model_id: &str, edit: ProfileEdit) -> Result<RedactedProfile, ManagerError> {
+        edit.validate().map_err(ManagerError::Invalid)?;
+        let (redacted, new_label) = {
+            let mut models = self.models.lock().await;
+            let profile = models
+                .iter_mut()
+                .find(|profile| profile.id == model_id)
+                .ok_or(ManagerError::ModelNotFound)?;
+            profile.apply_edit(edit);
+            let redacted = profile.redacted();
+            let label = profile.label.clone();
+            self.store.save_models(&models).await?;
+            (redacted, label)
+        };
+        // Refresh the snapshotted label on any agent using this profile.
+        let mut touched = Vec::new();
+        {
+            let mut agents = self.agents.lock().await;
+            for entry in agents.iter_mut() {
+                if entry.summary.model_profile_id.as_deref() == Some(model_id) {
+                    entry.summary.model_label = Some(new_label.clone());
+                    touched.push(entry.summary.id.clone());
+                }
+            }
+        }
+        for agent_id in touched {
+            self.publish_agent(&agent_id).await;
+        }
+        self.persist_roster().await?;
+        Ok(redacted)
+    }
+
+    pub async fn delete_model(&self, model_id: &str) -> Result<(), ManagerError> {
+        {
+            let agents = self.agents.lock().await;
+            if agents.iter().any(|entry| {
+                entry.summary.model_profile_id.as_deref() == Some(model_id)
+                    && !matches!(entry.summary.status, AgentStatus::Archived)
+            }) {
+                return Err(ManagerError::ModelInUse);
+            }
+        }
+        let mut models = self.models.lock().await;
+        let before = models.len();
+        models.retain(|profile| profile.id != model_id);
+        if models.len() == before {
+            return Err(ManagerError::ModelNotFound);
+        }
+        self.store.save_models(&models).await?;
+        Ok(())
+    }
+
+    /// Switch an idle agent's model profile. The change restarts the agent
+    /// process so the new provider environment takes effect; the conversation
+    /// is replayed to the fresh process on the next prompt.
+    pub async fn set_model(
+        self: &Arc<Self>,
+        agent_id: &str,
+        model_profile_id: Option<String>,
+    ) -> Result<AgentSummary, ManagerError> {
+        let label = self.resolve_model_label(model_profile_id.as_deref()).await?;
+        let client = {
+            let mut agents = self.agents.lock().await;
+            let entry = agents
+                .iter_mut()
+                .find(|entry| entry.summary.id == agent_id)
+                .ok_or(ManagerError::AgentNotFound)?;
+            if matches!(entry.summary.status, AgentStatus::Archived) {
+                return Err(ManagerError::Archived);
+            }
+            if entry.active_turns > 0 {
+                return Err(ManagerError::Busy);
+            }
+            entry.summary.model_profile_id = model_profile_id;
+            entry.summary.model_label = label;
+            // Restart on next prompt with the new environment, replaying history.
+            let client = entry.runtime.take().map(|runtime| runtime.client);
+            for session in &mut entry.summary.sessions {
+                session.acp_session_id = None;
+                entry.needs_replay.insert(session.id.clone());
+            }
+            client
+        };
+        if let Some(client) = client {
+            client.kill().await;
+        }
+        self.publish_agent(agent_id).await;
+        self.persist_roster().await?;
+        self.agent(agent_id).await
     }
 
     pub async fn set_approval_mode(&self, agent_id: &str, mode: ApprovalMode) -> Result<AgentSummary, ManagerError> {
@@ -754,6 +924,8 @@ impl AgentManager {
         if let Some(worktree) = worktree {
             self.worktrees.remove(&worktree, true).await?;
         }
+        // The agent's Vertex credentials file, if any, is no longer needed.
+        self.store.remove_credentials(agent_id).await?;
         self.publish_agent(agent_id).await;
         self.persist_roster().await?;
         self.agent(agent_id).await
@@ -1067,6 +1239,7 @@ mod tests {
                 use_worktree: true,
                 base_branch: None,
                 approval_mode: ApprovalMode::Auto,
+                model_profile_id: None,
             })
             .await
             .unwrap_err();
@@ -1112,6 +1285,7 @@ mod tests {
                 use_worktree: false,
                 base_branch: None,
                 approval_mode: ApprovalMode::Auto,
+                model_profile_id: None,
             })
             .await
             .unwrap();
