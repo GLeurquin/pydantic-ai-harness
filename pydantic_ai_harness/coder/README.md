@@ -102,6 +102,13 @@ same `Coder` you configured -- same workspace, same `instructions=`, same filesy
 `sub_agents=False`, which is what terminates the recursion. It carries no model of its own, so each
 delegation runs on the parent run's model.
 
+Capabilities the host binds alongside `Coder` -- an approval gate, a tool guardrail, an audit hook --
+apply to the parent run, and a delegation is a separate run. Those hooks see the `delegate_task` call
+and not the tool calls the delegate makes inside it, so a command a parent-level guard would block can
+still run in a delegation. This follows from sub-agent isolation rather than from `Coder` (see
+`shared_capabilities` on [`SubAgents`](https://pydantic.dev/docs/ai/harness/subagents/)), but `sub_agents=True` makes it the default. Pass `sub_agents=False`
+where parent-level tool policy has to cover every command.
+
 Delegates are not loaded from disk (`agent_folders=None`): the roster is this one delegate. Pass
 `sub_agents=False` to drop `delegate_task` and the capability with it, or compose
 [`SubAgents`](https://pydantic.dev/docs/ai/harness/subagents/) yourself for a different roster, per-delegate budgets, or a model menu.
