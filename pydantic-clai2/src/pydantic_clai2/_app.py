@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from typing import Generic, TypeVar
 
+from anyio import create_task_group
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import FormattedText
 from pydantic_ai import Agent, AgentStreamEvent
@@ -14,6 +15,7 @@ from pydantic_ai.capabilities import AgentCapability
 from pydantic_ai.messages import ModelResponse
 from pydantic_ai.models import Model
 from pydantic_ai.usage import UsageLimits
+from pydantic_ai_harness.step_persistence.conversations import SqliteConversationStore
 from rich.console import Console
 
 from . import openrouter, theme, vllm
@@ -36,10 +38,11 @@ from .plugin_menu import open_plugins_menu
 from .plugins import Renderer, SessionEndReason, SessionStart, TurnEnd, TurnStart
 from .project_settings import ProjectSettings
 from .screen import Screen
+from .sessions import Sessions
 from .set_menu import set_command
 from .settings_store import SettingsStore
 from .status import Status, StatusLine
-from .usage_report import cost_line, session_usage, usage_command
+from .usage_report import cost_line, session_usage
 
 DepsT = TypeVar('DepsT')
 OutputT = TypeVar('OutputT')
@@ -55,6 +58,7 @@ DEFAULT_PLUGINS: tuple[PluginSettings, ...] = (
     PluginSettings(id='ask_user', factory='pydantic_clai2.ask_user_menu:activate'),
     PluginSettings(id='repo_context', factory='pydantic_clai2.repo_context'),
     PluginSettings(id='compaction', factory='pydantic_clai2.compaction', settings={}),
+    PluginSettings(id='persistence', factory='pydantic_clai2.sessions'),
 )
 """Plugins CLAI ships enabled. `/plugins disable NAME` turns one off; `remove` restores this.
 
@@ -78,22 +82,26 @@ async def chat(
     store: SettingsStore | None = None,
     builtin_plugins: Sequence[PluginSettings] = (),
     project: ProjectSettings | None = None,
+    resume: str | None = None,
 ) -> None:
     """Start an asyncio terminal conversation with a caller-supplied agent.
 
     Ctrl-C cancels the current turn or clears input; Ctrl-D and `/exit` quit.
-    Failed and cancelled turns are not added to the retained history.
+    Failed and cancelled turns retain their captured history. Resume never replays tools.
     `project` is the parsed `.clai/settings.json`; layer its overrides into `settings` yourself.
     """
     console = console or Console()
     console.print()
     print_banner(console)
-    console.print('/new clears history; /exit quits. Ctrl-C interrupts a turn.', style=theme.MUTED)
+    console.print(
+        '/new starts a session; /resume restores one; /exit quits. Ctrl-C interrupts a turn.', style=theme.MUTED
+    )
     settings = settings or Settings(model=None)
     store = store or SettingsStore()
     project = project or ProjectSettings()
     _report_project(project, console)
-    session = Session(agent, deps=deps, plugins=plugins, usage_limits=usage_limits)
+    conversations = SqliteConversationStore(database=store.path.with_name('sessions.db'))
+    session = Session(agent, deps=deps, plugins=plugins, usage_limits=usage_limits, conversations=conversations)
     session.model = settings.model
     auth = CodexAuth(console)
 
@@ -118,7 +126,9 @@ async def chat(
         settings=settings, store=store, clear_history=session.clear, apply_setting=apply_setting, project=project
     )
 
+    sessions = Sessions(session=session, store=conversations, context=context)
     commands = Commands()
+    commands.register(Command(name='resume', description='Browse or restore a saved session', handler=sessions.command))
     commands.register(Command(name='keys', description='Manage saved API keys', handler=keys_command))
     commands.register(
         Command(
@@ -156,15 +166,15 @@ async def chat(
     commands.register(
         Command(
             name='new',
-            description='Clear conversation history',
-            handler=lambda _: session.clear() or 'Conversation cleared.',
+            description='Start a new session; preserve the previous session',
+            handler=lambda _: session.clear() or 'New session started. Previous session remains saved.',
         )
     )
     commands.register(
         Command(
             name='usage',
             description='Show tokens and cost per turn',
-            handler=lambda _: usage_command(session.messages, console=console),
+            handler=lambda _: sessions.usage(console=console),
         )
     )
     commands.register(
@@ -227,13 +237,24 @@ async def chat(
         prompt=prompt,
         interrupts=Interrupts(),
         screen=screen,
+        sessions=sessions,
     )
     reason: SessionEndReason = 'error'
     try:
-        async with agent:
-            await loader.load_all()
-            _report_project_plugins(loader, console)
-            reason = await shell.run()
+        async with agent, create_task_group() as workers:
+            workers.start_soon(sessions.namer.run)
+            try:
+                await loader.load_all()
+                _report_project_plugins(loader, console)
+                if resume is not None:
+                    console.print(await sessions.command([resume] if resume else []), markup=False)
+                reason = await shell.run()
+            finally:
+                workers.cancel_scope.cancel()
+    except BaseExceptionGroup as exc:
+        if len(exc.exceptions) == 1:
+            raise exc.exceptions[0] from None
+        raise
     finally:
         await loader.close(reason)
 
@@ -253,6 +274,7 @@ class _Shell(Generic[DepsT, OutputT]):
     prompt: PromptSession[str]
     interrupts: Interrupts
     screen: Screen
+    sessions: Sessions[DepsT, OutputT]
 
     async def run(self) -> SessionEndReason:
         while True:
@@ -315,6 +337,7 @@ class _Shell(Generic[DepsT, OutputT]):
             )
 
         completed = await self.interrupts.run(run_prompt())
+        self.sessions.namer.submit(self.session.summary.id)
         _report_interrupt(completed, self.console)
         await self.loader.fire(ended or TurnEnd(text=start.text, outcome='cancelled'))
         return self.interrupts.exit_requested
@@ -353,7 +376,7 @@ async def _execute_command(commands: Commands, text: str, *, console: Console, s
 
 
 def _reset_status(command: str, status: Status) -> None:
-    if command.split(maxsplit=1)[0] == '/new':
+    if command.split(maxsplit=1)[0] in ('/new', '/resume'):
         status.context_tokens = None
         status.context_alert = False
         status.output_tokens = None

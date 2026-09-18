@@ -1,0 +1,185 @@
+"""Headless project/session navigation and safe, responsive frame rendering."""
+
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from io import StringIO
+
+import pytest
+from pydantic_ai_harness.step_persistence.conversations import ConversationSummary
+from termflow.ansi.utils import visible_length  # pyright: ignore[reportMissingTypeStubs]
+from termflow.tui.keys import Key  # pyright: ignore[reportMissingTypeStubs]
+
+import pydantic_clai2.session_browser as module
+from pydantic_clai2.session_browser import SessionBrowser, date_label, plain
+
+
+def browser(*, keys: list[str] | None = None) -> tuple[SessionBrowser, list[ConversationSummary]]:
+    entries = [
+        ConversationSummary(id='one', workspace='/a/project', title='Fix renderer', subtitle='Race', tags=('tests',)),
+        ConversationSummary(id='two', workspace='/b/project', title='Add resume', message_count=24, total_tokens=1200),
+        ConversationSummary(id='three', workspace='/a/project', title='Other', outcome='cancelled'),
+    ]
+    source = iter(keys or [])
+
+    def refresh(query: str, limit: int) -> list[ConversationSummary]:
+        return [e for e in entries if query.lower() in e.title.lower()][:limit]
+
+    def rename(entry: ConversationSummary, title: str) -> None:
+        entries[entries.index(entry)] = replace(entry, title=title)
+
+    widget = SessionBrowser(
+        entries=entries,
+        workspace='/a/project',
+        active_id='one',
+        refresh=refresh,
+        preview=lambda session_id: f'Transcript {session_id}\nuser: hello',
+        delete=entries.remove,
+        rename=rename,
+        output=StringIO(),
+        key_source=lambda: next(source),
+        size=lambda: (110, 24),
+    )
+    return widget, entries
+
+
+@pytest.mark.parametrize('width,height', [(120, 30), (80, 24), (40, 12), (12, 5), (1, 3)])
+def test_frame_fits_and_handles_narrow_terminals(width: int, height: int) -> None:
+    widget, _ = browser()
+    for mode in ('projects', 'sessions', 'preview'):
+        widget.mode = mode
+        frame = widget.frame(width=width, height=height)
+        assert len(frame) <= height
+        assert all(visible_length(line) <= max(1, width - 1) for line in frame)
+    assert '\x1b' not in plain('unsafe\x1b[2J')
+
+
+def test_project_selection_preview_and_back() -> None:
+    widget, _ = browser()
+    assert widget.project == '/a/project'
+    widget.handle_key(Key.ENTER)
+    assert widget.mode == 'sessions'
+    widget.handle_key(Key.DOWN)
+    assert widget.selected is not None and widget.selected.id == 'three'
+    widget.handle_key(Key.RIGHT)
+    assert widget.mode == 'preview'
+    assert 'three' in widget.preview_text
+    widget.handle_key(Key.DOWN)
+    assert widget.preview_offset == 1
+    widget.handle_key(Key.UP)
+    widget.handle_key(Key.ESCAPE)
+    assert widget.mode == 'sessions'
+    assert widget.handle_key(Key.ENTER) == 'three'
+    widget.handle_key(Key.LEFT)
+    widget.handle_key(Key.DOWN)
+    widget.handle_key(Key.ENTER)
+    assert widget.selected is not None and widget.selected.id == 'two'
+    assert widget.handle_key(Key.ENTER) is None
+    assert 'saved in /b/project' in widget.footer()
+    assert widget.handle_key('y') == 'two'
+    assert widget.handle_key('ctrl-c') == ''
+
+
+def test_search_sort_rename_delete_and_stable_refresh() -> None:
+    widget, entries = browser()
+    widget.handle_key('/')
+    for key in 'resume':
+        widget.handle_key(key)
+    widget.handle_key(Key.ENTER)
+    assert [e.id for e in widget.sessions] == ['two']
+    assert 'Search all projects' in '\n'.join(widget.frame(width=120, height=24))
+    widget.handle_key('s')
+    widget.handle_key('s')
+    widget.handle_key('s')
+    widget.handle_key('r')
+    widget.buffer = 'My title'
+    widget.handle_key(Key.ENTER)
+    assert entries[1].title == 'My title'
+    widget.handle_key(Key.ESCAPE)
+    widget.handle_key(Key.ENTER)
+    widget.handle_key('d')
+    assert 'active session' in widget.notice
+    widget.handle_key(Key.DOWN)
+    widget.handle_key('d')
+    assert widget.confirm is not None
+    widget.handle_key('n')
+    assert len(entries) == 3
+    widget.handle_key('d')
+    widget.handle_key('y')
+    assert len(entries) == 2
+    widget.selected_id = 'one'
+    entries[0] = replace(entries[0], title='Renamed in background')
+    widget.reload()
+    assert widget.selected is not None and widget.selected.id == 'one'
+    assert widget.selected.title == 'Renamed in background'
+    widget.handle_key('m')
+    assert widget.limit == 400
+    widget.handle_key('/')
+    widget.handle_key('x')
+    widget.handle_key(Key.BACKSPACE)
+    assert widget.buffer == ''
+    widget.handle_key(Key.ESCAPE)
+
+
+def test_empty_search_and_scripted_loop() -> None:
+    widget, entries = browser(keys=['', Key.ENTER, Key.ENTER])
+    assert widget.run() == 'one'
+    entries.clear()
+    widget.reload()
+    assert widget.selected is None
+    widget.mode = 'sessions'
+    assert 'No saved sessions' in '\n'.join(widget.frame(width=120, height=24))
+    assert widget.handle_key(Key.ENTER) is None
+    widget.handle_key(Key.ESCAPE)
+    assert widget.handle_key(Key.ESCAPE) == ''
+
+
+def test_date_buckets() -> None:
+    now = datetime.now(UTC)
+    assert date_label(now) == 'TODAY'
+    assert date_label(now - timedelta(days=1)) == 'YESTERDAY'
+    assert date_label(now - timedelta(days=365)).startswith(str((now - timedelta(days=365)).year))
+
+
+def test_idle_refresh_and_storage_errors_stay_in_menu(monkeypatch: pytest.MonkeyPatch) -> None:
+    widget, entries = browser(keys=['', 'ctrl-c'])
+    ticks = iter([0.0, 1.0, 1.0])
+    monkeypatch.setattr(module.time, 'monotonic', lambda: next(ticks))
+    entries[0] = replace(entries[0], title='Named in background')
+    assert widget.loop() == ''
+    assert isinstance(widget.output, StringIO)
+    assert 'Named in background' in widget.output.getvalue()
+
+    def fail_preview(session_id: str) -> str:
+        raise ValueError('Cannot read this session')
+
+    widget, _ = browser(keys=[Key.ENTER, Key.RIGHT, 'ctrl-c'])
+    widget.preview = fail_preview
+    monkeypatch.setattr(module.time, 'monotonic', lambda: 0.0)
+    assert widget.loop() == ''
+    assert 'Cannot read this session' in widget.notice
+
+
+def test_render_long_cards_all_modes_and_empty_projects() -> None:
+    widget, entries = browser()
+    entries[0] = replace(entries[0], title='界' * 200, subtitle='detail' * 50, tags=('verylongtag' * 4,))
+    widget.reload()
+    widget.mode = 'sessions'
+    for sort in range(3):
+        widget.sort = sort
+        assert all(visible_length(line) <= 119 for line in widget.frame(width=120, height=12))
+    widget.handle_key('r')
+    assert 'rename:' in widget.footer()
+    widget.handle_key(Key.ESCAPE)
+    widget.handle_key('/')
+    widget.buffer = 'not present'
+    widget.handle_key(Key.ENTER)
+    assert widget.selected is None
+    widget.handle_key('d')
+    widget.handle_key('s')
+    widget.handle_key(Key.ESCAPE)
+    widget.handle_key('ctrl-p')
+    widget.mode = 'preview'
+    widget.handle_key('x')
+    widget.handle_key('q')
+    widget.handle_key('q')
+    assert widget.handle_key('q') == ''
