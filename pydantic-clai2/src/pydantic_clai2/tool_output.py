@@ -76,8 +76,7 @@ class ToolOutput:
         text = Text(f'● {name} ', style=theme.MUTED)
         text.append(terminal_text(summary), style=theme.ACCENT)
         self.console.print(text, overflow='ellipsis', no_wrap=True)
-        if self.show_output:
-            self.console.print()
+        self.console.print()
 
     def render_call(self, event: FunctionToolCallEvent) -> bool:
         """Show arguments once, before execution, including for failed calls."""

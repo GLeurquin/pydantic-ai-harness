@@ -372,7 +372,7 @@ capability (or `None`), for tools that should only exist in some runs.
 ### Draw an event yourself: `@host.render(EventClass)`
 
 Built-in tool rendering shows one summary line per call by default, clipped to
-the terminal width. Shell output and completion details, grep results, and file
+the terminal width and followed by a blank line. Shell output and completion details, grep results, and file
 diffs are hidden from the terminal, not from the model. Set
 `/set display.tool_output true` to restore detailed output; `display.shell_lines`
 and `display.grep_lines` then control preview lengths (20 lines each by default).

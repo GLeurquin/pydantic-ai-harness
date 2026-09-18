@@ -41,7 +41,7 @@ async def test_shell_only_prints_invocation(exit_code: int | None) -> None:
     part = ToolReturnPart('shell', 'full model result', tool_call_id='shell')
     await renderer.on_stream_event(FunctionToolResultEvent(part=part))
     assert part.content == 'full model result'
-    assert output.getvalue() == '● shell echo secret\n'
+    assert output.getvalue() == '● shell echo secret\n\n'
 
 
 @pytest.mark.parametrize('operation', ['write', 'edit'])
@@ -76,7 +76,7 @@ async def test_file_changes_hide_diffs(operation: str) -> None:
                 tool_call_id='file',
             )
         )
-    assert output.getvalue() == f'● {operation}_file file.py\n'
+    assert output.getvalue() == f'● {operation}_file file.py\n\n'
 
 
 async def test_grep_summary_does_not_wrap_or_print_results() -> None:
@@ -87,7 +87,8 @@ async def test_grep_summary_does_not_wrap_or_print_results() -> None:
     )
     part = ToolReturnPart('grep', 'secret match\n' * 30, tool_call_id='grep')
     await renderer.on_stream_event(FunctionToolResultEvent(part=part))
-    assert len(output.getvalue().splitlines()) == 1
+    assert len(output.getvalue().splitlines()) == 2
+    assert output.getvalue().endswith('\n\n')
     assert 'secret match' not in output.getvalue()
     assert part.content == 'secret match\n' * 30
 

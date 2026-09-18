@@ -122,8 +122,7 @@ class StreamRenderer:
             self.console.print(
                 f'● {name}', style=theme.MUTED, markup=False, highlight=False, overflow='ellipsis', no_wrap=True
             )
-            if self.show_tool_output:
-                self.console.print()
+            self.console.print()
 
     async def _render_with_plugins(self, event: AgentStreamEvent) -> bool:
         for renderer in self._renderers:

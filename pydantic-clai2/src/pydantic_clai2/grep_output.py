@@ -45,8 +45,7 @@ class GrepOutput:
                 overflow='ellipsis',
                 no_wrap=True,
             )
-            if self.show_output:
-                self.console.print()
+            self.console.print()
             return True
         label = self._calls.pop(event.part.tool_call_id, None)
         if label is None:
