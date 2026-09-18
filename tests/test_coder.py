@@ -12,6 +12,7 @@ from pydantic_ai_harness.coder import FILE_TOOL_NAMES, Coder, coder_agent
 from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.repo_context import RepoContext
 from pydantic_ai_harness.shell import LLM_API_KEY_ENV_PATTERNS, Shell
+from pydantic_ai_harness.subagents import SubAgents
 
 
 def test_coder_agent_is_model_less_and_composed() -> None:
@@ -43,14 +44,15 @@ def test_coder_unknown_export() -> None:
 def test_coder_members_and_parameters(tmp_path: Path) -> None:
     coder = Coder(tmp_path, instructions='Custom instructions')
     assert [type(capability).__name__ for capability in coder.capabilities] == [
-        'RepairToolArguments',
         'Capability',
         'FileSystem',
         'Shell',
         'RepoContext',
+        'SubAgents',
         'ClearToolResults',
         'WarnNearLimits',
         '_BoundToolOutputs',
+        'RepairToolArguments',
     ]
     files = next(item for item in coder.capabilities if isinstance(item, FileSystem))
     assert (files.root_dir, files.cwd, files.content_hashes, files.tools) == (tmp_path, None, False, FILE_TOOL_NAMES)
@@ -63,5 +65,9 @@ def test_coder_members_and_parameters(tmp_path: Path) -> None:
     instructions = str(guidance.get_instructions())
     for text in ('Custom instructions', 'DRY', 'YAGNI', 'SOLID', 'Zen of Python'):
         assert text in instructions
-    assert coder.capabilities[-1].id is None
+    delegation = next(item for item in coder.capabilities if isinstance(item, SubAgents))
+    assert [entry.agent.name for entry in delegation.agents] == ['coder']
+    assert delegation.agent_folders is None
+    limits = next(item for item in coder.capabilities if type(item).__name__ == '_BoundToolOutputs')
+    assert limits.id is None
     assert isinstance(coder.for_agent(Agent(TestModel())), Coder)
