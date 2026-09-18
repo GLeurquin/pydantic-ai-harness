@@ -1,0 +1,12 @@
+# cargo-mutants configuration: mutate the services, not the wiring.
+examine_globs = [
+    "server/src/acp/**",
+    "server/src/approvals.rs",
+    "server/src/manager.rs",
+    "server/src/worktrees.rs",
+    "server/src/store.rs",
+    "server/src/events.rs",
+    "server/src/model.rs",
+]
+exclude_globs = ["server/src/main.rs", "server/src/bin/**"]
+timeout_multiplier = 3.0

@@ -1,0 +1,27 @@
+[package]
+name = "clai2-web-server"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Web backend for managing CLAI coding agents over the Agent Client Protocol"
+
+[dependencies]
+axum = { version = "0.8", features = ["ws"] }
+futures-util = "0.3"
+serde.workspace = true
+serde_json.workspace = true
+thiserror = "2"
+tokio.workspace = true
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+tempfile = "3"
+tokio-tungstenite = "0.26"
+
+[lints]
+workspace = true

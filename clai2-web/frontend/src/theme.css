@@ -1,0 +1,110 @@
+/* Pydantic brand palette, mirrored from pydantic_clai2.theme. */
+:root {
+  --lithium: #e520e9; /* primary accent */
+  --calcium: #ff6550; /* errors, destructive */
+  --purple: #9b77ff; /* reasoning, tertiary */
+  --aqua: #77ffd8; /* dark-mode accent, links */
+  --sugar: #fbffea; /* headline text on dark */
+  --light-purple: #f0e0fd; /* highlight */
+  --dark-purple: #36182d; /* background surface */
+  --element-purple: #49353f; /* outlines, secondary elements */
+  --grey: #8f888e; /* muted text */
+  --ai-cyan: #00ffeb; /* info */
+  --ai-yellow: #d0ff71; /* warnings */
+  --diff-addition: #465258;
+  --diff-deletion: #682b36;
+
+  --bg: var(--dark-purple);
+  --bg-raised: #40203a;
+  --bg-sunken: #2b1224;
+  --border: var(--element-purple);
+  --text: var(--sugar);
+  --text-muted: var(--grey);
+  --accent: var(--lithium);
+  --error: var(--calcium);
+  --info: var(--ai-cyan);
+  --warning: var(--ai-yellow);
+  --thinking: var(--purple);
+  --link: var(--aqua);
+
+  --status-idle: var(--grey);
+  --status-working: var(--ai-cyan);
+  --status-waiting: var(--ai-yellow);
+  --status-error: var(--calcium);
+  --status-starting: var(--purple);
+
+  --font-body:
+    'Inter', -apple-system, 'Segoe UI', 'Helvetica Neue', sans-serif;
+  --font-mono: 'Berkeley Mono', 'JetBrains Mono', 'Fira Code', monospace;
+
+  --radius: 8px;
+  --sidebar-width: 288px;
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: var(--accent);
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+button.danger {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+input,
+select,
+textarea {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+code,
+pre {
+  font-family: var(--font-mono);
+}
+
+a {
+  color: var(--link);
+}

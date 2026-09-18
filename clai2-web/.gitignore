@@ -1,0 +1,11 @@
+backend/target/
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
+frontend/build/
+frontend/.stryker-tmp/
+frontend/reports/
+e2e/node_modules/
+e2e/test-results/
+e2e/playwright-report/
+.clai2-web/
