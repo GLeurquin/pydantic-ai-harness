@@ -212,7 +212,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.11', '3.12', '3.13', '3.14']
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
         install:
           - name: slim
             extras: ''
@@ -231,7 +231,25 @@ jobs:
           python-version: ${{ matrix.python-version }}
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
 
-      - run: uv sync --locked --group dev ${{ matrix.install.extras }}
+      - if: matrix.python-version != '3.10'
+        run: uv sync --locked --group dev ${{ matrix.install.extras }}
+      # Lock ceilings allow 3.10-compatible fallbacks without upgrading the test dependencies.
+      - if: matrix.python-version == '3.10'
+        shell: bash
+        run: |
+          uv venv --python 3.10
+          env -u UV_LOCKED uv export --frozen --all-extras --no-emit-workspace --no-hashes \
+            | sed 's/==/<=/' > "$RUNNER_TEMP/constraints.txt"
+          python3 - <<'PY' > "$RUNNER_TEMP/overrides.txt"
+          import tomllib
+          from pathlib import Path
+
+          config = tomllib.loads(Path('pyproject.toml').read_text())
+          print('\n'.join(config['tool']['uv']['override-dependencies']))
+          PY
+          uv pip install --group dev --editable . --requirements pyproject.toml \
+            --constraints "$RUNNER_TEMP/constraints.txt" --overrides "$RUNNER_TEMP/overrides.txt" \
+            ${{ matrix.install.extras }}
       - run: mkdir -p coverage-data
       - run: sudo apt-get update && sudo apt-get install -y ripgrep
       - run: .venv/bin/python -m coverage run -m pytest
@@ -243,8 +261,8 @@ jobs:
 
   # Verify the harness still works against the lowest direct-dep versions we claim
   # compatibility with (the `>=` floors in pyproject.toml — including pydantic-ai-slim
-  # but also any other direct dep). The `test` matrix uses the lock on Python 3.11+;
-  # this job also tests Harness on Python 3.10, below CLAI's workspace minimum.
+  # but also any other direct dep). The `test` matrix uses the lock on Python 3.11+
+  # and its version ceilings on 3.10; this job checks the lower bounds.
   # Mirrors pydantic-ai's `test-lowest-versions`
   # job so the convention is consistent across the workspace.
   #
@@ -281,21 +299,7 @@ jobs:
           uv venv --python 3.10
           uv pip install --resolution lowest-direct --group dev --editable . --requirements pyproject.toml --all-extras
       - run: sudo apt-get update && sudo apt-get install -y ripgrep
-      - if: matrix.python-version != '3.10'
-        run: .venv/bin/python -m pytest
-      - if: matrix.python-version == '3.10'
-        run: |
-          mkdir -p coverage-data
-          .venv/bin/python -m coverage run -m pytest
-        env:
-          COVERAGE_FILE: coverage-data/.coverage.3.10-lowest
-      - if: matrix.python-version == '3.10'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: coverage-3.10-lowest
-          path: coverage-data/.coverage.3.10-lowest
-          include-hidden-files: true
-          if-no-files-found: error
+      - run: .venv/bin/python -m pytest
 
   # Verify the harness works against the latest published pydantic-ai packages,
   # not just the lock. The `test` matrix resolves against the lock, so harness
@@ -534,7 +538,7 @@ jobs:
       - run: make integration-redis
 
   coverage:
-    needs: [test, test-floor]
+    needs: [test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

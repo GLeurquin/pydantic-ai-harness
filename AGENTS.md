@@ -171,9 +171,10 @@ uv pip install --python /tmp/harness-py310/bin/python --resolution lowest-direct
 ```
 
 Use `uv pip` for Python 3.10 to resolve Harness without CLAI's Python requirement.
-CI collects Python 3.10 coverage from this lowest-versions install; Python 3.11+
-uses the workspace lock. Run the environment's Python directly so `uv run`
-does not select the workspace interpreter.
+CI retains Python 3.10 slim, all-extras, and lowest-versions jobs. The slim and
+all-extras installs use the shared lock's versions as ceilings, allowing older
+releases when a locked dependency requires Python 3.11+. Run the environment's
+Python directly so `uv run` does not select the workspace interpreter.
 
 ## File structure
 
