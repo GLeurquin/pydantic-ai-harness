@@ -247,3 +247,19 @@ def test_idle_loop_redraws_only_for_changes(monkeypatch: pytest.MonkeyPatch) -> 
     assert widget.loop() == ''
     assert isinstance(widget.output, StringIO)
     assert widget.output.getvalue().count('CLAI > Resume session') == 2
+
+
+def test_failed_idle_refresh_waits_before_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    widget, _ = browser(keys=['', '', '', 'ctrl-c'])
+    ticks = iter([0.0, 0.6, 0.6, 0.7, 0.8])
+    monkeypatch.setattr(module.time, 'monotonic', lambda: next(ticks))
+    attempts: list[str] = []
+
+    def fail(query: str, limit: int) -> list[ConversationSummary]:
+        attempts.append(query)
+        raise OSError('database unavailable')
+
+    widget.refresh = fail
+    assert widget.loop() == ''
+    assert attempts == ['']
+    assert 'database unavailable' in widget.notice

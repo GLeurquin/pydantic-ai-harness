@@ -340,9 +340,11 @@ class SessionBrowser:
                 if result is not None:
                     return result
                 if time.monotonic() - refreshed >= 0.5:
-                    self.reload()
+                    try:
+                        self.reload()
+                    finally:
+                        refreshed = time.monotonic()
                     dirty = True
-                    refreshed = time.monotonic()
             except Exception as exc:  # noqa: BLE001 -- storage errors stay inside the alternate screen.
                 self.notice = plain(str(exc))
                 dirty = True
