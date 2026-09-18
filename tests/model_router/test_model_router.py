@@ -112,6 +112,26 @@ class TestModelRouter:
         agent = Agent(capabilities=[ModelRouter(model=FunctionModel(fail), choices=choices(), default='fast')])
         assert (await agent.run('hello', model=TestModel(custom_output_text='explicit'))).output == 'explicit'
 
+    async def test_prior_instructions_are_routing_data(self) -> None:
+        seen: list[str] = []
+
+        def select(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            seen.append(str(messages))
+            return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, {'choice': 'deep', 'confidence': 1})])
+
+        router = ModelRouter[object](model=FunctionModel(select), choices=choices(), default='fast', scope='step')
+        agent = Agent(capabilities=[router], instructions='private-standing-instructions')
+
+        @agent.tool_plain
+        def work() -> str:
+            return 'latest-tool-result'
+
+        await agent.run('do work')
+        assert len(seen) == 2
+        assert 'private-standing-instructions' not in seen[0]
+        assert 'private-standing-instructions' in seen[1]
+        assert 'latest-tool-result' not in seen[1]
+
     async def test_streaming(self) -> None:
         router = ModelRouter[object](model=router_model(), choices=choices(), default='fast')
         async with Agent(capabilities=[router]).run_stream('hello') as result:
