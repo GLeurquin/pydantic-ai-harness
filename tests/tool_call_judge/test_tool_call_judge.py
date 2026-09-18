@@ -386,13 +386,29 @@ class TestApprovalDecisions:
 
     async def test_later_handler_receives_only_the_unselected_approval(self) -> None:
         handled: list[list[str]] = []
+        executed: list[str] = []
+
+        def request_both_tools(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            if any(
+                isinstance(part, ToolReturnPart)
+                for message in messages
+                if isinstance(message, ModelRequest)
+                for part in message.parts
+            ):
+                return ModelResponse(parts=[TextPart('done')])
+            return ModelResponse(
+                parts=[
+                    ToolCallPart('danger', {}, tool_call_id='danger-call'),
+                    ToolCallPart('safe', {}, tool_call_id='safe-call'),
+                ]
+            )
 
         def approve_remaining(ctx: RunContext[None], requests: DeferredToolRequests) -> DeferredToolResults:
             handled.append([call.tool_name for call in requests.approvals])
             return requests.build_results(approve_all=True)
 
         agent = Agent(
-            _outer_model('safe'),
+            FunctionModel(request_both_tools),
             deps_type=type(None),
             capabilities=[
                 _judge(_judge_model('yes'), tools=('danger',)),
@@ -401,13 +417,20 @@ class TestApprovalDecisions:
         )
 
         @agent.tool_plain(requires_approval=True)
+        def danger() -> str:  # pragma: no cover - denied before execution
+            executed.append('danger')
+            return 'ran'
+
+        @agent.tool_plain(requires_approval=True)
         def safe() -> str:
+            executed.append('safe')
             return 'ran'
 
         result = await agent.run('try it')
 
         assert result.output == 'done'
         assert handled == [['safe']]
+        assert executed == ['safe']
 
 
 class TestObservability:
