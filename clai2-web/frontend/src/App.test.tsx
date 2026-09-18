@@ -87,9 +87,14 @@ function makeProject(overrides: Partial<ProjectSummary> = {}): ProjectSummary {
   return { id: 'project-1', name: 'clai', repoRoot: '/repo', ...overrides };
 }
 
-async function snapshot(agents: AgentSummary[], approvals: ApprovalView[] = [], projects: ProjectSummary[] = [makeProject()]) {
+async function snapshot(
+  agents: AgentSummary[],
+  approvals: ApprovalView[] = [],
+  projects: ProjectSummary[] = [makeProject()],
+  maxAgents = 100,
+) {
   await act(async () => {
-    handlers().onSnapshot({ agents, approvals, projects });
+    handlers().onSnapshot({ agents, approvals, projects, maxAgents });
   });
 }
 
@@ -106,6 +111,8 @@ beforeEach(() => {
     approvals: [],
     projects: [],
     selectedProjectId: 'all',
+    maxAgents: 100,
+    notifications: [],
     transcripts: {},
     selectedAgentId: null,
     view: { kind: 'session', sessionId: 'main' },
@@ -344,5 +351,41 @@ describe('App', () => {
     expect(ws.close).not.toHaveBeenCalled();
     unmount();
     expect(ws.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('reflects the server-configured agent cap instead of a fixed guess', async () => {
+    render(<App />);
+    await snapshot([makeAgent(), makeAgent({ id: 'a2', name: 'Beta' })], [], [makeProject()], 2);
+    expect(screen.getByRole('button', { name: 'New' })).toBeDisabled();
+  });
+
+  it('surfaces a failed write action as a notification instead of losing it', async () => {
+    const user = userEvent.setup();
+    apiMock.prompt.mockRejectedValue(new Error('agent unreachable'));
+    render(<App />);
+    await snapshot([makeAgent()]);
+    await user.type(screen.getByLabelText('Prompt'), 'do the thing');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('agent unreachable');
+  });
+
+  it('dismisses a notification on demand', async () => {
+    const user = userEvent.setup();
+    apiMock.cancel.mockRejectedValue(new Error('cannot cancel'));
+    render(<App />);
+    await snapshot([makeAgent({ status: 'working' })]);
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await screen.findByRole('alert');
+    await user.click(screen.getByLabelText('Dismiss'));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  });
+
+  it('surfaces an agentError event as a notification', async () => {
+    render(<App />);
+    await snapshot([makeAgent()]);
+    await act(async () => {
+      handlers().onEvent({ type: 'agentError', agentId: 'a1', message: 'process exited unexpectedly' });
+    });
+    expect(await screen.findByRole('alert')).toHaveTextContent('process exited unexpectedly');
   });
 });

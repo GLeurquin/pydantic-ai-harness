@@ -40,6 +40,8 @@ function resetStore(partial: Partial<AppState> = {}): void {
     approvals: [],
     projects: [],
     selectedProjectId: 'all',
+    maxAgents: 100,
+    notifications: [],
     transcripts: {},
     selectedAgentId: null,
     view: { kind: 'session', sessionId: 'main' },
@@ -193,7 +195,7 @@ describe('reduceEvent', () => {
     ).toEqual({ approvals: [] });
   });
 
-  it('agentError changes nothing', () => {
+  it('agentError changes nothing in the pure reducer', () => {
     resetStore({ agents: [agent('a1')] });
     expect(reduceEvent(state(), { type: 'agentError', agentId: 'a1', message: 'boom' })).toEqual({});
   });
@@ -209,7 +211,7 @@ describe('useAppStore actions', () => {
 
   it('applySnapshot keeps a selection that still exists', () => {
     resetStore({ agents: [agent('a1'), agent('a2')], selectedAgentId: 'a2' });
-    state().applySnapshot({ agents: [agent('a2'), agent('a3')], approvals: [approval('ap1')], projects: [] });
+    state().applySnapshot({ agents: [agent('a2'), agent('a3')], approvals: [approval('ap1')], projects: [], maxAgents: 100 });
     expect(state().agents).toEqual([agent('a2'), agent('a3')]);
     expect(state().approvals).toEqual([approval('ap1')]);
     expect(state().selectedAgentId).toBe('a2');
@@ -217,24 +219,30 @@ describe('useAppStore actions', () => {
 
   it('applySnapshot sets the project registry', () => {
     const project = { id: 'p1', name: 'demo', repoRoot: '/repo' };
-    state().applySnapshot({ agents: [], approvals: [], projects: [project] });
+    state().applySnapshot({ agents: [], approvals: [], projects: [project], maxAgents: 100 });
     expect(state().projects).toEqual([project]);
+  });
+
+  it('applySnapshot sets the configured max agent cap', () => {
+    resetStore({ maxAgents: 100 });
+    state().applySnapshot({ agents: [], approvals: [], projects: [], maxAgents: 250 });
+    expect(state().maxAgents).toBe(250);
   });
 
   it('applySnapshot falls back to the first agent when the selection is gone', () => {
     resetStore({ selectedAgentId: 'gone' });
-    state().applySnapshot({ agents: [agent('a1'), agent('a2')], approvals: [], projects: [] });
+    state().applySnapshot({ agents: [agent('a1'), agent('a2')], approvals: [], projects: [], maxAgents: 100 });
     expect(state().selectedAgentId).toBe('a1');
   });
 
   it('applySnapshot selects the first agent when nothing was selected', () => {
-    state().applySnapshot({ agents: [agent('a9')], approvals: [], projects: [] });
+    state().applySnapshot({ agents: [agent('a9')], approvals: [], projects: [], maxAgents: 100 });
     expect(state().selectedAgentId).toBe('a9');
   });
 
   it('applySnapshot sets a null selection when there are no agents', () => {
     resetStore({ agents: [agent('a1')], selectedAgentId: 'a1' });
-    state().applySnapshot({ agents: [], approvals: [], projects: [] });
+    state().applySnapshot({ agents: [], approvals: [], projects: [], maxAgents: 100 });
     expect(state().selectedAgentId).toBeNull();
     expect(state().agents).toEqual([]);
   });
@@ -242,6 +250,12 @@ describe('useAppStore actions', () => {
   it('applyEvent routes through reduceEvent', () => {
     state().applyEvent({ type: 'agentAdded', agent: agent('a1') });
     expect(state().agents).toEqual([agent('a1')]);
+  });
+
+  it('applyEvent surfaces an agentError as a notification', () => {
+    state().applyEvent({ type: 'agentError', agentId: 'a1', message: 'process exited' });
+    expect(state().notifications).toHaveLength(1);
+    expect(state().notifications[0]?.message).toBe('process exited');
   });
 
   it('selectAgent sets the selection and resets the view to the main session', () => {
@@ -273,5 +287,22 @@ describe('useAppStore actions', () => {
       'a1/s1': [{ type: 'messageChunk', text: 'fresh' }],
       'a2/main': [{ type: 'userMessage', text: 'other' }],
     });
+  });
+
+  it('notifyError appends a notification with a fresh id each call', () => {
+    state().notifyError('first failure');
+    state().notifyError('second failure');
+    expect(state().notifications.map((notification) => notification.message)).toEqual([
+      'first failure',
+      'second failure',
+    ]);
+    const [first, second] = state().notifications;
+    expect(first?.id).not.toBe(second?.id);
+  });
+
+  it('dismissNotification removes only the matching notification', () => {
+    resetStore({ notifications: [{ id: 'n1', message: 'one' }, { id: 'n2', message: 'two' }] });
+    state().dismissNotification('n1');
+    expect(state().notifications).toEqual([{ id: 'n2', message: 'two' }]);
   });
 });

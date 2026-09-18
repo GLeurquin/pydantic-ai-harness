@@ -2,18 +2,24 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { api } from './api/client';
 import type { CreateAgentRequest } from './api/types';
+import { errorMessage } from './errors';
 import { Header } from './components/Header';
 import { MainPane } from './components/MainPane';
 import { NameDialog } from './components/NameDialog';
 import { NewAgentDialog } from './components/NewAgentDialog';
+import { NotificationTray } from './components/NotificationTray';
 import { Sidebar } from './components/Sidebar';
 import { transcriptKey } from './state/transcript';
 import { useAppStore } from './state/store';
 import { connectWs, wsUrl } from './ws';
 
-export const MAX_AGENTS = 50;
-
 type Dialog = 'none' | 'new-agent' | 'fork' | 'side-session';
+
+/** Fire a write action; a rejection surfaces as a notification instead of
+ * vanishing. The rest of the UI does not wait on it. */
+function runAction(promise: Promise<unknown>): void {
+  promise.catch((failure: unknown) => useAppStore.getState().notifyError(errorMessage(failure)));
+}
 
 export function App() {
   const store = useAppStore();
@@ -56,7 +62,7 @@ export function App() {
   }, [selectedAgentId, viewSessionId]);
 
   const resolveApproval = useCallback((approvalId: string, optionId: string) => {
-    void api.resolveApproval(approvalId, optionId);
+    runAction(api.resolveApproval(approvalId, optionId));
   }, []);
 
   const loadDiff = useCallback((agentId: string) => api.diff(agentId), []);
@@ -75,6 +81,7 @@ export function App() {
 
   return (
     <div className="app">
+      <NotificationTray notifications={store.notifications} onDismiss={store.dismissNotification} />
       <Header
         connected={store.connected}
         approvals={store.approvals}
@@ -86,7 +93,7 @@ export function App() {
         projects={store.projects}
         selectedProjectId={store.selectedProjectId}
         selectedAgentId={store.selectedAgentId}
-        maxAgents={MAX_AGENTS}
+        maxAgents={store.maxAgents}
         onSelect={store.selectAgent}
         onSelectProject={store.selectProjectFilter}
         onNewAgent={() => setDialog('new-agent')}
@@ -98,15 +105,15 @@ export function App() {
           approvals={store.approvals}
           transcriptFor={(sessionId) => store.transcripts[transcriptKey(selected.id, sessionId)] ?? []}
           onSetView={store.setView}
-          onPrompt={(sessionId, text) => void api.prompt(selected.id, sessionId, text)}
-          onCancel={() => void api.cancel(selected.id)}
+          onPrompt={(sessionId, text) => runAction(api.prompt(selected.id, sessionId, text))}
+          onCancel={() => runAction(api.cancel(selected.id))}
           onResolveApproval={resolveApproval}
           onFork={() => setDialog('fork')}
           onSideSession={() => setDialog('side-session')}
           loadDiff={loadDiff}
-          onSetApprovalMode={(mode) => void api.setApprovalMode(selected.id, mode)}
-          onArchive={(removeWorktree) => void api.archiveAgent(selected.id, removeWorktree)}
-          onRename={(name) => void api.rename(selected.id, name)}
+          onSetApprovalMode={(mode) => runAction(api.setApprovalMode(selected.id, mode))}
+          onArchive={(removeWorktree) => runAction(api.archiveAgent(selected.id, removeWorktree))}
+          onRename={(name) => runAction(api.rename(selected.id, name))}
         />
       ) : (
         <main className="main">

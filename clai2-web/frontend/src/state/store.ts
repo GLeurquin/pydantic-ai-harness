@@ -3,12 +3,14 @@
 import { create } from 'zustand';
 
 import type { AgentSummary, ApprovalView, ProjectSummary, ServerEvent, TranscriptItem } from '../api/types';
+import { addNotification, dismissNotification as removeNotification, type Notification } from './notifications';
 import { appendItem, transcriptKey } from './transcript';
 
 export interface Snapshot {
   agents: AgentSummary[];
   approvals: ApprovalView[];
   projects: ProjectSummary[];
+  maxAgents: number;
 }
 
 export type MainView = { kind: 'session'; sessionId: string } | { kind: 'changes' } | { kind: 'settings' };
@@ -22,6 +24,8 @@ export interface AppState {
   approvals: ApprovalView[];
   projects: ProjectSummary[];
   selectedProjectId: ProjectFilter;
+  maxAgents: number;
+  notifications: Notification[];
   transcripts: Record<string, TranscriptItem[]>;
   selectedAgentId: string | null;
   view: MainView;
@@ -33,6 +37,8 @@ export interface AppState {
   selectProjectFilter: (projectId: ProjectFilter) => void;
   setView: (view: MainView) => void;
   setTranscript: (agentId: string, sessionId: string, items: TranscriptItem[]) => void;
+  notifyError: (message: string) => void;
+  dismissNotification: (id: string) => void;
 }
 
 function upsertAgent(agents: AgentSummary[], agent: AgentSummary): AgentSummary[] {
@@ -130,17 +136,21 @@ export function reduceEvent(state: AppState, event: ServerEvent): Partial<AppSta
     case 'approvalResolved':
       return { approvals: state.approvals.filter((approval) => approval.id !== event.approvalId) };
     case 'agentError':
-      // The agent status change arrives separately as agentUpdated.
+      // The status change arrives separately as agentUpdated; the message
+      // itself is surfaced as a notification by applyEvent, outside this
+      // pure reducer.
       return {};
   }
 }
 
-export const useAppStore = create<AppState>((set) => ({
+export const useAppStore = create<AppState>((set, get) => ({
   connected: false,
   agents: [],
   approvals: [],
   projects: [],
   selectedProjectId: 'all',
+  maxAgents: 100,
+  notifications: [],
   transcripts: {},
   selectedAgentId: null,
   view: { kind: 'session', sessionId: 'main' },
@@ -151,17 +161,31 @@ export const useAppStore = create<AppState>((set) => ({
       agents: snapshot.agents,
       approvals: snapshot.approvals,
       projects: snapshot.projects,
+      maxAgents: snapshot.maxAgents,
       selectedAgentId:
         state.selectedAgentId && snapshot.agents.some((agent) => agent.id === state.selectedAgentId)
           ? state.selectedAgentId
           : (snapshot.agents[0]?.id ?? null),
     })),
-  applyEvent: (event) => set((state) => reduceEvent(state, event)),
+  applyEvent: (event) => {
+    set((state) => reduceEvent(state, event));
+    if (event.type === 'agentError') {
+      get().notifyError(event.message);
+    }
+  },
   selectAgent: (agentId) => set({ selectedAgentId: agentId, view: { kind: 'session', sessionId: 'main' } }),
   selectProjectFilter: (projectId) => set({ selectedProjectId: projectId }),
   setView: (view) => set({ view }),
   setTranscript: (agentId, sessionId, items) =>
     set((state) => ({
       transcripts: { ...state.transcripts, [transcriptKey(agentId, sessionId)]: items },
+    })),
+  notifyError: (message) =>
+    set((state) => ({
+      notifications: addNotification(state.notifications, { id: crypto.randomUUID(), message }),
+    })),
+  dismissNotification: (id) =>
+    set((state) => ({
+      notifications: removeNotification(state.notifications, id),
     })),
 }));

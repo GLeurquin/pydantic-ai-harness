@@ -44,6 +44,7 @@ export function parseMessage(data: unknown): ParsedMessage {
         agents: (typed.agents as Snapshot['agents']) ?? [],
         approvals: (typed.approvals as Snapshot['approvals']) ?? [],
         projects: (typed.projects as Snapshot['projects']) ?? [],
+        maxAgents: (typed.maxAgents as Snapshot['maxAgents']) ?? 100,
       },
     };
   }

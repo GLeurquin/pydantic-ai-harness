@@ -56,20 +56,20 @@ describe('parseMessage', () => {
     expect(parseMessage('{"agents": []}')).toBeNull();
   });
 
-  it('parses a snapshot with agents, approvals, and projects', () => {
+  it('parses a snapshot with agents, approvals, projects, and maxAgents', () => {
     const agents = [{ id: 'a1' }];
     const approvals = [{ id: 'ap1' }];
     const projects = [{ id: 'p1' }];
-    expect(parseMessage(JSON.stringify({ type: 'snapshot', agents, approvals, projects }))).toEqual({
+    expect(parseMessage(JSON.stringify({ type: 'snapshot', agents, approvals, projects, maxAgents: 250 }))).toEqual({
       kind: 'snapshot',
-      snapshot: { agents, approvals, projects },
+      snapshot: { agents, approvals, projects, maxAgents: 250 },
     });
   });
 
-  it('defaults missing snapshot fields to empty arrays', () => {
+  it('defaults missing snapshot fields', () => {
     expect(parseMessage('{"type": "snapshot"}')).toEqual({
       kind: 'snapshot',
-      snapshot: { agents: [], approvals: [], projects: [] },
+      snapshot: { agents: [], approvals: [], projects: [], maxAgents: 100 },
     });
   });
 
@@ -123,10 +123,15 @@ describe('connectWs', () => {
   it('dispatches snapshot messages to onSnapshot', () => {
     const handlers = makeHandlers();
     const conn = connectWs('ws://x', handlers, { webSocketFactory: factory, reconnectDelayMs: 5 });
-    const data = JSON.stringify({ type: 'snapshot', agents: [{ id: 'a1' }], approvals: [], projects: [] });
+    const data = JSON.stringify({ type: 'snapshot', agents: [{ id: 'a1' }], approvals: [], projects: [], maxAgents: 100 });
     lastSocket().onmessage?.(new MessageEvent('message', { data }));
     expect(handlers.onSnapshot).toHaveBeenCalledTimes(1);
-    expect(handlers.onSnapshot).toHaveBeenCalledWith({ agents: [{ id: 'a1' }], approvals: [], projects: [] });
+    expect(handlers.onSnapshot).toHaveBeenCalledWith({
+      agents: [{ id: 'a1' }],
+      approvals: [],
+      projects: [],
+      maxAgents: 100,
+    });
     expect(handlers.onEvent).not.toHaveBeenCalled();
     conn.close();
   });
