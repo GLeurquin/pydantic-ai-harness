@@ -15,7 +15,7 @@ Options:
   --data-dir <path>      state directory (default: <repo>/.clai2-web)
   --worktrees-dir <path> where agent worktrees are created
                          (default: <data-dir>/worktrees)
-  --max-agents <n>       concurrent agent cap (default: 50)
+  --max-agents <n>       concurrent agent cap (default: 100)
   --agent-cmd <cmd>      agent command line, whitespace-split
   --static-dir <path>    serve the built frontend from this directory
   --stub                 use the bundled deterministic stub agent
@@ -34,7 +34,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
     let mut port: u16 = 8787;
     let mut data_dir: Option<PathBuf> = None;
     let mut worktrees_dir: Option<PathBuf> = None;
-    let mut max_agents: usize = 50;
+    let mut max_agents: usize = 100;
     let mut agent_command: Option<Vec<String>> = None;
     let mut static_dir: Option<PathBuf> = None;
     let mut stub = false;

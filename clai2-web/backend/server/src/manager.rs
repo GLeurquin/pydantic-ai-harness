@@ -252,6 +252,11 @@ impl AgentManager {
         &self.hub
     }
 
+    /// The concurrent-agent cap this server was configured with.
+    pub fn max_agents(&self) -> usize {
+        self.config.max_agents
+    }
+
     pub async fn snapshot(&self) -> Vec<AgentSummary> {
         self.agents
             .lock()
@@ -1184,10 +1189,22 @@ impl AgentManager {
 
 #[cfg(test)]
 mod tests {
-    use super::{history_preamble, AgentManager, CreateAgent, ManagerConfig, ManagerError};
+    use super::{default_project_name, history_preamble, AgentManager, CreateAgent, ManagerConfig, ManagerError};
     use crate::acp::updates::ToolCallPatch;
     use crate::acp::{AcpEvent, SessionUpdate};
     use crate::model::{ApprovalMode, StopReason, TranscriptItem};
+    use std::path::Path;
+
+    #[test]
+    fn default_project_name_uses_the_final_path_component() {
+        assert_eq!(default_project_name(Path::new("/Users/dev/my-repo")), "my-repo");
+        assert_eq!(default_project_name(Path::new("relative/path")), "path");
+    }
+
+    #[test]
+    fn default_project_name_falls_back_to_the_whole_path_with_no_file_name() {
+        assert_eq!(default_project_name(Path::new("/")), "/");
+    }
 
     fn config(dir: &std::path::Path, command: Vec<String>) -> ManagerConfig {
         ManagerConfig {

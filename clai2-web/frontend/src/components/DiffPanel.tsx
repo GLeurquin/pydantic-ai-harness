@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 
 import type { WorktreeDiff } from '../api/types';
+import { errorMessage } from '../errors';
 
 export interface DiffPanelProps {
   agentId: string;
@@ -39,7 +40,7 @@ export function DiffPanel({ agentId, loadDiff }: DiffPanelProps) {
       },
       (failure: unknown) => {
         if (!stale) {
-          setError(failure instanceof Error ? failure.message : String(failure));
+          setError(errorMessage(failure));
         }
       },
     );

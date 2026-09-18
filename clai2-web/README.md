@@ -1,6 +1,6 @@
 # CLAI Web
 
-A browser control surface for running and supervising up to 50 CLAI coding
+A browser control surface for running and supervising up to 100 CLAI coding
 agents at once. A Rust backend orchestrates agent processes over the Agent
 Client Protocol (ACP); a React frontend presents them in one dashboard.
 
@@ -13,7 +13,7 @@ CLAI coder launcher.
 
 ## What it does
 
-- Start, stop, and supervise up to 50 agents from one tab.
+- Start, stop, and supervise up to 100 agents from one tab.
 - Give each agent its own git worktree and branch on creation, so parallel
   agents never write into each other's checkouts.
 - Per-agent approval modes, changeable live: ask for every tool call, accept
@@ -72,7 +72,7 @@ run as local subprocesses with your permissions.
 | `--port <port>` | port on 127.0.0.1 (default: 8787) |
 | `--data-dir <path>` | roster and transcript store (default: `<repo>/.clai2-web`) |
 | `--worktrees-dir <path>` | where agent worktrees are created |
-| `--max-agents <n>` | concurrent agent cap (default: 50) |
+| `--max-agents <n>` | concurrent agent cap (default: 100) |
 | `--agent-cmd <cmd>` | agent command line, whitespace-split |
 | `--static-dir <path>` | serve the built frontend from here |
 | `--stub` | use the bundled deterministic stub agent |

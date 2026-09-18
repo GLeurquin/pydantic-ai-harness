@@ -1,5 +1,7 @@
 import { useState } from 'react';
 
+import { errorMessage } from '../errors';
+
 /** Small shared dialog for actions that need one name: fork, side session. */
 export interface NameDialogProps {
   title: string;
@@ -25,7 +27,7 @@ export function NameDialog({ title, placeholder, submitLabel, onSubmit, onClose 
       await onSubmit(name.trim());
       onClose();
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : String(failure));
+      setError(errorMessage(failure));
       setBusy(false);
     }
   };

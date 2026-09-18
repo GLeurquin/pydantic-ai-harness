@@ -1336,6 +1336,16 @@ async fn ws_snapshot_includes_projects() {
 }
 
 #[tokio::test]
+async fn ws_snapshot_reports_the_configured_max_agents() {
+    let world = world_with(7, vec![STUB_AGENT.to_owned()]).await;
+    let (stream, _) = tokio_tungstenite::connect_async(&world.ws_url).await.unwrap();
+    let mut ws = Ws { stream };
+    let snapshot = ws.next_event().await;
+    assert_eq!(snapshot["maxAgents"], 7);
+    ws.close().await;
+}
+
+#[tokio::test]
 async fn renaming_an_agent_updates_its_summary() {
     let world = world().await;
     let agent = world.create_agent("old name", false, "auto").await;

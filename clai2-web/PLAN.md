@@ -1,6 +1,6 @@
 # CLAI Web: agent management UI
 
-A web control surface for running and supervising up to 50 concurrent CLAI
+A web control surface for running and supervising up to 100 concurrent CLAI
 coding agents. A Rust backend orchestrates agent processes over the Agent
 Client Protocol (ACP); a React frontend presents them in a single dashboard.
 
@@ -9,7 +9,7 @@ exists under `clai2-web/` and why each piece is shaped the way it is.
 
 ## Goals
 
-- Start, stop, and supervise up to 50 agents from one browser tab.
+- Start, stop, and supervise up to 100 agents from one browser tab.
 - Give each agent an isolated git worktree and branch on creation, so parallel
   agents can never overwrite each other's files.
 - Per-agent approval modes, changeable live, that decide which tool calls run
@@ -75,7 +75,7 @@ worktree without paying process startup.
 +------------------------------------------------------------------------+
       | spawn + stdio (ACP)                | git worktree ...
 +---------------------+  +---------------------+
-| agent process #1    |  | agent process #N    |   (up to 50)
+| agent process #1    |  | agent process #N    |   (up to 100)
 | serve.py (ACP stdio)|  |                     |
 | cwd = worktree #1   |  | cwd = worktree #N   |
 +---------------------+  +---------------------+

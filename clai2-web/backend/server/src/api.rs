@@ -249,6 +249,7 @@ async fn ws_connection(mut socket: WebSocket, manager: AppState) {
         "agents": manager.snapshot().await,
         "approvals": manager.pending_approvals().await,
         "projects": manager.list_projects().await,
+        "maxAgents": manager.max_agents(),
     });
     if socket.send(Message::Text(snapshot.to_string().into())).await.is_err() {
         return;

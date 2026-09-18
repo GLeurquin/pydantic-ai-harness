@@ -1,6 +1,7 @@
 import { useState } from 'react';
 
 import type { ApprovalMode, CreateAgentRequest, ProjectSummary } from '../api/types';
+import { errorMessage } from '../errors';
 import { MODE_LABELS } from './SettingsPanel';
 
 export interface NewAgentDialogProps {
@@ -43,7 +44,7 @@ export function NewAgentDialog({ projects, defaultProjectId, onCreate, onCreateP
       setProjectName('');
       setProjectPath('');
     } catch (failure) {
-      setProjectError(failure instanceof Error ? failure.message : String(failure));
+      setProjectError(errorMessage(failure));
     } finally {
       setProjectBusy(false);
     }
@@ -68,7 +69,7 @@ export function NewAgentDialog({ projects, defaultProjectId, onCreate, onCreateP
       await onCreate(request);
       onClose();
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : String(failure));
+      setError(errorMessage(failure));
       setBusy(false);
     }
   };
