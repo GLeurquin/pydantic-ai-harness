@@ -210,3 +210,22 @@ def test_ignored_keys_and_empty_rename() -> None:
     assert not widget.entries
     widget.mode = 'sessions'
     widget.handle_key(Key.DOWN)
+
+
+def test_multiline_metadata_cannot_inject_terminal_rows() -> None:
+    widget, entries = browser()
+    entries[0] = replace(
+        entries[0], workspace='/a/line\nbreak', title='title\nnext', subtitle='sub\nnext', tags=('tag\nnext',)
+    )
+    widget.reload()
+    widget.project = entries[0].workspace
+    widget.query = 'global'
+    for mode in ('projects', 'sessions', 'rename'):
+        widget.mode = mode
+        widget.buffer = 'rename\nnext'
+        assert all('\n' not in line and '\r' not in line for line in widget.frame(width=120, height=24))
+    widget.confirm = entries[0]
+    widget.confirm_action = f'Resume in {entries[0].workspace}'
+    assert '\n' not in widget.footer()
+    assert plain('first\nsecond', multiline=True) == 'first\nsecond'
+    assert plain('first\nsecond') == 'first second'

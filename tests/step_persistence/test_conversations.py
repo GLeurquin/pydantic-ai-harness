@@ -181,10 +181,11 @@ def test_windows_owner_probe(monkeypatch: pytest.MonkeyPatch, output: str, busy:
     def tasklist(
         args: list[str], *, capture_output: bool, text: bool, check: bool, timeout: int
     ) -> subprocess.CompletedProcess[str]:
-        assert args == ['tasklist', '/FI', 'PID eq 123', '/FO', 'CSV', '/NH']
+        assert args == [r'C:\Windows\System32\tasklist.exe', '/FI', 'PID eq 123', '/FO', 'CSV', '/NH']
         assert capture_output and text and check and timeout == 10
         return subprocess.CompletedProcess(args, 0, stdout=output)
 
+    monkeypatch.setenv('SystemRoot', r'C:\Windows')
     monkeypatch.setattr(sys, 'platform', 'win32')
     monkeypatch.setattr(subprocess, 'run', tasklist)
     running = ConversationSummary(workspace='/a', outcome='running', owner_pid=123)
@@ -203,3 +204,11 @@ async def test_delete_with_only_run_catalog(tmp_path: Path) -> None:
         conn.commit()
     await store.delete(source=saved)
     assert await store.listing() == []
+
+
+@pytest.mark.parametrize('root', ['', '.', r'C:Windows', r'\Windows'])
+def test_windows_probe_rejects_relative_system_root(monkeypatch: pytest.MonkeyPatch, root: str) -> None:
+    monkeypatch.setenv('SystemRoot', root)
+    monkeypatch.setattr(sys, 'platform', 'win32')
+    with pytest.raises(ValueError, match='absolute Windows path'):
+        ensure_inactive(ConversationSummary(workspace='/a', outcome='running', owner_pid=123))

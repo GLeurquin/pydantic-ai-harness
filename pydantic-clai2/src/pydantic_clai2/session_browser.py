@@ -24,8 +24,10 @@ from . import theme
 from .menu_worker import menu_key
 
 
-def plain(text: str) -> str:
+def plain(text: str, *, multiline: bool = False) -> str:
     """Saved and model-generated text is untrusted terminal content."""
+    if not multiline:
+        text = ' '.join(text.splitlines())
     return ''.join(c for c in text if c.isprintable() or c == '\n')
 
 
@@ -131,7 +133,7 @@ class SessionBrowser:
                 preview += '\n[Preview truncated to 24,000 characters.]'
             body = [
                 line
-                for paragraph in plain(preview).splitlines()
+                for paragraph in plain(preview, multiline=True).splitlines()
                 for line in (textwrap.wrap(paragraph, width=width) or [''])
             ] or ['No messages.']
             offset = min(self.preview_offset, max(0, len(body) - budget))

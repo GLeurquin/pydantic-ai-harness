@@ -12,7 +12,7 @@ from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Literal
 from uuid import uuid4
 
@@ -67,8 +67,11 @@ def ensure_inactive(summary: ConversationSummary) -> None:
     if summary.outcome != 'running' or summary.owner_pid is None:
         return
     if sys.platform == 'win32':
+        system_root = PureWindowsPath(os.environ['SystemRoot'])
+        if not system_root.is_absolute():
+            raise ValueError('SystemRoot must be an absolute Windows path')
         result = subprocess.run(
-            ['tasklist', '/FI', f'PID eq {summary.owner_pid}', '/FO', 'CSV', '/NH'],
+            [str(system_root / 'System32' / 'tasklist.exe'), '/FI', f'PID eq {summary.owner_pid}', '/FO', 'CSV', '/NH'],
             capture_output=True,
             text=True,
             check=True,
