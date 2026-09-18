@@ -26,6 +26,13 @@ fn io_err(path: &Path) -> impl FnOnce(std::io::Error) -> StoreError + '_ {
     }
 }
 
+fn corrupt_err(path: &Path) -> impl FnOnce(serde_json::Error) -> StoreError + '_ {
+    move |source| StoreError::Corrupt {
+        path: path.to_owned(),
+        source,
+    }
+}
+
 /// Persisted roster entry: the public summary plus what is needed to respawn.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -71,10 +78,7 @@ impl Store {
             .map_err(io_err(&self.data_dir))?;
         let path = self.roster_path();
         let tmp = self.data_dir.join("agents.json.tmp");
-        let bytes = serde_json::to_vec_pretty(agents).map_err(|source| StoreError::Corrupt {
-            path: path.clone(),
-            source,
-        })?;
+        let bytes = serde_json::to_vec_pretty(agents).map_err(corrupt_err(&path))?;
         tokio::fs::write(&tmp, bytes).await.map_err(io_err(&tmp))?;
         tokio::fs::rename(&tmp, &path).await.map_err(io_err(&path))?;
         Ok(())
@@ -87,13 +91,9 @@ impl Store {
         item: &TranscriptItem,
     ) -> Result<(), StoreError> {
         let path = self.transcript_path(agent_id, session_id);
-        if let Some(dir) = path.parent() {
-            tokio::fs::create_dir_all(dir).await.map_err(io_err(dir))?;
-        }
-        let mut line = serde_json::to_vec(item).map_err(|source| StoreError::Corrupt {
-            path: path.clone(),
-            source,
-        })?;
+        let dir = path.parent().unwrap_or(&self.data_dir);
+        tokio::fs::create_dir_all(dir).await.map_err(io_err(dir))?;
+        let mut line = serde_json::to_vec(item).map_err(corrupt_err(&path))?;
         line.push(b'\n');
         let mut file = tokio::fs::OpenOptions::new()
             .create(true)
@@ -102,6 +102,9 @@ impl Store {
             .await
             .map_err(io_err(&path))?;
         file.write_all(&line).await.map_err(io_err(&path))?;
+        // A tokio file schedules its write in the background and does not flush
+        // on drop, so a read that races the append would miss it without this.
+        file.flush().await.map_err(io_err(&path))?;
         Ok(())
     }
 
@@ -206,6 +209,75 @@ mod tests {
         assert!(matches!(
             store.load_transcript("a1", "s1").await,
             Err(StoreError::Corrupt { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn load_transcript_skips_blank_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().to_owned());
+        store
+            .append_transcript("a1", "s1", &TranscriptItem::UserMessage { text: "hi".to_owned() })
+            .await
+            .unwrap();
+        let path = dir.path().join("transcripts").join("a1-s1.jsonl");
+        let mut existing = tokio::fs::read_to_string(&path).await.unwrap();
+        existing.push_str("\n   \n");
+        tokio::fs::write(&path, existing).await.unwrap();
+        let items = store.load_transcript("a1", "s1").await.unwrap();
+        assert_eq!(items.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn save_roster_reports_corrupt_on_unserializable_path() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().to_owned());
+        let mut entry = agent("a1");
+        // A non-UTF-8 path cannot serialize to JSON, so `to_vec_pretty` fails.
+        entry.summary.cwd = PathBuf::from(OsStr::from_bytes(b"/tmp/\xff\xfe"));
+        assert!(matches!(
+            store.save_roster(&[entry]).await,
+            Err(StoreError::Corrupt { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn load_roster_reports_io_error_when_path_is_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        // A directory where the roster file is expected makes `read` fail with
+        // something other than NotFound.
+        tokio::fs::create_dir(dir.path().join("agents.json")).await.unwrap();
+        let store = Store::new(dir.path().to_owned());
+        assert!(matches!(store.load_roster().await, Err(StoreError::Io { .. })));
+    }
+
+    #[tokio::test]
+    async fn append_transcript_reports_io_error_when_parent_is_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        // A file where the transcripts directory is expected makes
+        // `create_dir_all` fail, exercising the `io_err` mapping.
+        tokio::fs::write(dir.path().join("transcripts"), b"blocker")
+            .await
+            .unwrap();
+        let store = Store::new(dir.path().to_owned());
+        let result = store
+            .append_transcript("a1", "s1", &TranscriptItem::UserMessage { text: "hi".to_owned() })
+            .await;
+        assert!(matches!(result, Err(StoreError::Io { .. })));
+    }
+
+    #[tokio::test]
+    async fn load_transcript_reports_io_error_when_path_is_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::create_dir_all(dir.path().join("transcripts").join("a1-s1.jsonl"))
+            .await
+            .unwrap();
+        let store = Store::new(dir.path().to_owned());
+        assert!(matches!(
+            store.load_transcript("a1", "s1").await,
+            Err(StoreError::Io { .. })
         ));
     }
 }

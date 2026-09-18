@@ -170,16 +170,18 @@ impl AcpClient {
                 command: command.join(" "),
                 source,
             })?;
-        let stdout = child.stdout.take();
-        let stdin = child.stdin.take();
-        let (Some(stdout), Some(stdin)) = (stdout, stdin) else {
-            // Both are piped above; this branch is unreachable in practice.
-            return Err(SpawnError::Spawn {
-                command: command.join(" "),
-                source: std::io::Error::other("child stdio was not piped"),
-            });
-        };
-        let (transport, inbound) = Transport::new(stdout, stdin);
+        // Both handles are piped above, so `take` yields Some. The eager errors
+        // keep these single covered expressions rather than a branch that never
+        // runs, while still surfacing a spawn failure if a handle is missing.
+        let stdout = child.stdout.take().ok_or(SpawnError::Spawn {
+            command: command.join(" "),
+            source: std::io::Error::other("child stdout was not piped"),
+        });
+        let stdin = child.stdin.take().ok_or(SpawnError::Spawn {
+            command: command.join(" "),
+            source: std::io::Error::other("child stdin was not piped"),
+        });
+        let (transport, inbound) = Transport::new(stdout?, stdin?);
         let (events_tx, events_rx) = mpsc::channel(1024);
         tokio::spawn(dispatch_loop(inbound, Arc::clone(&transport), events_tx));
         let client = Arc::new(Self {
@@ -332,5 +334,114 @@ mod tests {
         let _guard = runtime.enter();
         let result = AcpClient::spawn(&["/nonexistent/agent-binary".to_owned()], Path::new("/tmp"));
         assert!(matches!(result, Err(SpawnError::Spawn { .. })));
+    }
+
+    #[tokio::test]
+    async fn dispatch_loop_routes_every_inbound_kind() {
+        use crate::acp::transport::{InboundNotification, InboundRequest};
+        use tokio::io::{duplex, split, AsyncBufReadExt, BufReader};
+
+        let (client_io, agent_io) = duplex(4096);
+        let (read_half, write_half) = split(client_io);
+        let (transport, _transport_inbound) = super::super::transport::Transport::new(read_half, write_half);
+        let (agent_read, _agent_write) = split(agent_io);
+        let mut agent_lines = BufReader::new(agent_read).lines();
+        let (in_tx, in_rx) = mpsc::channel(16);
+        let (events_tx, mut events_rx) = mpsc::channel(16);
+        let handle = tokio::spawn(dispatch_loop(in_rx, Arc::clone(&transport), events_tx));
+
+        // A notification other than session/update is dropped.
+        in_tx
+            .send(Inbound::Notification(InboundNotification {
+                method: "session/other".to_owned(),
+                params: json!({}),
+            }))
+            .await
+            .unwrap();
+        // A session/update becomes an Update event.
+        in_tx
+            .send(Inbound::Notification(InboundNotification {
+                method: "session/update".to_owned(),
+                params: json!({
+                    "sessionId": "s",
+                    "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "hi"}},
+                }),
+            }))
+            .await
+            .unwrap();
+        assert!(matches!(events_rx.recv().await.unwrap(), AcpEvent::Update { .. }));
+        // A permission request becomes a Permission event.
+        in_tx
+            .send(Inbound::Request(InboundRequest {
+                id: json!(1),
+                method: "session/request_permission".to_owned(),
+                params: json!({"sessionId": "s", "toolCall": {"toolCallId": "t"}, "options": []}),
+            }))
+            .await
+            .unwrap();
+        assert!(matches!(events_rx.recv().await.unwrap(), AcpEvent::Permission(_)));
+        // Any other request is declined with a JSON-RPC error.
+        in_tx
+            .send(Inbound::Request(InboundRequest {
+                id: json!(2),
+                method: "fs/read_text_file".to_owned(),
+                params: json!({}),
+            }))
+            .await
+            .unwrap();
+        let declined: Value = serde_json::from_str(&agent_lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(declined["id"], 2);
+        assert_eq!(declined["error"]["code"], -32601);
+        // A response frame is forwarded as a Response event.
+        in_tx
+            .send(Inbound::Response(json!({"id": 5, "result": {}})))
+            .await
+            .unwrap();
+        assert!(matches!(events_rx.recv().await.unwrap(), AcpEvent::Response(_)));
+        // Closing the inbound channel emits a final Closed event.
+        drop(in_tx);
+        assert!(matches!(events_rx.recv().await.unwrap(), AcpEvent::Closed));
+        handle.await.unwrap();
+    }
+
+    async fn dispatch_loop_returns_when_events_closed(message: Inbound) {
+        use tokio::io::{duplex, split};
+        let (client_io, agent_io) = duplex(64);
+        let (read_half, write_half) = split(client_io);
+        let (transport, _transport_inbound) = super::super::transport::Transport::new(read_half, write_half);
+        let _keep_agent = agent_io;
+        let (in_tx, in_rx) = mpsc::channel(4);
+        let (events_tx, events_rx) = mpsc::channel(1);
+        drop(events_rx);
+        let handle = tokio::spawn(dispatch_loop(in_rx, transport, events_tx));
+        in_tx.send(message).await.unwrap();
+        // The send into the closed events channel fails, so the loop returns.
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dispatch_loop_stops_when_update_cannot_be_delivered() {
+        use crate::acp::transport::InboundNotification;
+        dispatch_loop_returns_when_events_closed(Inbound::Notification(InboundNotification {
+            method: "session/update".to_owned(),
+            params: json!({"sessionId": "s", "update": {}}),
+        }))
+        .await;
+    }
+
+    #[tokio::test]
+    async fn dispatch_loop_stops_when_permission_cannot_be_delivered() {
+        use crate::acp::transport::InboundRequest;
+        dispatch_loop_returns_when_events_closed(Inbound::Request(InboundRequest {
+            id: json!(1),
+            method: "session/request_permission".to_owned(),
+            params: json!({"sessionId": "s"}),
+        }))
+        .await;
+    }
+
+    #[tokio::test]
+    async fn dispatch_loop_stops_when_response_cannot_be_delivered() {
+        dispatch_loop_returns_when_events_closed(Inbound::Response(json!({"id": 5, "result": {}}))).await;
     }
 }

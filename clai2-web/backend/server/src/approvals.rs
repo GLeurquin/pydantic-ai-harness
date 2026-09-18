@@ -256,4 +256,22 @@ mod tests {
         assert_eq!(ledger.pending_for_agent("agent2").await.len(), 1);
         assert_eq!(ledger.pending_for_agent("agent1").await.len(), 0);
     }
+
+    #[tokio::test]
+    async fn pending_snapshots_are_sorted_by_id() {
+        let ledger = ApprovalLedger::default();
+        // Park out of order so the comparator must reorder them.
+        let _r1 = ledger.park(view("ap2", "agent1")).await;
+        let _r2 = ledger.park(view("ap1", "agent1")).await;
+        let _r3 = ledger.park(view("ap3", "agent2")).await;
+        let for_agent: Vec<String> = ledger
+            .pending_for_agent("agent1")
+            .await
+            .into_iter()
+            .map(|view| view.id)
+            .collect();
+        assert_eq!(for_agent, vec!["ap1".to_owned(), "ap2".to_owned()]);
+        let all: Vec<String> = ledger.pending_all().await.into_iter().map(|view| view.id).collect();
+        assert_eq!(all, vec!["ap1".to_owned(), "ap2".to_owned(), "ap3".to_owned()]);
+    }
 }

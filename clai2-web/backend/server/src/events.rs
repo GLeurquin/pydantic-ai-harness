@@ -135,4 +135,19 @@ mod tests {
             agent_id: "a3".to_owned(),
         });
     }
+
+    #[tokio::test]
+    async fn default_hub_matches_new() {
+        let hub = EventHub::default();
+        let mut receiver = hub.subscribe();
+        hub.publish(Event::AgentRemoved {
+            agent_id: "a4".to_owned(),
+        });
+        assert_eq!(
+            receiver.recv().await.unwrap(),
+            Event::AgentRemoved {
+                agent_id: "a4".to_owned()
+            }
+        );
+    }
 }

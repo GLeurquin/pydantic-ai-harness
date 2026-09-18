@@ -82,15 +82,17 @@ impl Transport {
 
     /// Send a request and await the agent's response.
     pub async fn request(&self, method: &str, params: Value) -> Result<Value, RpcError> {
-        if self.closed.load(Ordering::Acquire) {
-            return Err(RpcError::Closed);
-        }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
-        self.waiters.lock().await.insert(id, tx);
-        if self.closed.load(Ordering::Acquire) {
-            self.waiters.lock().await.remove(&id);
-            return Err(RpcError::Closed);
+        {
+            // Check and register under one lock: `fail_all` sets `closed` before
+            // it drains the waiters, so a waiter registered here is either seen
+            // by `fail_all` or rejected below -- it can never be orphaned.
+            let mut waiters = self.waiters.lock().await;
+            if self.closed.load(Ordering::Acquire) {
+                return Err(RpcError::Closed);
+            }
+            waiters.insert(id, tx);
         }
         let frame = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
         if let Err(err) = self.write_frame(&frame).await {
@@ -202,6 +204,32 @@ mod tests {
     use super::*;
     use tokio::io::{duplex, split};
 
+    fn expect_notification(inbound: Inbound) -> InboundNotification {
+        match inbound {
+            Inbound::Notification(notification) => notification,
+            other => panic!("expected notification, got {other:?}"),
+        }
+    }
+
+    fn expect_request(inbound: Inbound) -> InboundRequest {
+        match inbound {
+            Inbound::Request(request) => request,
+            other => panic!("expected request, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "expected notification")]
+    fn expect_notification_rejects_other() {
+        expect_notification(Inbound::Response(json!({})));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected request")]
+    fn expect_request_rejects_other() {
+        expect_request(Inbound::Response(json!({})));
+    }
+
     /// Drive the consumer side the way `AcpClient` does: resolve responses in
     /// order, drop the rest, fail all waiters when the stream ends.
     fn pump(transport: Arc<Transport>, mut inbound: mpsc::Receiver<Inbound>) -> mpsc::Receiver<Inbound> {
@@ -224,12 +252,13 @@ mod tests {
     async fn agent_side(stream: tokio::io::DuplexStream, script: impl FnOnce(String) -> Vec<String> + Send + 'static) {
         let (read_half, mut write_half) = split(stream);
         let mut lines = BufReader::new(read_half).lines();
-        if let Ok(Some(line)) = lines.next_line().await {
-            for reply in script(line) {
-                write_half.write_all(reply.as_bytes()).await.unwrap();
-                write_half.write_all(b"\n").await.unwrap();
-            }
+        // Every caller sends one request line, so the read yields Some.
+        let line = lines.next_line().await.unwrap().unwrap();
+        for reply in script(line) {
+            write_half.write_all(reply.as_bytes()).await.unwrap();
+            write_half.write_all(b"\n").await.unwrap();
         }
+        let _ = write_half.flush().await;
     }
 
     #[tokio::test]
@@ -263,13 +292,7 @@ mod tests {
             .to_string()]
         }));
         let err = transport.request("bogus", json!({})).await.unwrap_err();
-        match err {
-            RpcError::Agent { code, message } => {
-                assert_eq!(code, -32601);
-                assert_eq!(message, "no such method");
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
+        assert_eq!(err.to_string(), "agent returned error -32601: no such method");
     }
 
     #[tokio::test]
@@ -317,22 +340,12 @@ mod tests {
             )
             .await
             .unwrap();
-        let first = other.recv().await.unwrap();
-        match first {
-            Inbound::Notification(notification) => {
-                assert_eq!(notification.method, "session/update");
-                assert_eq!(notification.params["sessionId"], "s");
-            }
-            other => panic!("expected notification, got {other:?}"),
-        }
-        let second = other.recv().await.unwrap();
-        match second {
-            Inbound::Request(request) => {
-                assert_eq!(request.method, "session/request_permission");
-                assert_eq!(request.id, json!(9));
-            }
-            other => panic!("expected request, got {other:?}"),
-        }
+        let notification = expect_notification(other.recv().await.unwrap());
+        assert_eq!(notification.method, "session/update");
+        assert_eq!(notification.params["sessionId"], "s");
+        let request = expect_request(other.recv().await.unwrap());
+        assert_eq!(request.method, "session/request_permission");
+        assert_eq!(request.id, json!(9));
     }
 
     #[tokio::test]
@@ -379,5 +392,64 @@ mod tests {
             .unwrap();
         let first = other.recv().await.unwrap();
         assert!(matches!(first, Inbound::Notification(_)));
+    }
+
+    #[tokio::test]
+    async fn request_reports_error_when_write_fails() {
+        let (client_io, agent_io) = duplex(4096);
+        let (read_half, write_half) = split(client_io);
+        let (transport, _inbound) = Transport::new(read_half, write_half);
+        // Dropping the agent end breaks the pipe, so writing the frame fails.
+        drop(agent_io);
+        let err = transport.request("initialize", json!({})).await.unwrap_err();
+        assert!(matches!(err, RpcError::Io(_) | RpcError::Closed));
+    }
+
+    #[tokio::test]
+    async fn resolve_response_without_integer_id_is_ignored() {
+        let (client_io, agent_io) = duplex(4096);
+        let (read_half, write_half) = split(client_io);
+        let (transport, _inbound) = Transport::new(read_half, write_half);
+        let _keep = agent_io;
+        // No numeric id: the resolver returns without touching any waiter.
+        transport.resolve_response(&json!({"result": {"ok": true}})).await;
+    }
+
+    #[tokio::test]
+    async fn malformed_frame_ends_the_read_loop() {
+        let (client_io, agent_io) = duplex(4096);
+        let (read_half, write_half) = split(client_io);
+        let (_transport, mut inbound) = Transport::new(read_half, write_half);
+        let (agent_read, mut agent_write) = split(agent_io);
+        let _keep = agent_read;
+        agent_write.write_all(b"this is not json\n").await.unwrap();
+        // The read loop stops on the malformed line, closing the channel.
+        assert!(inbound.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn read_loop_stops_when_consumer_drops_receiver() {
+        let (client_io, agent_io) = duplex(4096);
+        let (read_half, write_half) = split(client_io);
+        let (_transport, inbound) = Transport::new(read_half, write_half);
+        // Drop the consumer before any frame arrives, so the read loop's send
+        // fails on the first frame and it returns.
+        drop(inbound);
+        let (agent_read, mut agent_write) = split(agent_io);
+        let _keep = agent_read;
+        agent_write
+            .write_all(
+                json!({"jsonrpc": "2.0", "method": "session/update", "params": {}})
+                    .to_string()
+                    .as_bytes(),
+            )
+            .await
+            .unwrap();
+        agent_write.write_all(b"\n").await.unwrap();
+        // Yield so the read loop is scheduled: it reads the frame, fails to send
+        // into the dropped channel, and returns.
+        for _ in 0..100 {
+            tokio::task::yield_now().await;
+        }
     }
 }

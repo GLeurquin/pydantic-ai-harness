@@ -216,6 +216,45 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn tool_call(update: &Value) -> ToolCallView {
+        match parse_update(update) {
+            SessionUpdate::ToolCall(view) => view,
+            other => panic!("expected tool call, got {other:?}"),
+        }
+    }
+
+    fn tool_patch(update: &Value) -> ToolCallPatch {
+        match parse_update(update) {
+            SessionUpdate::ToolCallUpdate(patch) => patch,
+            other => panic!("expected tool call update, got {other:?}"),
+        }
+    }
+
+    fn plan_entries(update: &Value) -> Vec<PlanEntry> {
+        match parse_update(update) {
+            SessionUpdate::Plan(entries) => entries,
+            other => panic!("expected plan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "expected tool call")]
+    fn tool_call_helper_rejects_other_variants() {
+        tool_call(&json!({}));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected tool call update")]
+    fn tool_patch_helper_rejects_other_variants() {
+        tool_patch(&json!({}));
+    }
+
+    #[test]
+    #[should_panic(expected = "expected plan")]
+    fn plan_helper_rejects_other_variants() {
+        plan_entries(&json!({}));
+    }
+
     #[test]
     fn parses_message_chunk() {
         let update = json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Hi"}});
@@ -269,9 +308,7 @@ mod tests {
             "locations": [{"path": "/ws/a.py", "line": 3}, {"noPath": true}],
             "rawInput": {"path": "a.py"}
         });
-        let SessionUpdate::ToolCall(view) = parse_update(&update) else {
-            panic!("expected tool call");
-        };
+        let view = tool_call(&update);
         assert_eq!(view.tool_call_id, "call_1");
         assert_eq!(view.title, "edit_file");
         assert_eq!(view.kind, ToolKind::Edit);
@@ -309,9 +346,7 @@ mod tests {
     #[test]
     fn tool_call_defaults_when_fields_absent() {
         let update = json!({"sessionUpdate": "tool_call", "toolCallId": "c2"});
-        let SessionUpdate::ToolCall(view) = parse_update(&update) else {
-            panic!("expected tool call");
-        };
+        let view = tool_call(&update);
         assert_eq!(view.title, "c2");
         assert_eq!(view.kind, ToolKind::Other);
         assert_eq!(view.status, ToolCallStatus::Pending);
@@ -333,9 +368,7 @@ mod tests {
             ("someday", ToolKind::Other),
         ] {
             let update = json!({"sessionUpdate": "tool_call", "toolCallId": "c", "kind": name});
-            let SessionUpdate::ToolCall(view) = parse_update(&update) else {
-                panic!("expected tool call");
-            };
+            let view = tool_call(&update);
             assert_eq!(view.kind, kind, "kind {name}");
         }
         for (name, status) in [
@@ -344,19 +377,23 @@ mod tests {
             ("failed", ToolCallStatus::Failed),
         ] {
             let update = json!({"sessionUpdate": "tool_call", "toolCallId": "c", "status": name});
-            let SessionUpdate::ToolCall(view) = parse_update(&update) else {
-                panic!("expected tool call");
-            };
+            let view = tool_call(&update);
             assert_eq!(view.status, status, "status {name}");
         }
     }
 
     #[test]
+    fn unknown_status_falls_back_to_none() {
+        let update = json!({"sessionUpdate": "tool_call", "toolCallId": "c", "status": "bogus"});
+        let view = tool_call(&update);
+        // An unrecognized status parses to None, so the default Pending stands.
+        assert_eq!(view.status, ToolCallStatus::Pending);
+    }
+
+    #[test]
     fn patch_applies_only_present_fields() {
         let update = json!({"sessionUpdate": "tool_call_update", "toolCallId": "c1", "status": "completed"});
-        let SessionUpdate::ToolCallUpdate(patch) = parse_update(&update) else {
-            panic!("expected patch");
-        };
+        let patch = tool_patch(&update);
         let mut view = ToolCallView {
             tool_call_id: "c1".to_owned(),
             title: "edit_file".to_owned(),
@@ -381,9 +418,7 @@ mod tests {
             "content": [],
             "locations": [{"path": "/b.py"}]
         });
-        let SessionUpdate::ToolCallUpdate(patch) = parse_update(&update) else {
-            panic!("expected patch");
-        };
+        let patch = tool_patch(&update);
         let mut view = ToolCallView {
             tool_call_id: "c1".to_owned(),
             title: "old".to_owned(),
@@ -408,9 +443,7 @@ mod tests {
                 {"content": "step 2"}
             ]
         });
-        let SessionUpdate::Plan(entries) = parse_update(&update) else {
-            panic!("expected plan");
-        };
+        let entries = plan_entries(&update);
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].priority, "high");
         assert_eq!(entries[1].priority, "medium");

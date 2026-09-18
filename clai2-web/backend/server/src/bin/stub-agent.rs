@@ -142,6 +142,87 @@ async fn handle_prompt(stub: Arc<Stub>, request_id: Value, params: Value) {
         return;
     }
 
+    // Drop the connection mid-turn without responding, to exercise the
+    // manager's unexpected-exit handling.
+    if text.contains("crash") {
+        std::process::exit(0);
+    }
+
+    // Emit a plan update, then end the turn.
+    if text.contains("emit-plan") {
+        stub.send_update(
+            &session_id,
+            json!({
+                "sessionUpdate": "plan",
+                "entries": [{"content": "step one", "priority": "high", "status": "pending"}],
+            }),
+        )
+        .await;
+        stub.respond(&request_id, json!({"stopReason": "end_turn"})).await;
+        return;
+    }
+
+    // Emit update variants the manager records passively (a user message chunk
+    // echoed back, and an unrecognized variant), then end the turn.
+    if text.contains("emit-extras") {
+        stub.send_update(
+            &session_id,
+            json!({"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "u"}}),
+        )
+        .await;
+        stub.send_update(&session_id, json!({"sessionUpdate": "usage_update"}))
+            .await;
+        stub.respond(&request_id, json!({"stopReason": "end_turn"})).await;
+        return;
+    }
+
+    // Emit a tool_call_update with no preceding tool_call announcement, so the
+    // manager materializes the view from the patch alone.
+    if text.contains("bare-update") {
+        stub.send_update(
+            &session_id,
+            json!({"sessionUpdate": "tool_call_update", "toolCallId": "bare-1", "status": "completed"}),
+        )
+        .await;
+        stub.respond(&request_id, json!({"stopReason": "end_turn"})).await;
+        return;
+    }
+
+    // Announce a tool call, request permission, then drop the connection
+    // without waiting for the answer, so the client's response has nowhere to
+    // go.
+    if text.contains("perm-then-exit") {
+        let call_number = stub.next_tool_call.fetch_add(1, Ordering::Relaxed);
+        let tool_call_id = format!("call-{call_number}");
+        stub.send_update(
+            &session_id,
+            json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": tool_call_id,
+                "title": "stub execute",
+                "kind": "execute",
+                "status": "pending",
+            }),
+        )
+        .await;
+        let id = stub.next_request_id.fetch_add(1, Ordering::Relaxed);
+        stub.write_frame(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "session/request_permission",
+            "params": {
+                "sessionId": session_id,
+                "toolCall": {"toolCallId": tool_call_id, "title": "stub execute", "kind": "execute", "status": "pending"},
+                "options": [
+                    {"optionId": "allow_once", "name": "Allow", "kind": "allow_once"},
+                    {"optionId": "reject_once", "name": "Reject", "kind": "reject_once"}
+                ],
+            },
+        }))
+        .await;
+        std::process::exit(0);
+    }
+
     if let Some(rest) = text.split("think:").nth(1) {
         stub.send_text_chunk(&session_id, "agent_thought_chunk", rest.trim())
             .await;

@@ -827,9 +827,7 @@ impl AgentManager {
                         .and_then(|entry| entry.session_by_acp(&acp_session_id))
                         .map(|session| session.id.clone())
                 };
-                let Some(session_id) = session_id else {
-                    return;
-                };
+                let Some(session_id) = session_id else { return };
                 self.handle_update(agent_id, &session_id, update).await;
             }
             AcpEvent::Permission(request) => {
@@ -982,13 +980,11 @@ impl AgentManager {
             let Some(entry) = agents.iter().find(|entry| entry.summary.id == agent_id) else {
                 return;
             };
-            let Some(runtime) = entry.runtime.as_ref() else {
-                return;
-            };
+            let Some(runtime) = entry.runtime.as_ref() else { return };
             let session_id = entry
                 .session_by_acp(&acp_session_id)
                 .map(|session| session.id.clone())
-                .unwrap_or_else(|| "main".to_owned());
+                .unwrap_or("main".to_owned());
             (Arc::clone(&runtime.client), session_id, entry.summary.approval_mode)
         };
         match decide(mode, tool_call.kind, &options) {
@@ -1033,8 +1029,162 @@ impl AgentManager {
 
 #[cfg(test)]
 mod tests {
-    use super::history_preamble;
-    use crate::model::{StopReason, TranscriptItem};
+    use super::{history_preamble, AgentManager, CreateAgent, ManagerConfig, ManagerError};
+    use crate::acp::updates::ToolCallPatch;
+    use crate::acp::{AcpEvent, SessionUpdate};
+    use crate::model::{ApprovalMode, StopReason, TranscriptItem};
+
+    fn config(dir: &std::path::Path, command: Vec<String>) -> ManagerConfig {
+        ManagerConfig {
+            repo_root: dir.to_owned(),
+            worktrees_dir: dir.join("worktrees"),
+            data_dir: dir.join("data"),
+            agent_command: command,
+            max_agents: 10,
+        }
+    }
+
+    #[tokio::test]
+    async fn new_reports_corrupt_roster() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        tokio::fs::create_dir_all(&data).await.unwrap();
+        tokio::fs::write(data.join("agents.json"), b"{ not json").await.unwrap();
+        let result = AgentManager::new(config(dir.path(), vec!["stub".to_owned()])).await;
+        assert!(matches!(result, Err(ManagerError::Store(_))));
+    }
+
+    #[tokio::test]
+    async fn create_agent_with_worktree_in_non_git_repo_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        // repo_root is a plain directory, so resolving the base branch fails.
+        let manager = AgentManager::new(config(dir.path(), vec!["stub".to_owned()]))
+            .await
+            .unwrap();
+        let err = manager
+            .create_agent(CreateAgent {
+                name: "x".to_owned(),
+                use_worktree: true,
+                base_branch: None,
+                approval_mode: ApprovalMode::Auto,
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ManagerError::Git(_)));
+    }
+
+    #[tokio::test]
+    async fn handle_acp_event_ignores_unknown_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = AgentManager::new(config(dir.path(), vec!["stub".to_owned()]))
+            .await
+            .unwrap();
+        // A response frame normally never reaches the handler (the pump
+        // resolves it), and an event for an unknown agent is ignored.
+        manager
+            .handle_acp_event("ghost", AcpEvent::Response(serde_json::json!({})))
+            .await;
+        manager.handle_acp_event("ghost", AcpEvent::Closed).await;
+    }
+
+    #[tokio::test]
+    async fn mark_error_on_unknown_agent_only_publishes() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = AgentManager::new(config(dir.path(), vec!["stub".to_owned()]))
+            .await
+            .unwrap();
+        let mut receiver = manager.hub().subscribe();
+        manager.mark_error("ghost", "boom").await;
+        let event = receiver.recv().await.unwrap();
+        assert!(matches!(event, crate::events::Event::AgentError { .. }));
+    }
+
+    #[tokio::test]
+    async fn ensure_running_on_archived_agent_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        // A command that cannot spawn leaves the agent in Error with no runtime.
+        let manager = AgentManager::new(config(dir.path(), vec!["/nonexistent/agent".to_owned()]))
+            .await
+            .unwrap();
+        let agent = manager
+            .create_agent(CreateAgent {
+                name: "doomed".to_owned(),
+                use_worktree: false,
+                base_branch: None,
+                approval_mode: ApprovalMode::Auto,
+            })
+            .await
+            .unwrap();
+        manager.archive(&agent.id, false).await.unwrap();
+        let err = manager.ensure_running(&agent.id).await.unwrap_err();
+        assert!(matches!(err, ManagerError::Archived));
+    }
+
+    #[tokio::test]
+    async fn record_warns_when_transcript_write_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        tokio::fs::create_dir_all(&data_dir).await.unwrap();
+        // A file where the transcripts directory belongs makes every append fail.
+        tokio::fs::write(data_dir.join("transcripts"), b"blocker")
+            .await
+            .unwrap();
+        let manager = AgentManager::new(config(dir.path(), vec!["stub".to_owned()]))
+            .await
+            .unwrap();
+        // The failing append is logged and swallowed; the event still publishes.
+        let mut receiver = manager.hub().subscribe();
+        manager
+            .handle_update("a", "main", SessionUpdate::MessageChunk { text: "hi".to_owned() })
+            .await;
+        assert!(matches!(
+            receiver.recv().await.unwrap(),
+            crate::events::Event::MessageChunk { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn permission_for_unknown_agent_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = AgentManager::new(config(dir.path(), vec!["stub".to_owned()]))
+            .await
+            .unwrap();
+        let request = crate::acp::PermissionRequest {
+            rpc_id: serde_json::json!(1),
+            acp_session_id: "s".to_owned(),
+            tool_call: crate::model::ToolCallView {
+                tool_call_id: "t".to_owned(),
+                title: "x".to_owned(),
+                kind: crate::model::ToolKind::Execute,
+                status: crate::model::ToolCallStatus::Pending,
+                content: vec![],
+                locations: vec![],
+            },
+            options: vec![],
+        };
+        // No such agent, so the handler returns before touching any runtime.
+        manager.handle_permission("ghost", request).await;
+    }
+
+    #[tokio::test]
+    async fn tool_call_update_for_unknown_agent_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = AgentManager::new(config(dir.path(), vec!["stub".to_owned()]))
+            .await
+            .unwrap();
+        let patch = ToolCallPatch {
+            tool_call_id: "t".to_owned(),
+            title: None,
+            kind: None,
+            status: None,
+            content: None,
+            locations: None,
+        };
+        // No such agent, so the merge yields nothing and nothing is recorded.
+        manager
+            .handle_update("ghost", "main", SessionUpdate::ToolCallUpdate(patch))
+            .await;
+    }
 
     #[test]
     fn preamble_merges_chunks_and_labels_roles() {

@@ -816,6 +816,308 @@ async fn ws_snapshot_includes_existing_agents_and_approvals() {
 }
 
 #[tokio::test]
+async fn explicit_bad_base_branch_reports_git_error() {
+    let world = world().await;
+    let (status, body) = world
+        .post(
+            "/api/agents",
+            json!({"name": "branchy", "useWorktree": true, "baseBranch": "no-such-branch", "approvalMode": "auto"}),
+        )
+        .await;
+    // A git failure maps to 500 through the error responder.
+    assert_eq!(status, 500, "body: {body}");
+    assert!(body["error"].is_string());
+}
+
+#[tokio::test]
+async fn create_with_explicit_base_branch_uses_it() {
+    let world = world().await;
+    let (status, agent) = world
+        .post(
+            "/api/agents",
+            json!({"name": "based", "useWorktree": true, "baseBranch": "main", "approvalMode": "auto"}),
+        )
+        .await;
+    assert_eq!(status, 200, "body: {agent}");
+    assert_eq!(agent["worktree"]["baseBranch"], "main");
+}
+
+#[tokio::test]
+async fn side_session_on_archived_agent_is_400() {
+    let world = world().await;
+    let agent = world.create_agent("gone", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    world
+        .http
+        .delete(format!("{}/api/agents/{agent_id}", world.base_url))
+        .send()
+        .await
+        .unwrap();
+    let (status, _) = world
+        .post(&format!("/api/agents/{agent_id}/sessions"), json!({"label": "late"}))
+        .await;
+    assert_eq!(status, 400);
+}
+
+#[tokio::test]
+async fn fork_at_capacity_is_409() {
+    let world = world_with(1, vec![STUB_AGENT.to_owned()]).await;
+    let agent = world.create_agent("only", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let (status, body) = world
+        .post(&format!("/api/agents/{agent_id}/fork"), json!({"name": "clone"}))
+        .await;
+    assert_eq!(status, 409);
+    assert!(body["error"].as_str().unwrap().contains("limit"));
+}
+
+#[tokio::test]
+async fn fork_rejects_blank_name() {
+    let world = world().await;
+    let agent = world.create_agent("parent", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let (status, _) = world
+        .post(&format!("/api/agents/{agent_id}/fork"), json!({"name": "  "}))
+        .await;
+    assert_eq!(status, 400);
+}
+
+#[tokio::test]
+async fn fork_without_worktree_copies_transcript_only() {
+    let world = world().await;
+    let agent = world.create_agent("bare parent", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let mut ws = world.ws().await;
+    world.prompt(agent_id, "main", "hello").await;
+    ws.collect_until(|event| event["type"] == "turnEnded").await;
+    ws.close().await;
+
+    let (status, fork) = world
+        .post(&format!("/api/agents/{agent_id}/fork"), json!({"name": "bare fork"}))
+        .await;
+    assert_eq!(status, 200, "fork failed: {fork}");
+    assert!(fork["worktree"].is_null());
+    assert_eq!(fork["cwd"].as_str().unwrap(), world.repo.to_str().unwrap());
+    let fork_id = fork["id"].as_str().unwrap();
+    let (_, transcript) = world
+        .get(&format!("/api/agents/{fork_id}/sessions/main/transcript"))
+        .await;
+    assert!(transcript
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["text"] == "hello"));
+}
+
+#[tokio::test]
+async fn set_approval_mode_on_unknown_agent_is_404() {
+    let world = world().await;
+    let response = world
+        .http
+        .patch(format!("{}/api/agents/ghost/approval-mode", world.base_url))
+        .json(&json!({"approvalMode": "auto"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 404);
+}
+
+#[tokio::test]
+async fn archiving_agent_with_parked_approval_resolves_it() {
+    let world = world().await;
+    let agent = world.create_agent("parker", false, "always_ask").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let mut ws = world.ws().await;
+    world.prompt(agent_id, "main", "approve:execute risky").await;
+    ws.collect_until(|event| event["type"] == "approvalRequested").await;
+    ws.close().await;
+
+    let response = world
+        .http
+        .delete(format!("{}/api/agents/{agent_id}", world.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let (_, pending) = world.get("/api/approvals").await;
+    assert!(pending.as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn archive_and_cancel_tolerate_a_process_that_never_started() {
+    let world = world_with(50, vec!["/nonexistent/agent".to_owned()]).await;
+    let (status, agent) = world
+        .post(
+            "/api/agents",
+            json!({"name": "stillborn", "useWorktree": false, "approvalMode": "auto"}),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(agent["status"], "error");
+    let agent_id = agent["id"].as_str().unwrap();
+
+    // Cancelling an agent that has no live process is a no-op success.
+    let (status, _) = world.post(&format!("/api/agents/{agent_id}/cancel"), json!({})).await;
+    assert_eq!(status, 200);
+
+    // Archiving it takes no client to kill and removes no worktree.
+    let response = world
+        .http
+        .delete(format!("{}/api/agents/{agent_id}", world.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let archived: Value = response.json().await.unwrap();
+    assert_eq!(archived["status"], "archived");
+}
+
+#[tokio::test]
+async fn plan_updates_stream_to_clients() {
+    let world = world().await;
+    let agent = world.create_agent("planner", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let mut ws = world.ws().await;
+    world.prompt(agent_id, "main", "emit-plan").await;
+    let events = ws.collect_until(|event| event["type"] == "turnEnded").await;
+    ws.close().await;
+    let plans = events_of_type(&events, "plan");
+    assert_eq!(plans[0]["entries"][0]["content"], "step one");
+    assert_eq!(plans[0]["entries"][0]["priority"], "high");
+}
+
+#[tokio::test]
+async fn passive_update_variants_do_not_break_the_turn() {
+    let world = world().await;
+    let agent = world.create_agent("passive", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let mut ws = world.ws().await;
+    world.prompt(agent_id, "main", "emit-extras").await;
+    let events = ws.collect_until(|event| event["type"] == "turnEnded").await;
+    ws.close().await;
+    let ended = events_of_type(&events, "turnEnded");
+    assert_eq!(ended[0]["stopReason"], "end_turn");
+}
+
+#[tokio::test]
+async fn tool_call_update_without_prior_announcement_materializes_view() {
+    let world = world().await;
+    let agent = world.create_agent("patcher", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let mut ws = world.ws().await;
+    world.prompt(agent_id, "main", "bare-update").await;
+    let events = ws.collect_until(|event| event["type"] == "turnEnded").await;
+    ws.close().await;
+    let calls = events_of_type(&events, "toolCall");
+    assert!(calls
+        .iter()
+        .any(|call| call["toolCall"]["toolCallId"] == "bare-1" && call["toolCall"]["status"] == "completed"));
+}
+
+#[tokio::test]
+async fn unexpected_process_exit_marks_agent_errored() {
+    let world = world().await;
+    let agent = world.create_agent("crasher", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let mut ws = world.ws().await;
+    world.prompt(agent_id, "main", "crash").await;
+    let events = ws
+        .collect_until(|event| {
+            event["type"] == "agentError"
+                && event["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("exited unexpectedly"))
+        })
+        .await;
+    ws.close().await;
+    assert!(!events.is_empty());
+    let (_, fetched) = world.get(&format!("/api/agents/{agent_id}")).await;
+    assert_eq!(fetched["status"], "error");
+}
+
+#[tokio::test]
+async fn archiving_during_a_running_turn_settles_cleanly() {
+    let world = world().await;
+    let agent = world.create_agent("busy", false, "always_ask").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let mut ws = world.ws().await;
+    world.prompt(agent_id, "main", "slow").await;
+    ws.collect_until(|event| event["type"] == "messageChunk").await;
+    let response = world
+        .http
+        .delete(format!("{}/api/agents/{agent_id}", world.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    // The in-flight turn task runs to completion against the archived agent.
+    ws.collect_until(|event| event["type"] == "agentError").await;
+    ws.close().await;
+    let (_, fetched) = world.get(&format!("/api/agents/{agent_id}")).await;
+    assert_eq!(fetched["status"], "archived");
+}
+
+#[tokio::test]
+async fn auto_approval_tolerates_a_dead_agent() {
+    let world = world().await;
+    let agent = world.create_agent("autodead", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let mut ws = world.ws().await;
+    // The agent requests permission, then exits; the auto-approval response has
+    // nowhere to go, which the manager logs and swallows.
+    world.prompt(agent_id, "main", "perm-then-exit").await;
+    ws.collect_until(|event| event["type"] == "agentError").await;
+    ws.close().await;
+    let (_, fetched) = world.get(&format!("/api/agents/{agent_id}")).await;
+    assert_eq!(fetched["status"], "error");
+}
+
+#[tokio::test]
+async fn resolving_approval_for_a_dead_agent_is_tolerated() {
+    let world = world().await;
+    let agent = world.create_agent("parkdead", false, "always_ask").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let mut ws = world.ws().await;
+    world.prompt(agent_id, "main", "perm-then-exit").await;
+    // The approval parks, then the agent process exits.
+    let events = ws.collect_until(|event| event["type"] == "approvalRequested").await;
+    let approval_id = events.last().unwrap()["approval"]["id"].as_str().unwrap().to_owned();
+    ws.collect_until(|event| event["type"] == "agentError").await;
+    ws.close().await;
+    // Resolving now sends the answer to a dead connection; the manager logs the
+    // failure and still reports the resolution succeeded.
+    let (status, _) = world
+        .post(
+            &format!("/api/approvals/{approval_id}"),
+            json!({"optionId": "allow_once"}),
+        )
+        .await;
+    assert_eq!(status, 200);
+    // A follow-up request yields the runtime so the parked responder task runs.
+    let (_, pending) = world.get("/api/approvals").await;
+    assert!(pending.as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn websocket_closes_when_client_sends_close() {
+    let world = world().await;
+    let (stream, _) = tokio_tungstenite::connect_async(&world.ws_url).await.unwrap();
+    let mut ws = Ws { stream };
+    let snapshot = ws.next_event().await;
+    assert_eq!(snapshot["type"], "snapshot");
+    // A non-close message from the client is ignored by the server loop.
+    ws.stream.send(Message::Text("ignored by server".into())).await.unwrap();
+    // Sending a Close makes the server break out of its loop and drop the
+    // socket, which the client observes as the stream ending.
+    ws.stream.send(Message::Close(None)).await.unwrap();
+    while let Some(message) = ws.stream.next().await {
+        if message.is_err() {
+            break;
+        }
+    }
+}
+
+#[tokio::test]
 async fn fifty_agents_can_run_concurrently() {
     let world = world().await;
     let mut agent_ids = Vec::new();

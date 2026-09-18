@@ -108,7 +108,11 @@ The frontend proxies `/api` to `http://127.0.0.1:8787` in dev, so
 
 - Backend unit and integration tests run against the stub agent and temporary
   git repositories, so they need no model and no network. Line coverage is
-  gated at 100% (excluding `main.rs` argument wiring and the stub binary).
+  gated in CI (excluding `main.rs` argument wiring and the stub binary). The
+  merged coverage view leaves three lines uncovered: two WebSocket send
+  failures in `api.rs` and one auto-approval response in `manager.rs`, each an
+  error-logging branch reachable only by a client-disconnect or process-death
+  race that cannot be reproduced deterministically in a hermetic test.
 - Frontend logic and components are covered to 100% with vitest; every
   component also has Ladle stories, and `pnpm ladle:build` runs in CI.
 - The Playwright suite drives the built UI against a real backend in stub mode
