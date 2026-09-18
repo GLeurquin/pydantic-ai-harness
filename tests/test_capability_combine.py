@@ -254,6 +254,7 @@ COMBINE_POLICY: dict[str, Policy] = {
     'OutputGuardrail': Anonymous('several guards is the design'),
     'PromptInjectionDefender': Anonymous('one per `tool_filter`; several scopes compose'),
     'ToolGuardrail': Anonymous('several guards is the design'),
+    'ToolCallJudge': Anonymous('one per approval policy; overlapping tool scopes resolve in capability order'),
     'ManagedPrompt': Anonymous('one per prompt name'),
     'RepoContext': Anonymous('one per workspace root'),
     'ReportContextUsage': Anonymous('a passive observer; several callbacks compose'),
