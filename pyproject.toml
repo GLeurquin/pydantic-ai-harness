@@ -224,15 +224,14 @@ exclude = ['template', '**/.venv*', 'local-notes', 'mutants', '.agents', '.claud
 # helpers are registered via decorators and never referenced by name (matches pydantic-ai).
 executionEnvironments = [
     { root = 'pydantic-clai2', extraPaths = ['pydantic-clai2/src'] },
-    { root = 'pydantic_ai_harness', pythonVersion = '3.10' },
+    { root = '.venv', pythonVersion = '3.11' },
     { root = 'tests', pythonVersion = '3.10', reportPrivateUsage = false, reportUnusedFunction = false },
-    { root = 'examples', pythonVersion = '3.10' },
     # `redis.asyncio.Redis` ships `py.typed` but leaves most of its command surface
     # partially unknown (`from_url`, `ping`, `scan_iter`, `ttl`). Only the live-Redis
     # tests touch the client directly -- `RedisSpendStore` itself goes through the
     # `RedisClient` protocol and stays fully checked.
     { root = 'integration_tests/redis', pythonVersion = '3.10', reportUnknownMemberType = false, reportUnknownVariableType = false, reportUnknownArgumentType = false },
-    { root = 'integration_tests', pythonVersion = '3.10' },
+    { root = '.', pythonVersion = '3.10' },
 ]
 
 [tool.pytest.ini_options]

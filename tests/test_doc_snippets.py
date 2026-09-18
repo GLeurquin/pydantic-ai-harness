@@ -115,7 +115,7 @@ def _doc_snippets() -> Iterable[ParameterSet]:
         yield pytest.param(ex, id=f'{ex.path}:{ex.start_line}')
 
 
-@pytest.mark.parametrize('example', _doc_snippets())
+@pytest.mark.parametrize('example', list(_doc_snippets()))
 def test_doc_snippet_valid(example: CodeExample) -> None:
     if example.prefix_settings().get('test', '').startswith('skip'):
         pytest.skip('illustrative signature block; not runnable Python')
@@ -206,7 +206,7 @@ def test_name_checked_snippets_discovered() -> None:
     )
 
 
-@pytest.mark.parametrize('example', _name_checked_snippets())
+@pytest.mark.parametrize('example', list(_name_checked_snippets()))
 def test_name_checked_snippet_binds_every_name(example: CodeExample) -> None:
     problems = _undefined_names(example)
     assert not problems, (
