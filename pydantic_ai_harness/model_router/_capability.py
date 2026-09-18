@@ -125,8 +125,6 @@ class ModelRouter(AbstractCapability[AgentDepsT]):
                     usage_limits=reserved_usage_limits(self._usage_limits),
                 )
                 candidate = result.output
-                if candidate not in self.choices:
-                    raise ValueError(f'Router returned an unknown choice: {candidate!r}')
                 picked = candidate
                 confidence = _confidence(result.response.provider_details)
                 if (
