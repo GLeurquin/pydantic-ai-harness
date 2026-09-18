@@ -9,6 +9,7 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart, ToolReturnPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.instrumented import InstrumentationSettings
+from pydantic_ai.usage import UsageLimits
 
 from pydantic_ai_harness.model_router import ModelChoice, ModelRouter
 from tests.conftest import agent_run_names  # pyright: ignore[reportMissingTypeStubs]
@@ -85,6 +86,14 @@ class TestModelRouter:
 
         assert result.output == 'fast'
         assert result.usage.requests == 2
+
+    async def test_reserves_a_request_for_the_pending_parent_call(self) -> None:
+        router = _router(_router_model('fast'))
+
+        result = await Agent(capabilities=[router]).run('Choose', usage_limits=UsageLimits(request_limit=1))
+
+        assert result.output == 'capable'
+        assert result.usage.requests == 1
 
     async def test_once_reuses_choice_and_per_step_routes_again(self) -> None:
         async def run(mode: Literal['once', 'per_step']) -> tuple[str, int, int, int]:

@@ -15,6 +15,9 @@ from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, ModelRe
 from pydantic_ai.models import ModelSelectionContext
 from pydantic_ai.output import OutputSpec
 from pydantic_ai.tools import AgentDepsT, RunContext
+from pydantic_ai.usage import UsageLimits
+
+from pydantic_ai_harness._usage import reserved_usage_limits
 
 _SPAN_NAME = 'model_router.select'
 
@@ -66,6 +69,7 @@ class ModelRouter(AbstractCapability[AgentDepsT]):
     _run_prompt: str | Sequence[UserContent] | None = field(default=None, init=False, repr=False)
     _cached_choice: str | None = field(default=None, init=False, repr=False)
     _tracer: Tracer = field(default_factory=NoOpTracer, init=False, repr=False)
+    _usage_limits: UsageLimits | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Copy and validate the routing menu."""
@@ -89,6 +93,7 @@ class ModelRouter(AbstractCapability[AgentDepsT]):
         router._run_ready = True
         router._run_prompt = ctx.prompt
         router._tracer = ctx.tracer
+        router._usage_limits = ctx.usage_limits
         return router
 
     def get_model(self) -> ModelSelector[AgentDepsT]:
@@ -114,7 +119,11 @@ class ModelRouter(AbstractCapability[AgentDepsT]):
                     output_type=output_type,
                     instructions=self._instructions(),
                 )
-                result = await router_agent.run(self._routing_input(ctx), usage=ctx.usage)
+                result = await router_agent.run(
+                    self._routing_input(ctx),
+                    usage=ctx.usage,
+                    usage_limits=reserved_usage_limits(self._usage_limits),
+                )
                 candidate = result.output
                 if candidate not in self.choices:
                     raise ValueError(f'Router returned an unknown choice: {candidate!r}')

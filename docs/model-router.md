@@ -107,7 +107,7 @@ The internal agent name `model_router` also lets Logfire group its requests, tok
 
 `ModelRouter` implements Pydantic AI's existing [`get_model()`](/ai/capabilities/custom/#selecting-the-model) hook. A model passed directly to `run(model=...)`, through a run spec, or through `agent.override(model=...)` takes precedence and skips capability routing. `ModelRouter` takes precedence over the model passed to the `Agent` constructor. When several capabilities contribute a model, Pydantic AI uses the last contribution.
 
-The router request shares the parent run's `RunUsage`, so its tokens and requests are included in the run totals.
+The router request shares the parent run's `RunUsage` and usage limits, so its tokens, cost, and requests count toward the run limits and totals. It reserves one request for the pending parent model call.
 
 Dynamic model selection is not supported by Pydantic AI's durable execution capabilities. Pass an explicit registered model for a durable run. Resuming a suspended provider request also requires the exact model to be supplied explicitly.
 
