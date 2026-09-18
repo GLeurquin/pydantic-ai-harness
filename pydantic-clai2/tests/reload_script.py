@@ -10,6 +10,7 @@ import prompt_toolkit
 import pytest
 from prompt_toolkit.completion import CompleteEvent, Completer
 from prompt_toolkit.document import Document
+from prompt_toolkit.input import DummyInput
 from pydantic_ai import Agent, ModelRequestContext, RunContext, models
 from pydantic_ai.capabilities import Hooks
 from pydantic_ai.messages import ModelRequest, UserPromptPart
@@ -87,6 +88,7 @@ async def main(root: Path, mode: str) -> None:
 
     class Prompt(Generic[PromptT]):
         def __init__(self, **kwargs: object) -> None:
+            self.input = DummyInput()
             completer = kwargs['completer']
             assert isinstance(completer, Completer)
             self.completer = completer

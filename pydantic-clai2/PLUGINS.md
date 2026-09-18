@@ -445,7 +445,8 @@ the footer keeps repainting into it. `host.full_screen()` clears the whole promp
 area and restores it when the block exits. The idle editor stays compact above
 the footer, growing for input or completions rather than filling the terminal.
 The busy frame is not an editor; users enter their next prompt after the turn
-finishes or they cancel it:
+finishes or they cancel it. Busy-time typing is discarded without terminal echo.
+`host.full_screen()` also releases input so the widget can read its own keys:
 
 ```python
 from pydantic_clai2.plugins import PluginHost

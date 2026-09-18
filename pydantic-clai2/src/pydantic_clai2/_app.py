@@ -10,6 +10,7 @@ from anyio import create_task_group
 from prompt_toolkit import PromptSession
 from prompt_toolkit.filters import Always, Condition, is_done
 from prompt_toolkit.formatted_text import FormattedText
+from prompt_toolkit.input import Input
 from prompt_toolkit.layout import BufferControl, HSplit
 from prompt_toolkit.layout.containers import VerticalAlign
 from prompt_toolkit.layout.dimension import Dimension
@@ -431,6 +432,7 @@ class _Shell(Generic[DepsT, OutputT]):
                 status=self.status,
                 renderers=self.loader.renderers(),
                 screen=self.screen,
+                input=self.prompt.input,
             )
 
         completed = await self.interrupts.run(run_prompt())
@@ -497,6 +499,7 @@ async def _run_prompt(
     status: Status,
     renderers: Sequence[Renderer[AgentStreamEvent]],
     screen: Screen,
+    input: Input | None = None,
 ) -> TurnEnd:
     renderer = StreamRenderer(
         console,
@@ -521,7 +524,7 @@ async def _run_prompt(
 
     session.on_context_usage = context_usage
     session.on_stream_event = observe
-    status_line = StatusLine(console, status)
+    status_line = StatusLine(console, status, input=input)
 
     @asynccontextmanager
     async def take_screen() -> AsyncGenerator[None]:

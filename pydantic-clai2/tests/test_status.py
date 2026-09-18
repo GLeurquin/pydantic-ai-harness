@@ -2,15 +2,20 @@
 
 import asyncio
 import io
+import os
 import re
+import sys
 from decimal import Decimal
 
 import pytest
+from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.input.vt100 import Vt100Input
 from pydantic_ai import FunctionToolCallEvent, FunctionToolResultEvent, PartDeltaEvent, PartStartEvent
 from pydantic_ai.messages import NativeToolCallPart, TextPart, ToolCallPart, ToolCallPartDelta, ToolReturnPart
 from rich.console import Console
 
 from pydantic_clai2._app import _reset_status  # pyright: ignore[reportPrivateUsage]
+from pydantic_clai2.interrupts import Interrupts
 from pydantic_clai2.status import Status, StatusLine
 from pydantic_clai2.theme import WARNING, sgr
 
@@ -196,3 +201,55 @@ async def test_cancellation_restores_scroll_region() -> None:
     assert '\n' not in output.getvalue()
     assert '\x1b[r' in output.getvalue()
     assert output.getvalue().endswith('\x1b8\x1b[?25h')
+
+
+async def test_busy_input_discards_typing_and_keeps_ctrl_c() -> None:
+
+    console = Console(file=io.StringIO(), force_terminal=True, width=80, height=24)
+    with create_pipe_input() as input:
+        started = asyncio.Event()
+        cleaned = asyncio.Event()
+
+        async def operation() -> None:
+            try:
+                async with StatusLine(console, Status(), input=input):
+                    started.set()
+                    await asyncio.Event().wait()
+            finally:
+                cleaned.set()
+
+        task = asyncio.create_task(Interrupts().run(operation()))
+        await started.wait()
+        input.send_text('not a future prompt\x03')
+        assert not await task
+        assert cleaned.is_set()
+        assert input.read_keys() == []
+
+
+async def test_busy_input_restores_terminal_and_yields_to_menus() -> None:
+
+    if sys.platform == 'win32':
+        pytest.skip('POSIX terminal attributes')
+    import pty  # noqa: PLC0415
+    import termios  # noqa: PLC0415
+
+    master, slave = pty.openpty()
+    try:
+        with os.fdopen(slave, 'r') as stream:
+            input = Vt100Input(stream)
+            mask = termios.ECHO | termios.ICANON | termios.ISIG
+            original = termios.tcgetattr(stream)[3] & mask
+            console = Console(file=io.StringIO(), force_terminal=True, width=80, height=24)
+            with pytest.raises(RuntimeError, match='failed turn'):
+                async with StatusLine(console, Status(), input=input) as status_line:
+                    assert not termios.tcgetattr(stream)[3] & termios.ECHO
+                    async with status_line.paused():
+                        assert termios.tcgetattr(stream)[3] & mask == original
+                        with input.raw_mode():
+                            os.write(master, b'menu answer')
+                            assert ''.join(key.data for key in input.read_keys()) == 'menu answer'
+                    assert not termios.tcgetattr(stream)[3] & termios.ECHO
+                    raise RuntimeError('failed turn')
+            assert termios.tcgetattr(stream)[3] & mask == original
+    finally:
+        os.close(master)
