@@ -74,7 +74,7 @@ def test_cassettes_discovered() -> None:
     assert sum(1 for _ in _cassettes()) >= 7
 
 
-@pytest.mark.parametrize('path', list(_cassettes()))
+@pytest.mark.parametrize('path', _cassettes())
 def test_cassette_replays_without_an_optional_decompressor(path: Path) -> None:
     # `vcr`'s own loader, because a cassette can carry tags `yaml.safe_load` rejects.
     document = yamlserializer.deserialize(path.read_text())  # pyright: ignore[reportUnknownMemberType]

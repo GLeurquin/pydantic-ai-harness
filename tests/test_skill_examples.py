@@ -61,7 +61,7 @@ def test_migration_skill_examples_are_executable():
         assert not prefix.get('test', '').startswith('skip')
 
 
-@pytest.mark.parametrize('example', list(find_skill_examples()))
+@pytest.mark.parametrize('example', find_skill_examples())
 def test_skill_examples(example: CodeExample, eval_example: EvalExample):
     # Lint every snippet to catch stale imports/syntax, and additionally execute the ones
     # that need no live model, network, or external file -- those exercise the real

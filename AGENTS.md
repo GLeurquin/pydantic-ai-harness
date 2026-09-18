@@ -165,14 +165,15 @@ Tracking issue: https://github.com/pydantic/pydantic-ai-harness/issues/875.
 
 ```bash
 uv venv /tmp/harness-py310 --python 3.10
-uv pip install --python /tmp/harness-py310/bin/python --group dev --editable . --requirements pyproject.toml --all-extras
+uv pip install --python /tmp/harness-py310/bin/python --resolution lowest-direct --group dev \
+  --editable . --requirements pyproject.toml --all-extras
 /tmp/harness-py310/bin/python -m pytest -p no:cacheprovider tests/code_mode
 ```
 
 Use `uv pip` for Python 3.10 to resolve Harness without CLAI's Python requirement.
-These installs do not use the workspace lock. Add `--resolution lowest-direct`
-to the install command to check dependency floors, as CI does. Run the environment's
-Python directly so `uv run` does not select the workspace interpreter.
+CI collects Python 3.10 coverage from this lowest-versions install; Python 3.11+
+uses the workspace lock. Run the environment's Python directly so `uv run`
+does not select the workspace interpreter.
 
 ## File structure
 
