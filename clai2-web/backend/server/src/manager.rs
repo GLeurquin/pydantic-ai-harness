@@ -1446,6 +1446,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn new_loads_a_roster_persisted_before_model_profiles_existed() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        tokio::fs::create_dir_all(&data).await.unwrap();
+        // No `modelProfileId`/`modelLabel` fields: the shape written before
+        // model profiles existed (but after projects, hence `projectId`).
+        // Both are `Option<String>`, so serde defaults a missing key to
+        // `None` even without `#[serde(default)]` (unlike `project_id`
+        // above, a non-`Option` field where the attribute is required).
+        let legacy_roster = serde_json::json!([{
+            "summary": {
+                "id": "legacy-1",
+                "name": "old agent",
+                "projectId": "whatever",
+                "status": "idle",
+                "approvalMode": "always_ask",
+                "worktree": null,
+                "cwd": dir.path(),
+                "sessions": [],
+                "pendingApprovals": 0,
+                "forkedFrom": null,
+                "lastError": null,
+            },
+            "command": ["stub"],
+        }]);
+        tokio::fs::write(data.join("agents.json"), serde_json::to_vec(&legacy_roster).unwrap())
+            .await
+            .unwrap();
+
+        let manager = AgentManager::new(config(dir.path(), vec!["stub".to_owned()]))
+            .await
+            .unwrap();
+        let agents = manager.snapshot().await;
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].model_profile_id, None);
+        assert_eq!(agents[0].model_label, None);
+    }
+
+    #[tokio::test]
     async fn create_agent_with_worktree_in_non_git_repo_errors() {
         let dir = tempfile::tempdir().unwrap();
         // repo_root is a plain directory, so resolving the base branch fails.
