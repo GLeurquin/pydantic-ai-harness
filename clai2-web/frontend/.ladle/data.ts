@@ -4,12 +4,22 @@ import type {
   AgentSummary,
   ApprovalView,
   PermissionOption,
+  ProjectSummary,
   SessionSummary,
   ToolCallView,
   TranscriptItem,
   WorktreeDiff,
   WorktreeInfo,
 } from '../src/api/types';
+
+export function makeProject(overrides: Partial<ProjectSummary> = {}): ProjectSummary {
+  return {
+    id: 'project-1',
+    name: 'clai',
+    repoRoot: '/home/dev/projects/clai',
+    ...overrides,
+  };
+}
 
 export function makeWorktree(overrides: Partial<WorktreeInfo> = {}): WorktreeInfo {
   return {
@@ -35,6 +45,7 @@ export function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
   return {
     id: 'agent-1',
     name: 'fix-auth-bug',
+    projectId: 'project-1',
     status: 'idle',
     approvalMode: 'always_ask',
     worktree: null,

@@ -13,6 +13,8 @@ export interface ConversationProps {
   onPrompt: (text: string) => void;
   onCancel: () => void;
   onResolveApproval: (approvalId: string, optionId: string) => void;
+  onFork: () => void;
+  onSideSession: () => void;
 }
 
 const STOP_LABELS: Record<string, string> = {
@@ -31,11 +33,14 @@ export function Conversation({
   onPrompt,
   onCancel,
   onResolveApproval,
+  onFork,
+  onSideSession,
 }: ConversationProps) {
   const [draft, setDraft] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
   const blocks = buildBlocks(items);
   const busy = agent.status === 'working' || agent.status === 'waiting_approval';
+  const archived = agent.status === 'archived';
   const sessionApprovals = approvals.filter(
     (approval) => approval.agentId === agent.id && approval.sessionId === sessionId,
   );
@@ -108,6 +113,16 @@ export function Conversation({
         <ApprovalBanner key={approval.id} approval={approval} onResolve={onResolveApproval} />
       ))}
       <div className="composer">
+        {archived ? null : (
+          <div className="composer-actions">
+            <button onClick={onSideSession} title="Open a side conversation with this agent">
+              Side conversation
+            </button>
+            <button onClick={onFork} title="Fork this agent into a new worktree">
+              Fork
+            </button>
+          </div>
+        )}
         <textarea
           value={draft}
           placeholder={busy ? 'Agent is working...' : `Message ${agent.name}`}

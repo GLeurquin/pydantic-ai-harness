@@ -95,6 +95,7 @@
 
 .sidebar-tools {
   display: flex;
+  flex-direction: column;
   gap: 8px;
   padding: 12px;
   position: sticky;
@@ -102,7 +103,13 @@
   background: var(--bg);
 }
 
-.sidebar-tools input {
+.sidebar-tools-row {
+  display: flex;
+  gap: 8px;
+}
+
+.sidebar-tools input,
+.sidebar-tools select {
   flex: 1;
   min-width: 0;
 }
@@ -239,14 +246,6 @@
 .tab.active {
   color: var(--text);
   border-bottom-color: var(--accent);
-}
-
-.tab-actions {
-  margin-left: auto;
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  padding: 6px 0;
 }
 
 /* Conversation */
@@ -416,6 +415,12 @@
   gap: 8px;
   padding: 12px 16px;
   border-top: 1px solid var(--border);
+}
+
+.composer-actions {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
 }
 
 .composer textarea {

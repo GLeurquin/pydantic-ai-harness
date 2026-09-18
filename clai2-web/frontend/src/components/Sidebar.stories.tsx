@@ -1,11 +1,13 @@
 import type { Story } from '@ladle/react';
 import type { ReactNode } from 'react';
 
-import { makeAgent, makeWorktree } from '../../.ladle/data';
+import { makeAgent, makeProject, makeWorktree } from '../../.ladle/data';
 import type { AgentSummary } from '../api/types';
 import { Sidebar } from './Sidebar';
 
 const noop = () => undefined;
+
+const projects = [makeProject(), makeProject({ id: 'project-2', name: 'other-repo' })];
 
 const agents: AgentSummary[] = [
   makeAgent({
@@ -30,12 +32,30 @@ function Frame({ children }: { children: ReactNode }) {
 
 export const AllGroups: Story = () => (
   <Frame>
-    <Sidebar agents={agents} selectedAgentId="a3" maxAgents={50} onSelect={noop} onNewAgent={noop} />
+    <Sidebar
+      agents={agents}
+      projects={projects}
+      selectedProjectId="all"
+      selectedAgentId="a3"
+      maxAgents={50}
+      onSelect={noop}
+      onSelectProject={noop}
+      onNewAgent={noop}
+    />
   </Frame>
 );
 
 export const AtCapacity: Story = () => (
   <Frame>
-    <Sidebar agents={agents} selectedAgentId="a1" maxAgents={6} onSelect={noop} onNewAgent={noop} />
+    <Sidebar
+      agents={agents}
+      projects={projects}
+      selectedProjectId="all"
+      selectedAgentId="a1"
+      maxAgents={6}
+      onSelect={noop}
+      onSelectProject={noop}
+      onNewAgent={noop}
+    />
   </Frame>
 );

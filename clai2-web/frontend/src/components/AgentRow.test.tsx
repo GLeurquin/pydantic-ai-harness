@@ -9,6 +9,7 @@ function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
   return {
     id: 'a1',
     name: 'Alpha',
+    projectId: 'project-1',
     status: 'idle',
     approvalMode: 'always_ask',
     worktree: null,

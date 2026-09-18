@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
-use crate::model::{AgentSummary, TranscriptItem};
+use crate::model::{AgentSummary, ProjectSummary, TranscriptItem};
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -56,6 +56,10 @@ impl Store {
         self.data_dir.join("agents.json")
     }
 
+    fn projects_path(&self) -> PathBuf {
+        self.data_dir.join("projects.json")
+    }
+
     fn transcript_path(&self, agent_id: &str, session_id: &str) -> PathBuf {
         self.data_dir
             .join("transcripts")
@@ -79,6 +83,28 @@ impl Store {
         let path = self.roster_path();
         let tmp = self.data_dir.join("agents.json.tmp");
         let bytes = serde_json::to_vec_pretty(agents).map_err(corrupt_err(&path))?;
+        tokio::fs::write(&tmp, bytes).await.map_err(io_err(&tmp))?;
+        tokio::fs::rename(&tmp, &path).await.map_err(io_err(&path))?;
+        Ok(())
+    }
+
+    pub async fn load_projects(&self) -> Result<Vec<ProjectSummary>, StoreError> {
+        let path = self.projects_path();
+        match tokio::fs::read(&path).await {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|source| StoreError::Corrupt { path, source }),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(vec![]),
+            Err(source) => Err(StoreError::Io { path, source }),
+        }
+    }
+
+    /// Rewrite the project registry atomically (write to a sibling temp file, rename).
+    pub async fn save_projects(&self, projects: &[ProjectSummary]) -> Result<(), StoreError> {
+        tokio::fs::create_dir_all(&self.data_dir)
+            .await
+            .map_err(io_err(&self.data_dir))?;
+        let path = self.projects_path();
+        let tmp = self.data_dir.join("projects.json.tmp");
+        let bytes = serde_json::to_vec_pretty(projects).map_err(corrupt_err(&path))?;
         tokio::fs::write(&tmp, bytes).await.map_err(io_err(&tmp))?;
         tokio::fs::rename(&tmp, &path).await.map_err(io_err(&path))?;
         Ok(())
@@ -137,6 +163,7 @@ mod tests {
             summary: AgentSummary {
                 id: id.to_owned(),
                 name: "demo".to_owned(),
+                project_id: "proj1".to_owned(),
                 status: AgentStatus::Idle,
                 approval_mode: ApprovalMode::AlwaysAsk,
                 worktree: None,
@@ -158,6 +185,34 @@ mod tests {
         store.save_roster(&[agent("a1")]).await.unwrap();
         let loaded = store.load_roster().await.unwrap();
         assert_eq!(loaded, vec![agent("a1")]);
+    }
+
+    fn project(id: &str) -> ProjectSummary {
+        ProjectSummary {
+            id: id.to_owned(),
+            name: "demo project".to_owned(),
+            repo_root: PathBuf::from("/tmp/demo-repo"),
+        }
+    }
+
+    #[tokio::test]
+    async fn projects_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().to_owned());
+        assert!(store.load_projects().await.unwrap().is_empty());
+        store.save_projects(&[project("p1")]).await.unwrap();
+        let loaded = store.load_projects().await.unwrap();
+        assert_eq!(loaded, vec![project("p1")]);
+    }
+
+    #[tokio::test]
+    async fn corrupt_projects_reports_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::write(dir.path().join("projects.json"), b"{not json")
+            .await
+            .unwrap();
+        let store = Store::new(dir.path().to_owned());
+        assert!(matches!(store.load_projects().await, Err(StoreError::Corrupt { .. })));
     }
 
     #[tokio::test]

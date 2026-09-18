@@ -10,6 +10,7 @@ export const AlwaysAskWithWorktree: Story = () => (
     agent={makeAgent({ approvalMode: 'always_ask', worktree: makeWorktree() })}
     onSetApprovalMode={noop}
     onArchive={noop}
+    onRename={noop}
   />
 );
 
@@ -18,6 +19,7 @@ export const AutoModeWarning: Story = () => (
     agent={makeAgent({ approvalMode: 'auto', forkedFrom: 'triage-issues' })}
     onSetApprovalMode={noop}
     onArchive={noop}
+    onRename={noop}
   />
 );
 
@@ -30,5 +32,6 @@ export const ArchivedAgent: Story = () => (
     })}
     onSetApprovalMode={noop}
     onArchive={noop}
+    onRename={noop}
   />
 );

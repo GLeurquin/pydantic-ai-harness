@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { api, ApiError } from './client';
-import type { CreateAgentRequest, ForkAgentRequest } from './types';
+import type { CreateAgentRequest, CreateProjectRequest, ForkAgentRequest } from './types';
 
 const JSON_HEADERS = { headers: { 'content-type': 'application/json' } };
 
@@ -36,7 +36,7 @@ describe('api', () => {
   });
 
   it('createAgent POSTs the request body to /api/agents', async () => {
-    const body: CreateAgentRequest = { name: 'n', useWorktree: true, baseBranch: 'main', approvalMode: 'auto' };
+    const body: CreateAgentRequest = { name: 'n', projectId: 'p1', useWorktree: true, baseBranch: 'main', approvalMode: 'auto' };
     const payload = { id: 'a1' };
     fetchMock.mockResolvedValue(okResponse(payload));
     await expect(api.createAgent(body)).resolves.toEqual(payload);
@@ -119,6 +119,42 @@ describe('api', () => {
       method: 'PATCH',
       body: JSON.stringify({ approvalMode: 'accept_edits' }),
     });
+  });
+
+  it('rename PATCHes the agent name', async () => {
+    const payload = { id: 'a1', name: 'Renamed' };
+    fetchMock.mockResolvedValue(okResponse(payload));
+    await expect(api.rename('a1', 'Renamed')).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith('/api/agents/a1/name', {
+      ...JSON_HEADERS,
+      method: 'PATCH',
+      body: JSON.stringify({ name: 'Renamed' }),
+    });
+  });
+
+  it('listProjects GETs /api/projects', async () => {
+    const payload = [{ id: 'p1', name: 'clai', repoRoot: '/repo' }];
+    fetchMock.mockResolvedValue(okResponse(payload));
+    await expect(api.listProjects()).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith('/api/projects', JSON_HEADERS);
+  });
+
+  it('createProject POSTs the project body', async () => {
+    const body: CreateProjectRequest = { name: 'other', path: '/other' };
+    const payload = { id: 'p2', name: 'other', repoRoot: '/other' };
+    fetchMock.mockResolvedValue(okResponse(payload));
+    await expect(api.createProject(body)).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith('/api/projects', {
+      ...JSON_HEADERS,
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  });
+
+  it('deleteProject DELETEs the project', async () => {
+    fetchMock.mockResolvedValue(okResponse({ ok: true }));
+    await expect(api.deleteProject('p1')).resolves.toEqual({ ok: true });
+    expect(fetchMock).toHaveBeenCalledWith('/api/projects/p1', { ...JSON_HEADERS, method: 'DELETE' });
   });
 
   it('pendingApprovals GETs /api/approvals', async () => {

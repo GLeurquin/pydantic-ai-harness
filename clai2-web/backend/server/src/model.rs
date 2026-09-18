@@ -9,6 +9,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::worktrees::WorktreeInfo;
 
+/// A repository agents can be created in. `--repo` bootstraps one at startup;
+/// more can be registered at runtime so agents can work across projects.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSummary {
+    pub id: String,
+    pub name: String,
+    pub repo_root: PathBuf,
+}
+
 /// How permission requests from an agent are answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -52,6 +62,12 @@ pub struct SessionSummary {
 pub struct AgentSummary {
     pub id: String,
     pub name: String,
+    /// Project this agent belongs to (see [`ProjectSummary`]). Defaults to
+    /// empty when absent, for roster files persisted before projects
+    /// existed; [`AgentManager::new`](crate::manager::AgentManager::new)
+    /// backfills it to the bootstrap default project on load.
+    #[serde(default)]
+    pub project_id: String,
     pub status: AgentStatus,
     pub approval_mode: ApprovalMode,
     pub worktree: Option<WorktreeInfo>,

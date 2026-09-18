@@ -67,6 +67,12 @@ export function App() {
     useAppStore.getState().selectAgent(agent.id);
   };
 
+  const createProject = async (name: string, path: string) => {
+    const project = await api.createProject({ name, path });
+    useAppStore.getState().applyEvent({ type: 'projectAdded', project });
+    return project;
+  };
+
   return (
     <div className="app">
       <Header
@@ -77,9 +83,12 @@ export function App() {
       />
       <Sidebar
         agents={store.agents}
+        projects={store.projects}
+        selectedProjectId={store.selectedProjectId}
         selectedAgentId={store.selectedAgentId}
         maxAgents={MAX_AGENTS}
         onSelect={store.selectAgent}
+        onSelectProject={store.selectProjectFilter}
         onNewAgent={() => setDialog('new-agent')}
       />
       {selected ? (
@@ -97,13 +106,22 @@ export function App() {
           loadDiff={loadDiff}
           onSetApprovalMode={(mode) => void api.setApprovalMode(selected.id, mode)}
           onArchive={(removeWorktree) => void api.archiveAgent(selected.id, removeWorktree)}
+          onRename={(name) => void api.rename(selected.id, name)}
         />
       ) : (
         <main className="main">
           <div className="main-empty">Start an agent to get going.</div>
         </main>
       )}
-      {dialog === 'new-agent' ? <NewAgentDialog onCreate={createAgent} onClose={() => setDialog('none')} /> : null}
+      {dialog === 'new-agent' ? (
+        <NewAgentDialog
+          projects={store.projects}
+          {...(store.selectedProjectId !== 'all' ? { defaultProjectId: store.selectedProjectId } : {})}
+          onCreate={createAgent}
+          onCreateProject={createProject}
+          onClose={() => setDialog('none')}
+        />
+      ) : null}
       {dialog === 'fork' && selected ? (
         <NameDialog
           title={`Fork ${selected.name}`}

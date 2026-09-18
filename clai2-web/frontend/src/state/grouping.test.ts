@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import type { AgentStatus, AgentSummary } from '../api/types';
-import { groupAgents, liveCount, STATUS_LABELS } from './grouping';
+import { filterByProject, groupAgents, liveCount, STATUS_LABELS } from './grouping';
 
-function agent(id: string, name: string, status: AgentStatus): AgentSummary {
+function agent(id: string, name: string, status: AgentStatus, projectId = 'project-1'): AgentSummary {
   return {
     id,
     name,
+    projectId,
     status,
     approvalMode: 'always_ask',
     worktree: null,
@@ -76,6 +77,33 @@ describe('groupAgents', () => {
   it('excludes agents whose name does not contain the filter', () => {
     const a = agent('1', 'alpha', 'error');
     expect(groupAgents([a], 'omega')).toEqual({ needsAttention: [], working: [], idle: [], archived: [] });
+  });
+});
+
+describe('filterByProject', () => {
+  it('keeps every agent when the filter is "all"', () => {
+    const a = agent('1', 'a', 'idle', 'p1');
+    const b = agent('2', 'b', 'idle', 'p2');
+    expect(filterByProject([a, b], 'all')).toEqual([a, b]);
+  });
+
+  it('keeps only agents in the given project', () => {
+    const a = agent('1', 'a', 'idle', 'p1');
+    const b = agent('2', 'b', 'idle', 'p2');
+    const c = agent('3', 'c', 'idle', 'p1');
+    expect(filterByProject([a, b, c], 'p1')).toEqual([a, c]);
+  });
+
+  it('returns an empty array for a project with no agents', () => {
+    const a = agent('1', 'a', 'idle', 'p1');
+    expect(filterByProject([a], 'p2')).toEqual([]);
+  });
+
+  it('does not mutate the input array', () => {
+    const agents = [agent('1', 'a', 'idle', 'p1')];
+    const filtered = filterByProject(agents, 'all');
+    expect(filtered).not.toBe(agents);
+    expect(filtered).toEqual(agents);
   });
 });
 

@@ -13,6 +13,7 @@ function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
   return {
     id: 'a1',
     name: 'Alpha',
+    projectId: 'project-1',
     status: 'idle',
     approvalMode: 'always_ask',
     worktree: null,
@@ -52,6 +53,8 @@ function renderConversation(props: Partial<Parameters<typeof Conversation>[0]> =
     onPrompt: vi.fn(),
     onCancel: vi.fn(),
     onResolveApproval: vi.fn(),
+    onFork: vi.fn(),
+    onSideSession: vi.fn(),
   };
   const merged = { ...defaults, ...props };
   return { ...render(<Conversation {...merged} />), props: merged };
@@ -162,5 +165,20 @@ describe('Conversation', () => {
     expect(screen.getAllByRole('alertdialog')).toHaveLength(1);
     await user.click(screen.getByRole('button', { name: 'Allow once' }));
     expect(props.onResolveApproval).toHaveBeenCalledWith('ap1', 'allow-once');
+  });
+
+  it('shows Fork and Side conversation next to the composer and fires their callbacks', async () => {
+    const user = userEvent.setup();
+    const { props } = renderConversation();
+    await user.click(screen.getByRole('button', { name: 'Fork' }));
+    expect(props.onFork).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole('button', { name: 'Side conversation' }));
+    expect(props.onSideSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('hides Fork and Side conversation for an archived agent', () => {
+    renderConversation({ agent: makeAgent({ status: 'archived' }) });
+    expect(screen.queryByRole('button', { name: 'Fork' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Side conversation' })).toBeNull();
   });
 });

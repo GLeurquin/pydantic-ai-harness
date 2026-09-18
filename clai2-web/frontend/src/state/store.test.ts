@@ -7,6 +7,7 @@ function agent(id: string, name = id): AgentSummary {
   return {
     id,
     name,
+    projectId: 'project-1',
     status: 'idle',
     approvalMode: 'always_ask',
     worktree: null,
@@ -37,6 +38,8 @@ function resetStore(partial: Partial<AppState> = {}): void {
     connected: false,
     agents: [],
     approvals: [],
+    projects: [],
+    selectedProjectId: 'all',
     transcripts: {},
     selectedAgentId: null,
     view: { kind: 'session', sessionId: 'main' },
@@ -95,6 +98,38 @@ describe('reduceEvent', () => {
     expect(reduceEvent(state(), { type: 'agentRemoved', agentId: 'a1' })).toEqual({
       agents: [agent('a2')],
       selectedAgentId: 'a2',
+    });
+  });
+
+  const project1 = { id: 'p1', name: 'clai', repoRoot: '/repo' };
+  const project2 = { id: 'p2', name: 'other', repoRoot: '/other' };
+
+  it('projectAdded appends a new project', () => {
+    resetStore({ projects: [project1] });
+    expect(reduceEvent(state(), { type: 'projectAdded', project: project2 })).toEqual({
+      projects: [project1, project2],
+    });
+  });
+
+  it('projectAdded with an existing id replaces that project in place', () => {
+    resetStore({ projects: [project1] });
+    const renamed = { ...project1, name: 'renamed' };
+    expect(reduceEvent(state(), { type: 'projectAdded', project: renamed })).toEqual({ projects: [renamed] });
+  });
+
+  it('projectRemoved filters the project and clears a matching selection', () => {
+    resetStore({ projects: [project1, project2], selectedProjectId: 'p1' });
+    expect(reduceEvent(state(), { type: 'projectRemoved', projectId: 'p1' })).toEqual({
+      projects: [project2],
+      selectedProjectId: 'all',
+    });
+  });
+
+  it('projectRemoved keeps a selection pointing at another project', () => {
+    resetStore({ projects: [project1, project2], selectedProjectId: 'p2' });
+    expect(reduceEvent(state(), { type: 'projectRemoved', projectId: 'p1' })).toEqual({
+      projects: [project2],
+      selectedProjectId: 'p2',
     });
   });
 
@@ -174,26 +209,32 @@ describe('useAppStore actions', () => {
 
   it('applySnapshot keeps a selection that still exists', () => {
     resetStore({ agents: [agent('a1'), agent('a2')], selectedAgentId: 'a2' });
-    state().applySnapshot({ agents: [agent('a2'), agent('a3')], approvals: [approval('ap1')] });
+    state().applySnapshot({ agents: [agent('a2'), agent('a3')], approvals: [approval('ap1')], projects: [] });
     expect(state().agents).toEqual([agent('a2'), agent('a3')]);
     expect(state().approvals).toEqual([approval('ap1')]);
     expect(state().selectedAgentId).toBe('a2');
   });
 
+  it('applySnapshot sets the project registry', () => {
+    const project = { id: 'p1', name: 'demo', repoRoot: '/repo' };
+    state().applySnapshot({ agents: [], approvals: [], projects: [project] });
+    expect(state().projects).toEqual([project]);
+  });
+
   it('applySnapshot falls back to the first agent when the selection is gone', () => {
     resetStore({ selectedAgentId: 'gone' });
-    state().applySnapshot({ agents: [agent('a1'), agent('a2')], approvals: [] });
+    state().applySnapshot({ agents: [agent('a1'), agent('a2')], approvals: [], projects: [] });
     expect(state().selectedAgentId).toBe('a1');
   });
 
   it('applySnapshot selects the first agent when nothing was selected', () => {
-    state().applySnapshot({ agents: [agent('a9')], approvals: [] });
+    state().applySnapshot({ agents: [agent('a9')], approvals: [], projects: [] });
     expect(state().selectedAgentId).toBe('a9');
   });
 
   it('applySnapshot sets a null selection when there are no agents', () => {
     resetStore({ agents: [agent('a1')], selectedAgentId: 'a1' });
-    state().applySnapshot({ agents: [], approvals: [] });
+    state().applySnapshot({ agents: [], approvals: [], projects: [] });
     expect(state().selectedAgentId).toBeNull();
     expect(state().agents).toEqual([]);
   });
@@ -208,6 +249,13 @@ describe('useAppStore actions', () => {
     state().selectAgent('a7');
     expect(state().selectedAgentId).toBe('a7');
     expect(state().view).toEqual({ kind: 'session', sessionId: 'main' });
+  });
+
+  it('selectProjectFilter changes the project filter', () => {
+    state().selectProjectFilter('p1');
+    expect(state().selectedProjectId).toBe('p1');
+    state().selectProjectFilter('all');
+    expect(state().selectedProjectId).toBe('all');
   });
 
   it('setView replaces the view', () => {

@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeAll, beforeEach, vi } from 'vitest';
 
 import { App } from './App';
-import type { AgentSummary, ApprovalView, TranscriptItem } from './api/types';
+import type { AgentSummary, ApprovalView, ProjectSummary, TranscriptItem } from './api/types';
 import { useAppStore } from './state/store';
 import type { WsHandlers } from './ws';
 
@@ -17,6 +17,10 @@ const apiMock = vi.hoisted(() => ({
   fork: vi.fn(),
   openSideSession: vi.fn(),
   setApprovalMode: vi.fn(),
+  rename: vi.fn(),
+  listProjects: vi.fn(),
+  createProject: vi.fn(),
+  deleteProject: vi.fn(),
   pendingApprovals: vi.fn(),
   resolveApproval: vi.fn(),
   transcript: vi.fn(),
@@ -48,6 +52,7 @@ function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
   return {
     id: 'a1',
     name: 'Alpha',
+    projectId: 'project-1',
     status: 'idle',
     approvalMode: 'always_ask',
     worktree: null,
@@ -78,9 +83,13 @@ function makeApproval(overrides: Partial<ApprovalView> = {}): ApprovalView {
   };
 }
 
-async function snapshot(agents: AgentSummary[], approvals: ApprovalView[] = []) {
+function makeProject(overrides: Partial<ProjectSummary> = {}): ProjectSummary {
+  return { id: 'project-1', name: 'clai', repoRoot: '/repo', ...overrides };
+}
+
+async function snapshot(agents: AgentSummary[], approvals: ApprovalView[] = [], projects: ProjectSummary[] = [makeProject()]) {
   await act(async () => {
-    handlers().onSnapshot({ agents, approvals });
+    handlers().onSnapshot({ agents, approvals, projects });
   });
 }
 
@@ -95,6 +104,8 @@ beforeEach(() => {
     connected: false,
     agents: [],
     approvals: [],
+    projects: [],
+    selectedProjectId: 'all',
     transcripts: {},
     selectedAgentId: null,
     view: { kind: 'session', sessionId: 'main' },
@@ -103,6 +114,7 @@ beforeEach(() => {
   apiMock.prompt.mockResolvedValue({ ok: true });
   apiMock.resolveApproval.mockResolvedValue({ ok: true });
   apiMock.setApprovalMode.mockResolvedValue(makeAgent());
+  apiMock.rename.mockResolvedValue(makeAgent());
   apiMock.archiveAgent.mockResolvedValue(makeAgent({ status: 'archived' }));
 });
 
@@ -211,6 +223,7 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: 'Start agent' }));
     expect(apiMock.createAgent).toHaveBeenCalledWith({
       name: 'Builder',
+      projectId: 'project-1',
       useWorktree: true,
       approvalMode: 'always_ask',
     });
@@ -279,6 +292,51 @@ describe('App', () => {
     expect(apiMock.setApprovalMode).toHaveBeenCalledWith('a1', 'accept_edits');
     await user.click(screen.getByRole('button', { name: 'Archive' }));
     expect(apiMock.archiveAgent).toHaveBeenCalledWith('a1', false);
+  });
+
+  it('renames the selected agent from the Settings tab', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await snapshot([makeAgent()]);
+    await user.click(screen.getByRole('tab', { name: 'Settings' }));
+    const input = screen.getByLabelText('Agent name');
+    await user.clear(input);
+    await user.type(input, 'Renamed');
+    await user.click(screen.getByRole('button', { name: 'Rename' }));
+    expect(apiMock.rename).toHaveBeenCalledWith('a1', 'Renamed');
+  });
+
+  it('filters the sidebar by project and defaults new-agent dialog to it', async () => {
+    const user = userEvent.setup();
+    const otherProject = makeProject({ id: 'project-2', name: 'other-repo' });
+    render(<App />);
+    await snapshot(
+      [makeAgent({ id: 'a1', name: 'InClai' }), makeAgent({ id: 'a2', name: 'InOther', projectId: 'project-2' })],
+      [],
+      [makeProject(), otherProject],
+    );
+    await user.selectOptions(screen.getByLabelText('Filter by project'), 'project-2');
+    const sidebar = screen.getByRole('navigation', { name: 'Agents' });
+    expect(within(sidebar).queryByText('InClai')).toBeNull();
+    expect(within(sidebar).getByText('InOther')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'New' }));
+    expect(within(screen.getByRole('dialog', { name: 'New agent' })).getByLabelText('Project')).toHaveValue('project-2');
+  });
+
+  it('creates a project inline from the new-agent dialog', async () => {
+    const user = userEvent.setup();
+    const project = makeProject({ id: 'project-9', name: 'brand-new', repoRoot: '/brand-new' });
+    apiMock.createProject.mockResolvedValue(project);
+    render(<App />);
+    await snapshot([makeAgent()]);
+    await user.click(screen.getByRole('button', { name: 'New' }));
+    await user.click(screen.getByRole('button', { name: '+ New project' }));
+    await user.type(screen.getByPlaceholderText('my-other-repo'), 'brand-new');
+    await user.type(screen.getByPlaceholderText('/Users/you/code/my-other-repo'), '/brand-new');
+    await user.click(screen.getByRole('button', { name: 'Add project' }));
+    expect(apiMock.createProject).toHaveBeenCalledWith({ name: 'brand-new', path: '/brand-new' });
+    await waitFor(() => expect(screen.getByLabelText('Project')).toHaveValue('project-9'));
   });
 
   it('closes the websocket connection on unmount', () => {

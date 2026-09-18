@@ -9,6 +9,7 @@ function makeAgent(id: string, name: string): AgentSummary {
   return {
     id,
     name,
+    projectId: 'project-1',
     status: 'idle',
     approvalMode: 'always_ask',
     worktree: null,

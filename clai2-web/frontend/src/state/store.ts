@@ -2,20 +2,26 @@
 
 import { create } from 'zustand';
 
-import type { AgentSummary, ApprovalView, ServerEvent, TranscriptItem } from '../api/types';
+import type { AgentSummary, ApprovalView, ProjectSummary, ServerEvent, TranscriptItem } from '../api/types';
 import { appendItem, transcriptKey } from './transcript';
 
 export interface Snapshot {
   agents: AgentSummary[];
   approvals: ApprovalView[];
+  projects: ProjectSummary[];
 }
 
 export type MainView = { kind: 'session'; sessionId: string } | { kind: 'changes' } | { kind: 'settings' };
+
+/** `'all'` means no project filter; the sidebar shows every agent. */
+export type ProjectFilter = string | 'all';
 
 export interface AppState {
   connected: boolean;
   agents: AgentSummary[];
   approvals: ApprovalView[];
+  projects: ProjectSummary[];
+  selectedProjectId: ProjectFilter;
   transcripts: Record<string, TranscriptItem[]>;
   selectedAgentId: string | null;
   view: MainView;
@@ -24,6 +30,7 @@ export interface AppState {
   applySnapshot: (snapshot: Snapshot) => void;
   applyEvent: (event: ServerEvent) => void;
   selectAgent: (agentId: string) => void;
+  selectProjectFilter: (projectId: ProjectFilter) => void;
   setView: (view: MainView) => void;
   setTranscript: (agentId: string, sessionId: string, items: TranscriptItem[]) => void;
 }
@@ -35,6 +42,16 @@ function upsertAgent(agents: AgentSummary[], agent: AgentSummary): AgentSummary[
   }
   const next = agents.slice();
   next[index] = agent;
+  return next;
+}
+
+function upsertProject(projects: ProjectSummary[], project: ProjectSummary): ProjectSummary[] {
+  const index = projects.findIndex((existing) => existing.id === project.id);
+  if (index < 0) {
+    return [...projects, project];
+  }
+  const next = projects.slice();
+  next[index] = project;
   return next;
 }
 
@@ -58,6 +75,13 @@ export function reduceEvent(state: AppState, event: ServerEvent): Partial<AppSta
       return {
         agents: state.agents.filter((agent) => agent.id !== event.agentId),
         selectedAgentId: state.selectedAgentId === event.agentId ? null : state.selectedAgentId,
+      };
+    case 'projectAdded':
+      return { projects: upsertProject(state.projects, event.project) };
+    case 'projectRemoved':
+      return {
+        projects: state.projects.filter((project) => project.id !== event.projectId),
+        selectedProjectId: state.selectedProjectId === event.projectId ? 'all' : state.selectedProjectId,
       };
     case 'userMessage':
       return {
@@ -115,6 +139,8 @@ export const useAppStore = create<AppState>((set) => ({
   connected: false,
   agents: [],
   approvals: [],
+  projects: [],
+  selectedProjectId: 'all',
   transcripts: {},
   selectedAgentId: null,
   view: { kind: 'session', sessionId: 'main' },
@@ -124,6 +150,7 @@ export const useAppStore = create<AppState>((set) => ({
     set((state) => ({
       agents: snapshot.agents,
       approvals: snapshot.approvals,
+      projects: snapshot.projects,
       selectedAgentId:
         state.selectedAgentId && snapshot.agents.some((agent) => agent.id === state.selectedAgentId)
           ? state.selectedAgentId
@@ -131,6 +158,7 @@ export const useAppStore = create<AppState>((set) => ({
     })),
   applyEvent: (event) => set((state) => reduceEvent(state, event)),
   selectAgent: (agentId) => set({ selectedAgentId: agentId, view: { kind: 'session', sessionId: 'main' } }),
+  selectProjectFilter: (projectId) => set({ selectedProjectId: projectId }),
   setView: (view) => set({ view }),
   setTranscript: (agentId, sessionId, items) =>
     set((state) => ({

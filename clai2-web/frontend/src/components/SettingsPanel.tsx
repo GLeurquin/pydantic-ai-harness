@@ -1,9 +1,12 @@
+import { useState } from 'react';
+
 import type { AgentSummary, ApprovalMode } from '../api/types';
 
 export interface SettingsPanelProps {
   agent: AgentSummary;
   onSetApprovalMode: (mode: ApprovalMode) => void;
   onArchive: (removeWorktree: boolean) => void;
+  onRename: (name: string) => void;
 }
 
 export const MODE_LABELS: Record<ApprovalMode, string> = {
@@ -12,10 +15,38 @@ export const MODE_LABELS: Record<ApprovalMode, string> = {
   auto: 'Auto-approve everything',
 };
 
-export function SettingsPanel({ agent, onSetApprovalMode, onArchive }: SettingsPanelProps) {
+/** Keyed by `agent.id` in `SettingsPanel` so the draft resets when the
+ * selected agent changes, without clobbering an in-progress edit on a
+ * remote rename of the same agent. */
+function NameField({ agent, onRename }: { agent: AgentSummary; onRename: (name: string) => void }) {
+  const [draft, setDraft] = useState(agent.name);
+  const archived = agent.status === 'archived';
+  const trimmed = draft.trim();
+  const dirty = trimmed !== '' && trimmed !== agent.name;
+  return (
+    <section>
+      <h3>Name</h3>
+      <div className="settings-row">
+        <input
+          value={draft}
+          onChange={(change) => setDraft(change.target.value)}
+          disabled={archived}
+          aria-label="Agent name"
+        />
+        <button className="primary" disabled={!dirty || archived} onClick={() => onRename(trimmed)}>
+          Rename
+        </button>
+      </div>
+    </section>
+  );
+}
+
+export function SettingsPanel({ agent, onSetApprovalMode, onArchive, onRename }: SettingsPanelProps) {
   const archived = agent.status === 'archived';
   return (
     <div className="settings">
+      <NameField key={agent.id} agent={agent} onRename={onRename} />
+
       <section>
         <h3>Approval mode</h3>
         <div className="settings-row">

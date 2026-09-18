@@ -24,6 +24,8 @@ export const RichTranscript: Story = () => (
       onPrompt={noop}
       onCancel={noop}
       onResolveApproval={noop}
+      onFork={noop}
+      onSideSession={noop}
     />
   </Frame>
 );
@@ -38,6 +40,8 @@ export const WorkingMidStream: Story = () => (
       onPrompt={noop}
       onCancel={noop}
       onResolveApproval={noop}
+      onFork={noop}
+      onSideSession={noop}
     />
   </Frame>
 );
@@ -52,6 +56,8 @@ export const PendingApproval: Story = () => (
       onPrompt={noop}
       onCancel={noop}
       onResolveApproval={noop}
+      onFork={noop}
+      onSideSession={noop}
     />
   </Frame>
 );

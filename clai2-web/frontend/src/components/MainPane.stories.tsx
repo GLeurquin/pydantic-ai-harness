@@ -34,6 +34,7 @@ function Frame({ agent, initialView }: { agent: AgentSummary; initialView: MainV
         loadDiff={loadDiff}
         onSetApprovalMode={noop}
         onArchive={noop}
+        onRename={noop}
       />
     </div>
   );

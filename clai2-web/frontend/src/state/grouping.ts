@@ -12,6 +12,11 @@ export interface AgentGroups {
 const ATTENTION: readonly AgentStatus[] = ['waiting_approval', 'error'];
 const WORKING: readonly AgentStatus[] = ['working', 'starting'];
 
+/** Keep only agents in `projectId`; `'all'` keeps every agent. */
+export function filterByProject(agents: readonly AgentSummary[], projectId: string | 'all'): AgentSummary[] {
+  return projectId === 'all' ? [...agents] : agents.filter((agent) => agent.projectId === projectId);
+}
+
 /** Attention first, then working, idle, archived; order within groups kept. */
 export function groupAgents(agents: readonly AgentSummary[], filter: string): AgentGroups {
   const groups: AgentGroups = { needsAttention: [], working: [], idle: [], archived: [] };

@@ -1,5 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
-import { writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 let counter = 0;
@@ -171,4 +173,49 @@ test('archiving hides the agent from the live groups', async ({ page }) => {
   const row = page.getByRole('button', { name: new RegExp(name) });
   await expect(page.getByText('Archived')).toBeVisible();
   await expect(row).toBeVisible();
+});
+
+test('renaming an agent updates the sidebar and composer', async ({ page }) => {
+  const name = await createAgent(page, { worktree: false });
+  await page.getByRole('tab', { name: 'Settings' }).click();
+  const nameField = page.getByLabel('Agent name');
+  await nameField.fill(`${name}-renamed`);
+  await page.getByRole('button', { name: 'Rename', exact: true }).click();
+  await expect(page.getByRole('button', { name: new RegExp(`${name}-renamed`) })).toBeVisible();
+  await page.getByRole('tab', { name: 'Conversation' }).click();
+  await expect(page.getByLabel('Prompt')).toHaveAttribute('placeholder', `Message ${name}-renamed`);
+});
+
+test('registering a project lets an agent run in another repository', async ({ page }, testInfo) => {
+  const otherRepo = mkdtempSync(join(tmpdir(), 'clai2-e2e-other-'));
+  const git = (...args: string[]) => execFileSync('git', ['-C', otherRepo, ...args]);
+  git('init', '-b', 'main');
+  git('config', 'user.email', 'e2e@example.com');
+  git('config', 'user.name', 'E2E');
+  writeFileSync(join(otherRepo, 'README.md'), '# other repo\n');
+  git('add', '.');
+  git('commit', '-m', 'init');
+  testInfo.annotations.push({ type: 'other-repo', description: otherRepo });
+
+  await page.getByRole('button', { name: 'New', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'New agent' });
+  await dialog.getByRole('button', { name: '+ New project' }).click();
+  await dialog.getByLabel('Project name').fill('other-project');
+  await dialog.getByLabel('Repository path (absolute)').fill(otherRepo);
+  await dialog.getByRole('button', { name: 'Add project', exact: true }).click();
+  await expect(dialog.getByLabel('Project', { exact: true })).toHaveValue(/.+/);
+  await expect(dialog.getByLabel('Project', { exact: true })).not.toHaveValue('');
+
+  const agentName = `other-repo-agent-${Date.now()}`;
+  await dialog.getByLabel('Name', { exact: true }).fill(agentName);
+  await dialog.getByRole('button', { name: 'Start agent' }).click();
+  await expect(dialog).not.toBeVisible();
+  const row = page.getByRole('button', { name: new RegExp(agentName) });
+  await expect(row).toBeVisible();
+  await expect(row).toContainText(/clai2\/agents\//);
+
+  // Filtering the sidebar to the new project keeps only its agents.
+  await page.getByLabel('Filter by project').selectOption({ label: 'other-project' });
+  await expect(page.getByRole('button', { name: new RegExp(agentName) })).toBeVisible();
+  await page.getByLabel('Filter by project').selectOption({ label: 'All projects' });
 });
