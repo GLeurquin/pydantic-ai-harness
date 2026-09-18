@@ -1,0 +1,628 @@
+# CLAI plugins
+
+A plugin is a Python file that teaches CLAI new tricks: react when something
+happens, add a `/command`, give the agent a tool, or change how a tool's output
+is shown on screen.
+
+Everything a plugin can do goes through one object, the `PluginHost`. There is no
+global registry to import and no magic file to name. You get a `host`, you tell it
+what you want, you're done.
+
+## On-demand authoring help
+
+The default CLAI agent exposes `read_clai_customization_guide`. When you ask for
+customization, its instructions tell it to read this guide first. Only the short
+hint and tool description are present initially; the bundled text is read on tool
+invocation. Reading it needs neither a checkout nor a network connection.
+
+The [bundled guide](src/pydantic_clai2/customization.md) includes examples for
+commands, hooks, settings, renderers, custom Termflow menus, and custom model
+launchers. It also names current limits: PluginHost does not register providers,
+replace the prompt editor, or alter the built-in model catalog. Those need a
+custom agent launcher or a source change, as explained in the guide.
+
+Custom agents can opt in with `customization_guide()` from
+`pydantic_clai2.customization`. The tool only returns documentation; it does not
+write files, activate plugins, or grant permission to execute generated code.
+Keep the bundled guide aligned with this contract when changing plugin APIs.
+
+## Tool retries
+
+CLAI defaults to three retries per tool call. `/set run.tool_retries N` changes
+that default for subsequent turns; `N` must be a non-negative integer, with `0`
+disabling retries. Explicit retry limits on a tool or toolset take precedence.
+Output-validation and HTTP transport retry budgets are unchanged.
+
+## Credentials
+
+CLAI's `/login openai-codex` and the vllm and openrouter connections store tokens
+in the configured keyring backend, not plugin settings. Large token bundles use
+multiple entries to fit Windows Credential Manager's size limit. When no keyring
+backend exists, credentials go to a per-account `0600` file under the user's CLAI config
+directory instead. None of this changes plugin APIs. See
+[Codex authentication](README.md#codex-authentication) for storage and security
+details.
+
+## Where plugins live
+
+Plugins are trusted Python code. Drop-in files execute automatically at startup;
+this directory is an executable startup configuration, not a sandbox. The default
+Coder runs as your OS user and can modify it, just as it can modify your shell
+startup files. Use a separate OS identity or sandbox for untrusted agent work.
+
+Two ways to install one:
+
+1. Drop a `.py` file (or a package folder) into
+   `$XDG_CONFIG_HOME/pydantic-clai2/plugins/` (default `~/.config/pydantic-clai2/plugins/`).
+   Its name is the file name without `.py`.
+2. Point CLAI at anything importable, from the shell or from inside CLAI:
+
+   ```sh
+   clai2 plugins add notify my_package.notify
+   /plugins add coder pydantic_ai_harness.coder:Coder '{"unrestricted_filesystem": true}'
+   ```
+
+No restart needed when you do it from inside CLAI. A plugin you add or enable is
+active for the next prompt; one you disable or remove is gone for the next
+prompt. From the shell, `clai2 plugins ...` only saves; it loads on the next
+start. Plugins in the folder and the ones you added by name are managed the
+same way. Explicit module declarations take precedence over a same-named drop-in
+file. Reloading a disabled plugin is rejected; enable it first. Drop-in entry
+modules are compiled from current source. Installed modules use `importlib.reload`,
+which can retain globals removed from source; initialize plugin state explicitly.
+
+Plugins are trusted code running as you. Only install what you trust.
+
+## The built-in plugins
+
+The coding tools are a plugin too, and so are asking you multiple-choice
+questions mid-run, reading the repository's instruction file, and keeping the
+conversation inside the context window. These five plugins are marked
+`(built-in)` and enabled unless you say otherwise:
+
+| Id | Backed by | Settings | Does |
+|---|---|---|---|
+| `coder` | `pydantic_ai_harness.coder:Coder` | `{"unrestricted_filesystem": true, "repo_context": false}` | the file and shell tools |
+| `ask_user` | `pydantic_clai2.ask_user_menu:activate` | `{}` | the `ask_user_question` tool: multiple-choice questions answered from the terminal |
+| `repo_context` | `pydantic_clai2.repo_context` | `{}` | reads `CLAUDE.md` or `AGENTS.md` from the launch directory into the instructions |
+| `persistence` | `pydantic_clai2.sessions` | `{}` | Harness step checkpoints for interrupted session recovery |
+| `compaction` | `pydantic_clai2.compaction` | `{}` | automatic summarisation with a truncation fallback, `/compact`, and the context warning |
+
+### Optional harness capabilities
+
+`/plugins` and `/plugins list` also include every other public harness capability,
+including each compaction strategy and guardrail. These entries start disabled.
+`Coder`, `AskUser`, and `RepoContext` use the integrated entries above instead of
+appearing twice. Deprecated aliases, toolsets, stores, and the ACP server adapter
+are not separate capabilities.
+
+Press Space to enable an entry. Its preview shows the import path and any load
+error. Listing disabled entries does not import their modules or require their
+optional packages. Some capabilities need an extra installed in CLAI's Python
+environment, credentials, or constructor settings before they can load. Supply
+JSON constructor settings by replacing the declaration under the same id:
+
+```text
+/plugins add sliding_window_compaction pydantic_ai_harness.compaction:SlidingWindowCompaction '{"max_messages": 40}'
+```
+
+For callbacks, stores, or other Python objects, use a plugin module that builds
+the capability and calls `host.add(...)`, registered under that id. The menu does
+not construct these objects or install dependencies. Avoid enabling overlapping
+tool providers together, such as `filesystem` or `shell` alongside `coder`.
+Removing an optional built-in restores its disabled declaration; enable and
+disable choices persist between launches. Project, drop-in, and saved declarations
+retain their usual precedence over built-ins.
+
+`/plugins disable coder` gives you a chat-only CLAI (a writing or research setup
+with `ExaSearch` instead, say); `/plugins enable coder` brings the tools back;
+`/plugins remove coder` cannot forget a built-in, so it resets it to its
+defaults. `/plugins disable repo_context` stops the instruction file from being
+read. To run a built-in with different options, add your own declaration under
+the same name and it takes the built-in's place:
+
+```text
+/plugins add coder pydantic_ai_harness.coder:Coder '{"unrestricted_filesystem": false, "repo_context": false}'
+/plugins add repo_context pydantic_clai2.repo_context '{"walk_up": true}'
+```
+
+Keep `"repo_context": false` on a replacement `coder`: `Coder` bundles its own
+`RepoContext`, and with the `repo_context` plugin also on, the instruction file
+would reach the model twice.
+
+`repo_context` wraps harness `RepoContext` with the launch directory as the
+workspace and its default filenames. Its settings:
+
+| Key | Default | Does |
+|---|---|---|
+| `walk_up` | `false` | also load instruction files from every directory between the workspace and your home directory |
+| `inventory_tool` | `false` | give the agent `inventory_agent_context`, which maps the repo's `.claude`, `.agents`, `.codex`, and `.grok` assets |
+| `nested_traversal` | `false` | when the agent reads or lists a directory, tell it about that directory's instruction file |
+| `nested_inject` | `"pointer"` | what nested traversal adds: `"pointer"` (one line naming the file) or `"contents"` |
+
+A repository can declare plugins too, in `.clai/settings.json`; they show as
+`(project)` and rank just above the built-ins. They start off, because a
+repository must not run code as you just because you opened it: CLAI names the
+ones waiting at startup, and `/plugins enable NAME` approves one. See
+[Project settings](README.md#project-settings).
+
+`compaction` directly registers harness `FallbackCompaction` with
+`max_fraction=threshold`; harness owns the automatic trigger. `/compact` runs the
+same chain unconditionally. Only `ModelAPIError`, `FallbackExceptionGroup`, and
+`UsageLimitExceeded` cause summarisation to fall back to truncation; other exceptions
+propagate. `/plugins disable compaction` turns automatic compaction,
+`/compact`, and its context warning off; a declaration under the same name
+changes its settings (`strategy`, `threshold`, `protected_tokens`,
+`context_window`, `summarization_model`; see the README):
+
+```text
+/plugins add compaction pydantic_clai2.compaction '{"threshold": 0.7, "context_window": 200000}'
+```
+
+### `ask_user`: questions answered from the terminal
+
+The second built-in, `ask_user` (`pydantic_clai2.ask_user_menu:activate`), gives
+the model the harness's `AskUser` capability: one tool, `ask_user_question`, for
+asking you one to ten multiple-choice questions when the task is ambiguous. Each
+question opens a full-screen menu on the alternate screen: the options are the
+rows, the right-hand panel shows the question and what the highlighted option
+means, the title says `question 2 of 3` when there are several. Enter picks;
+Space toggles on multi-select questions; Esc or Ctrl-C declines, which tells the
+model you declined and lets the run continue. Streaming output is flushed and the
+status row paused before the menu opens, and what you picked is printed to the
+transcript afterwards. `/plugins disable ask_user` takes the tool away.
+
+The capability does not know it is in a terminal. It hands an `AskUserRequest`
+to an `Answerer` (one async callable returning an `AskUserResponse`) and waits.
+To answer questions somewhere else, a web page or a chat bridge, say, replace
+the built-in with your own plugin under the same name that constructs `AskUser`
+with a different answerer:
+
+```python
+from pydantic_ai_harness.ask_user import AskUser, AskUserAnswer, AskUserRequest, AskUserResponse
+
+from pydantic_clai2.plugins import PluginHost
+
+
+async def ask_over_http(request: AskUserRequest) -> AskUserResponse:
+    # POST request.questions to your front end, keyed by request.id, and wait
+    # for the reply; return AskUserResponse(cancelled=True) if the user dismisses it.
+    picks = [AskUserAnswer(header=q.header, selected=(q.options[0].label,)) for q in request.questions]
+    return AskUserResponse(answers=tuple(picks))
+
+
+def activate(host: PluginHost[None]) -> None:
+    host.add(AskUser(answerer=ask_over_http))
+```
+
+```text
+/plugins add ask_user my_ask_user
+```
+
+The request and its response are also emitted as `AskUserRequestedEvent` and
+`AskUserAnsweredEvent`, so a plugin that only wants to watch (log the question,
+show a "waiting for you" state) registers `@host.on(EventClass)` or
+`@host.render(EventClass)` without being the answerer.
+
+## Managing plugins
+
+`/plugins` on its own opens a full-screen menu, the same kind Code Puppy uses
+for `/agent` and `/mcp`:
+
+```text
+ Plugins
+
+ [x] coder         pydantic_ai_harness.coder:Coder   | coder
+ [x] notify        ~/.config/pydantic-clai2/plugins  | source  ~/.config/.../notify.py
+ [ ] audit         my_package.audit                  | state   enabled, loaded
+                                                     | adds    2 commands, 1 hook, 0 tools
+                                                     | error   none
+
+ Up/Down move - Space enable/disable - R reload - D remove - Enter/Q close
+```
+
+The left side lists every plugin with `[x]` for on and `[ ]` for off. The right
+side shows details for the highlighted one: where it came from, whether it
+loaded, what it registered, and the last error if loading failed. Every key
+acts immediately; there is no save step, so Enter, Q, Esc, and Ctrl-C all just close.
+Closing returns to the prompt without printing the plugin list. Use `/plugins list`
+to print it.
+Adding a plugin needs a name and a module, so that stays a typed command.
+
+With arguments `/plugins` is a plain command, and `clai2 plugins ...` outside
+CLAI does the same thing:
+
+| Command | Does |
+|---|---|
+| `/plugins list` | show every plugin and whether it is on |
+| `/plugins add NAME module[:attr] [JSON]` | save it and load it now |
+| `/plugins remove NAME` | forget an installed declaration; persistently disable a drop-in (delete its file yourself to remove it); reset a built-in or project-declared plugin to its declaration |
+| `/plugins enable NAME` / `disable NAME` | load or unload, remembered across restarts |
+| `/plugins reload NAME` | re-import the file and load it again (for editing a plugin while CLAI runs) |
+| `/reload` | reload CLAI's own Python modules for development and rebuild the shell without restarting the process |
+
+`/reload` takes no arguments. It uses `importlib.reload`, preserves the conversation,
+agent, selected model, and active settings, and reactivates enabled plugins against
+the refreshed shell types. Each loaded plugin receives `session_end` before reload
+and `session_start` when loaded again. Plugin hosts and their registrations are
+recreated, but installed module globals not overwritten by the new source can
+survive. Initialize mutable state in `activate`. Disabled and unapproved project
+plugins stay off. Failed imports or shell rebuilds restore the
+previous module bindings and report the error, but cannot undo import-time side
+effects. Restart for changes to startup code, import dependencies, or agent
+construction. Third-party dependencies are not recursively reloaded.
+
+What "load" and "unload" mean for your plugin:
+
+- Load runs `activate(host)` and then fires `session_start` for that plugin, so a
+  plugin loaded mid-session sees the same first event as one loaded at start.
+- Unload fires `session_end` for that plugin, then drops everything it
+  registered: handlers, commands, tools, renderers. Nothing else is touched.
+- Both only happen between prompts, never while the agent is running.
+- Drop-in entry modules load from current source. Installed entry modules use
+  `importlib.reload`, which retains globals absent from the new source. Initialize
+  plugin state explicitly on activation.
+
+## The first plugin: give the agent web search
+
+Pydantic AI Harness ships capabilities that are plugins as they are. `ExaSearch`
+adds `web_search` and `get_page` tools backed by [Exa](https://exa.ai). Install
+the extra and set the key, then add the class by name:
+
+```sh
+pip install 'pydantic-ai-harness[exa]'
+export EXA_API_KEY=...
+```
+
+```text
+/plugins add exa pydantic_ai_harness.exa:ExaSearch '{"num_results": 8}'
+```
+
+The JSON is passed to the constructor, so any keyword `ExaSearch` accepts that
+JSON can express works here; an option that takes a Python object, like
+`client`, needs the file form below. Ask the agent something that needs the web on the next prompt and it has
+the tools. `/plugins disable exa` takes them away again.
+
+The same thing as a plugin file, `~/.config/pydantic-clai2/plugins/search.py`,
+which is the shape to start from when you want more than one capability, or a
+`/command`, or a hook alongside it:
+
+```python
+from pydantic_ai_harness.exa import ExaSearch
+
+from pydantic_clai2.plugins import PluginHost
+
+
+def activate(host: PluginHost) -> None:
+    host.add(ExaSearch(num_results=8, text_summary=True))
+```
+
+A plugin module exposes one function, `activate(host)`. CLAI calls it once when
+the plugin loads. Everything you register inside it stays until the plugin is
+unloaded or CLAI quits. Any Pydantic AI capability goes through `host.add`, so
+`YouSearch` from `pydantic_ai_harness.youdotcom`, core's `WebSearch`, or one you
+wrote yourself all work the same way.
+
+`module:attr` may also name a function that takes a host, if you prefer a name
+other than `activate`.
+
+## Reacting to a moment
+
+Plugins are not only for tools. This one rings the terminal bell when a turn
+finishes, so you can tab away during a long run:
+
+```python
+from pydantic_clai2.plugins import PluginHost, TurnEnd
+
+
+def activate(host: PluginHost) -> None:
+    @host.on('turn_end')
+    async def ping(event: TurnEnd) -> None:
+        host.console.bell()
+```
+
+## What you can register
+
+### React to a moment: `@host.on(name)`
+
+`name` is a string. Your editor autocompletes it, and the type checker knows what
+`event` your handler receives for each name. A typo is an error, not silence.
+`host.on` is always used as a decorator.
+
+Four names belong to CLAI itself. They fire outside the agent run, in the shell:
+
+| Name | When | Event fields | Can change things? |
+|---|---|---|---|
+| `session_start` | CLAI has started, before the first prompt | `agent`, `settings` | no |
+| `session_end` | CLAI is quitting | `reason`: `exit`, `eof`, or `error` | no |
+| `turn_start` | you pressed Enter on a prompt | `text` | yes: edit `event.text`, or `event.cancel()` |
+| `turn_end` | the turn finished, failed, or was interrupted | `text`, `outcome`, `result`, `error` | no |
+
+Ctrl-C during an agent run keeps the prompt and captured partial messages in
+conversation history for the next turn. Cancellation still reaches the running
+tools for cleanup; it does not undo completed side effects or retry the run.
+A prompt cancelled by `turn_start` never starts an agent run and is not retained.
+
+Every other name is a Pydantic AI lifecycle hook, spelled exactly as on core's
+`Hooks().on`, with the same handler signature. The ones people reach for:
+
+| Name | When |
+|---|---|
+| `before_run` / `after_run` | an agent run starts / finishes |
+| `before_model_request` | just before the model is called; you can edit the request |
+| `before_tool_execute` | a tool is about to run; raise to stop it |
+| `after_tool_execute` | a tool has returned |
+| `tool_execute_error` | a tool raised |
+| `event` | every stream event; prefer `@host.on(EventClass)` below |
+
+The full list and every signature are in the
+[hooks reference](https://pydantic.dev/docs/ai/core-concepts/hooks/). Core's
+`wrap_*` and `on_*_error` methods drop their prefix here (`run`, `tool_execute`,
+`run_error`), matching `Hooks().on`.
+
+### React to a typed event: `@host.on(EventClass)`
+
+Tools and capabilities emit typed events (a shell started, a file was written).
+Pass the class instead of a string:
+
+```python
+from pydantic_ai import RunContext
+from pydantic_ai_harness.filesystem import FileWrittenEvent
+from pydantic_clai2.plugins import PluginHost
+
+
+def activate(host: PluginHost[None]) -> None:
+    @host.on(FileWrittenEvent)
+    async def log_write(ctx: RunContext[None], event: FileWrittenEvent) -> None:
+        host.console.print(f'wrote {event.path}')
+```
+
+Some events let you say no. If the event has a `cancel()` method, calling it stops
+the action before it happens (for example `FileChangeRequestEvent`).
+
+### Add a `/command`: `host.commands.register(...)`
+
+```python
+from pydantic_clai2.commands import Command
+
+host.commands.register(
+    Command(
+        name='greet',
+        description='Say hello',
+        handler=lambda args: 'Hello ' + (' '.join(args) or 'there'),
+    )
+)
+```
+
+The handler gets the arguments as a list of strings and returns the text to show.
+It may be `async`. Add `complete=` to offer Tab suggestions. Names must be unique;
+clashing with a built-in is an error at startup, not a silent override.
+
+### Give the agent tools or instructions: `host.add(capability)`
+
+```python
+from pydantic_ai.capabilities import Capability
+
+tools = Capability(instructions='Prefer British spelling.')
+
+
+@tools.tool_plain
+def word_count(text: str) -> int:
+    return len(text.split())
+
+
+host.add(tools)
+```
+
+`host.add` also accepts a function that takes a `RunContext` and returns a
+capability (or `None`), for tools that should only exist in some runs.
+
+### Draw an event yourself: `@host.render(EventClass)`
+
+Built-in tool rendering shows one summary line per call by default, clipped to
+the terminal width and followed by a blank line. Tool names are pink; arguments
+and bullet markers are muted grey. Shell output and completion details, grep results, and file
+diffs are hidden from the terminal, not from the model. Set
+`/set display.tool_output true` to restore detailed output; `display.shell_lines`
+and `display.grep_lines` then control preview lengths (20 lines each by default).
+This setting does not suppress plugin renderers or interactive questions.
+
+CLAI shows unknown tool calls as `● tool_name`, with the name in pink. To show something
+better, return a Rich renderable (a `str` is fine). Return `None` to say "not mine,
+use the default".
+
+```python
+from pydantic_ai_harness.filesystem import FileWrittenEvent
+from pydantic_clai2.plugins import PluginHost
+
+
+def activate(host: PluginHost[None]) -> None:
+    @host.render(FileWrittenEvent)
+    def show_write(event: FileWrittenEvent) -> str:
+        return f'wrote {event.path}'
+```
+
+CLAI flushes any streaming text before it prints what you return, so your output
+never lands in the middle of a paragraph.
+
+### Take the whole screen mid-run: `async with host.full_screen()`
+
+A full-screen widget opened from inside a tool call (the built-in `ask_user` menu
+is one) has to wait for streamed text to finish and the busy prompt frame and
+status row to get out of the way. Otherwise it draws over unfinished output and
+the footer keeps repainting into it. `host.full_screen()` clears the whole prompt
+area and restores it when the block exits. The idle editor stays compact above
+the footer, growing for input or completions rather than filling the terminal.
+The busy frame is not an editor; users enter their next prompt after the turn
+finishes or they cancel it:
+
+```python
+from pydantic_clai2.plugins import PluginHost
+
+
+async def choose(host: PluginHost[None]) -> str:
+    async with host.full_screen():
+        return await show_my_menu()
+```
+
+Between turns nothing is streaming, so it is a no-op there. It only settles the
+screen; drawing, and restoring the terminal afterwards, is the widget's job. One
+widget owns the screen at a time: a second `full_screen()` (from a parallel tool
+call, say) waits for the first block to exit. Do not nest it inside itself.
+
+### Read your settings: `host.settings(Model)`
+
+The JSON passed to `plugins add` is validated against a model you define:
+
+```python
+from pydantic import BaseModel
+
+
+class NotifySettings(BaseModel):
+    sound: bool = True
+
+
+settings = host.settings(NotifySettings)
+```
+
+Bad or missing values fail at startup with a message naming your plugin.
+
+### Reach the conversation and the status row: `host.conversation`, `host.status`
+
+`host.conversation` is the retained history: `messages` is a snapshot,
+`await commit_messages(...)` persists and swaps it between turns, and `resolved_model()` is the
+model the next prompt will use. `host.status` is the footer's state; set
+`context_alert` to paint the context figure in the warning colour. The built-in
+`compaction` plugin uses both. A host built outside the shell gets an in-memory
+`Transcript` and a detached `Status`, so tests need no special case.
+
+## Rules that keep plugins predictable
+
+- Handlers are `async`. There is no sync variant of anything.
+- CLAI host observers return `None`. Core hooks keep their exact core return
+  contracts: for example `before_model_request` must return its `ModelRequestContext`.
+  For cancelable host events, edit the event or call `event.cancel()`.
+- Raising in `turn_start` prevents the turn. Raising in core `before_tool_execute`
+  fails the agent run, not only that tool. Use core's documented tool-denial
+  mechanisms when the model should recover instead of ending the run, such as
+  `pydantic_ai.exceptions.SkipToolExecution` for skipping an individual tool.
+- Startup plugins load in alphabetical ID order. CLAI host handlers run in
+  activation order, while `/plugins list` remains alphabetical. Core hook ordering
+  follows core composition, including reverse order for `after_*` hooks. The first renderer that returns something wins. A
+  plugin loaded later goes to the end of the line.
+- Anything you print, print through `host.console`, so it stays in step with
+  streaming output.
+
+## Testing a plugin
+
+`PluginHost` is an ordinary object. Build one with a `Console` writing to a
+`StringIO`, call your `activate`, then call the handlers you registered with
+hand-made events. No terminal, no model, no network.
+
+```python
+from io import StringIO
+
+from rich.console import Console
+
+from pydantic_clai2.plugins import PluginHost, TurnEnd
+
+host = PluginHost(name='notify', console=Console(file=StringIO()), settings={})
+activate(host)
+for handler in host.handlers:
+    await handler(TurnEnd(text='hi', outcome='completed'))
+```
+
+A plugin that reads the history gets a `Transcript` by default; pass
+`conversation=Transcript(messages=[...], model=TestModel())` to seed it.
+
+## vllm connection
+
+Open `/add_model`, choose `vllm`, then enter a trusted HTTP(S) server root or `/v1` URL, and optionally a token. CLAI queries `/v1/models` and opens a searchable model picker. HTTP sends tokens unencrypted; use HTTPS outside trusted local networks.
+
+## openrouter connection
+
+Open `/add_model`, choose `openrouter`, then choose **Sign in with browser** or **Enter API key**. Browser sign-in opens OpenRouter's [PKCE authorization flow](https://openrouter.ai/docs/use-cases/oauth-pkce) and receives an authorization code on a temporary loopback listener. CLAI exchanges the code for a user-controlled API key over HTTPS. If the browser cannot reach CLAI (for example over SSH), paste the final callback URL or authorization code into the terminal. If no browser opens, open the printed authorization URL manually. Login times out after five minutes; Ctrl-C cancels it. You can revoke the generated key on OpenRouter.
+
+Manual entry still accepts a key from https://openrouter.ai/keys in a masked prompt. After either method, select a model from the live catalog. CLAI validates the key with `/api/v1/key` before fetching `/api/v1/models`. Cancelling before model selection leaves the saved connection unchanged.
+
+The connection is saved in the configured Python keyring backend after selection; backend security depends on your keyring configuration. Tokens are not stored in SQLite or command history. The selected model persists across restarts. Select the provider again to browse its live models or reconfigure the saved connection. Discovery is explicit and has a 20-second network timeout; redirects are not followed. Agent inference uses Pydantic AI core.
+
+
+## Saved API keys
+
+Open `/keys` to browse and manage saved API keys in a full-screen menu.
+Use A to add, Enter to replace a value, R to rename, and D to delete with
+confirmation. Values are masked and are not shown in previews. Changes save
+immediately; Esc or Ctrl-C closes the menu. Errors appear inside the menu.
+
+The compatibility command `/set api_key` prompts for a name and masked API key. Names are trimmed
+and uppercased automatically, so `my_vllm_key` becomes `MY_VLLM_KEY`. Use letters,
+numbers, and underscores, starting with a letter or underscore. Saving an existing
+name asks before replacing it. Ctrl-C or Ctrl-D cancels without saving. Do not put
+the secret on the command line.
+
+When saved keys exist, vLLM's token prompt and OpenRouter's **Enter API key** flow
+show a searchable list of names. Choose one, enter a different key privately, or
+choose **No API key** for vLLM. Esc closes the picker without connecting. Browser
+login flows are unchanged. Select keys only for endpoints you trust.
+
+Named keys use the existing credential backend, separate from provider logins and
+SQLite settings. If no OS keyring exists, CLAI warns that it saved them in the
+per-user `0600` plaintext file `credentials-api-keys.json` in its config directory.
+Key values never appear in the picker or confirmation. Names are labels, not
+exported environment variables. Selecting a saved key stores a reference, not a copy. Discovery and each new
+turn resolve its current value. Replacing a key updates connections that reference
+it. Deleting it makes those connections fail until you restore the same name or
+reconfigure them. Keys referenced by saved connections cannot be renamed. A cross-process lock
+serializes key changes and connection saves so concurrent CLAI sessions do not
+overwrite each other's key edits. The lock file contains no credentials.
+
+Existing connections with inline credentials, manually entered connection keys,
+and browser logins remain unchanged. To switch an existing connection to a
+reference, reconfigure it through `/add_model` and select a saved key. Changes do not
+alter an already running request or revoke credentials at the provider.
+
+### Adding and selecting models
+
+`/add_model` opens the provider catalog, connection setup, and per-model settings.
+`/add_model PROVIDER:NAME` adds a model directly. Adding a model also selects it
+for the next prompt. `/model` is a flat picker of added models, and `/model NAME`
+selects one without the menu. Its Tab suggestions contain only added models.
+The list persists across sessions. The currently configured model is retained
+when upgrading; `/set model NAME` also saves the model in this list.
+
+### Persisting conversation changes
+
+Use `await host.conversation.commit_messages(messages)` for between-turn history
+changes. It commits to storage before replacing the live history, and rejects
+changes while an operation is running. `replace_messages(...)` remains an
+in-memory compatibility API; it does not save by itself. `Transcript` implements
+`commit_messages` without disk IO for headless plugin tests.
+
+`host.conversation.step_store` is the configured Harness `StepStore`, or `None`
+for an in-memory host. The built-in `persistence` plugin binds
+`StepPersistence(capture_frontier=True)` to it. Do not register a second recorder
+for the same store and run. Removing the plugin removes step capture on subsequent
+turns; conversation-head saving is owned by `Session` and continues independently.
+
+Harness exports `SnapshotSaved` from `pydantic_ai_harness.step_persistence`.
+Subscribe through `@host.on(SnapshotSaved)` to observe committed checkpoints.
+It carries `persistence_run_id`, `conversation_id`, `step_index`, and `state`.
+This is a notification, not the durable source of truth or permission to replay a
+tool. A durable replay may notify again. An observer failure cannot roll back the
+already committed snapshot. No new CLAI lifecycle hooks are introduced.
+
+Session naming is a shell-owned background service over Harness's `SessionNamer`.
+It never writes into the agent transcript or loads plugin code. `/resume` does
+not fire plugin load/unload hooks or restore previous plugin approvals. Cross-project
+resume keeps the current working directory and the saved conversation's original
+project grouping. The
+project/session browser is a dedicated Termflow widget: unlike a single-pane
+`MenuBuilder`, it has two independently navigable panes and two-line cards. Its
+pure frame and scripted-key tests follow the same headless menu conventions.
+The selected project stays highlighted while browsing sessions. The focused pane
+is labeled **SELECT PROJECT** or **SELECT SESSION**, with matching key hints.
+
+The resume transcript preview displays at most 24,000 characters of the newest-first
+text, with a truncation notice for longer histories. Search is Unicode
+case-insensitive and includes text instructions in multimodal prompts.
