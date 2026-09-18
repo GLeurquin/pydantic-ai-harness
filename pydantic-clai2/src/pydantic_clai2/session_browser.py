@@ -31,10 +31,10 @@ def plain(text: str, *, multiline: bool = False) -> str:
     return ''.join(c for c in text if c.isprintable() or c == '\n')
 
 
-def date_label(moment: datetime) -> str:
+def date_label(moment: datetime, *, now: datetime | None = None) -> str:
     """Local calendar buckets, with a year on older sessions."""
     day = moment.astimezone().date()
-    today = datetime.now().astimezone().date()
+    today = (now or datetime.now()).astimezone().date()
     if day == today:
         return 'TODAY'
     if day == today - timedelta(days=1):
@@ -323,18 +323,26 @@ class SessionBrowser:
     def loop(self) -> str:
         """Scriptable loop; poll metadata changes even when no keys arrive."""
         refreshed = time.monotonic()
+        dirty = True
+        previous_size: tuple[int, int] | None = None
         while True:
-            width, height = self.size()
-            frame = self.frame(width=width, height=height)
-            self.output.write('\x1b[H' + '\r\n'.join(f'{line}\x1b[K' for line in frame) + '\x1b[J')
-            self.output.flush()
+            size = self.size()
+            if dirty or size != previous_size:
+                frame = self.frame(width=size[0], height=size[1])
+                self.output.write('\x1b[H' + '\r\n'.join(f'{line}\x1b[K' for line in frame) + '\x1b[J')
+                self.output.flush()
+                previous_size = size
+                dirty = False
             try:
                 key = self.key_source()
+                dirty = bool(key)
                 result = self.handle_key(key)
                 if result is not None:
                     return result
                 if time.monotonic() - refreshed >= 0.5:
                     self.reload()
+                    dirty = True
                     refreshed = time.monotonic()
             except Exception as exc:  # noqa: BLE001 -- storage errors stay inside the alternate screen.
                 self.notice = plain(str(exc))
+                dirty = True

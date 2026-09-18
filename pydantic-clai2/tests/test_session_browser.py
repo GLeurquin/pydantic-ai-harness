@@ -134,10 +134,10 @@ def test_empty_search_and_scripted_loop() -> None:
 
 
 def test_date_buckets() -> None:
-    now = datetime.now(UTC)
-    assert date_label(now) == 'TODAY'
-    assert date_label(now - timedelta(days=1)) == 'YESTERDAY'
-    assert date_label(now - timedelta(days=365)).startswith(str((now - timedelta(days=365)).year))
+    now = datetime(2026, 9, 18, 12, tzinfo=UTC)
+    assert date_label(now, now=now) == 'TODAY'
+    assert date_label(now - timedelta(days=1), now=now) == 'YESTERDAY'
+    assert date_label(now - timedelta(days=365), now=now).startswith(str((now - timedelta(days=365)).year))
 
 
 def test_idle_refresh_and_storage_errors_stay_in_menu(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -237,3 +237,13 @@ def test_multiline_metadata_cannot_inject_terminal_rows() -> None:
     assert '\n' not in widget.footer()
     assert plain('first\nsecond', multiline=True) == 'first\nsecond'
     assert plain('first\nsecond') == 'first second'
+
+
+def test_idle_loop_redraws_only_for_changes(monkeypatch: pytest.MonkeyPatch) -> None:
+    widget, _ = browser(keys=['', '', '', 'ctrl-c'])
+    sizes = iter([(110, 24), (110, 24), (100, 24), (100, 24)])
+    widget.size = lambda: next(sizes)
+    monkeypatch.setattr(module.time, 'monotonic', lambda: 0.0)
+    assert widget.loop() == ''
+    assert isinstance(widget.output, StringIO)
+    assert widget.output.getvalue().count('CLAI > Resume session') == 2
