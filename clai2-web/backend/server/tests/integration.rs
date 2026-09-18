@@ -19,6 +19,8 @@ struct World {
     ws_url: String,
     http: reqwest::Client,
     repo: PathBuf,
+    /// The project bootstrapped from `repo` on manager startup.
+    project_id: String,
     #[allow(dead_code)]
     manager: Arc<AgentManager>,
     _dir: tempfile::TempDir,
@@ -61,6 +63,7 @@ async fn world_with(max_agents: usize, agent_command: Vec<String>) -> World {
         max_agents,
     };
     let manager = AgentManager::new(config).await.unwrap();
+    let project_id = manager.list_projects().await[0].id.clone();
     let router = clai2_web_server::build_router(Arc::clone(&manager));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -72,6 +75,7 @@ async fn world_with(max_agents: usize, agent_command: Vec<String>) -> World {
         ws_url: format!("ws://{addr}/api/ws"),
         http: reqwest::Client::new(),
         repo,
+        project_id,
         manager,
         _dir: dir,
     }
@@ -102,6 +106,22 @@ impl World {
         (status, value)
     }
 
+    async fn create_agent(&self, name: &str, use_worktree: bool, mode: &str) -> Value {
+        let (status, agent) = self
+            .post(
+                "/api/agents",
+                json!({
+                    "name": name,
+                    "projectId": self.project_id,
+                    "useWorktree": use_worktree,
+                    "approvalMode": mode,
+                }),
+            )
+            .await;
+        assert_eq!(status, 200, "create agent failed: {agent}");
+        agent
+    }
+
     async fn patch(&self, path: &str, body: Value) -> (reqwest::StatusCode, Value) {
         let response = self
             .http
@@ -122,17 +142,6 @@ impl World {
             .await
             .unwrap()
             .status()
-    }
-
-    async fn create_agent(&self, name: &str, use_worktree: bool, mode: &str) -> Value {
-        let (status, agent) = self
-            .post(
-                "/api/agents",
-                json!({"name": name, "useWorktree": use_worktree, "approvalMode": mode}),
-            )
-            .await;
-        assert_eq!(status, 200, "create agent failed: {agent}");
-        agent
     }
 
     async fn prompt(&self, agent_id: &str, session_id: &str, text: &str) {
@@ -238,7 +247,10 @@ async fn create_agent_without_worktree_runs_in_repo() {
 async fn create_agent_rejects_blank_name() {
     let world = world().await;
     let (status, body) = world
-        .post("/api/agents", json!({"name": "  ", "approvalMode": "auto"}))
+        .post(
+            "/api/agents",
+            json!({"name": "  ", "projectId": world.project_id, "approvalMode": "auto"}),
+        )
         .await;
     assert_eq!(status, 400);
     assert!(body["error"].as_str().unwrap().contains("name"));
@@ -624,7 +636,10 @@ async fn agent_cap_is_enforced() {
     world.create_agent("one", false, "auto").await;
     world.create_agent("two", false, "auto").await;
     let (status, body) = world
-        .post("/api/agents", json!({"name": "three", "approvalMode": "auto"}))
+        .post(
+            "/api/agents",
+            json!({"name": "three", "projectId": world.project_id, "approvalMode": "auto"}),
+        )
         .await;
     assert_eq!(status, 409);
     assert!(body["error"].as_str().unwrap().contains("limit"));
@@ -639,7 +654,10 @@ async fn agent_cap_is_enforced() {
         .await
         .unwrap();
     let (status, _) = world
-        .post("/api/agents", json!({"name": "three", "approvalMode": "auto"}))
+        .post(
+            "/api/agents",
+            json!({"name": "three", "projectId": world.project_id, "approvalMode": "auto"}),
+        )
         .await;
     assert_eq!(status, 200);
 }
@@ -717,7 +735,7 @@ async fn broken_agent_command_reports_error_status() {
     let (status, agent) = world
         .post(
             "/api/agents",
-            json!({"name": "doomed", "useWorktree": false, "approvalMode": "auto"}),
+            json!({"name": "doomed", "projectId": world.project_id, "useWorktree": false, "approvalMode": "auto"}),
         )
         .await;
     assert_eq!(status, 200);
@@ -761,9 +779,11 @@ async fn roster_survives_backend_restart_with_history_replay() {
 
     let agent_id = {
         let manager = AgentManager::new(config.clone()).await.unwrap();
+        let project_id = manager.list_projects().await[0].id.clone();
         let agent = manager
             .create_agent(clai2_web_server::manager::CreateAgent {
                 name: "survivor".to_owned(),
+                project_id,
                 use_worktree: false,
                 base_branch: None,
                 approval_mode: clai2_web_server::model::ApprovalMode::Auto,
@@ -844,7 +864,7 @@ async fn explicit_bad_base_branch_reports_git_error() {
     let (status, body) = world
         .post(
             "/api/agents",
-            json!({"name": "branchy", "useWorktree": true, "baseBranch": "no-such-branch", "approvalMode": "auto"}),
+            json!({"name": "branchy", "projectId": world.project_id, "useWorktree": true, "baseBranch": "no-such-branch", "approvalMode": "auto"}),
         )
         .await;
     // A git failure maps to 500 through the error responder.
@@ -858,7 +878,7 @@ async fn create_with_explicit_base_branch_uses_it() {
     let (status, agent) = world
         .post(
             "/api/agents",
-            json!({"name": "based", "useWorktree": true, "baseBranch": "main", "approvalMode": "auto"}),
+            json!({"name": "based", "projectId": world.project_id, "useWorktree": true, "baseBranch": "main", "approvalMode": "auto"}),
         )
         .await;
     assert_eq!(status, 200, "body: {agent}");
@@ -972,7 +992,7 @@ async fn archive_and_cancel_tolerate_a_process_that_never_started() {
     let (status, agent) = world
         .post(
             "/api/agents",
-            json!({"name": "stillborn", "useWorktree": false, "approvalMode": "auto"}),
+            json!({"name": "stillborn", "projectId": world.project_id, "useWorktree": false, "approvalMode": "auto"}),
         )
         .await;
     assert_eq!(status, 200);
@@ -1166,6 +1186,233 @@ async fn fifty_agents_can_run_concurrently() {
 }
 
 #[tokio::test]
+async fn default_project_is_bootstrapped_from_repo() {
+    let world = world().await;
+    let (status, projects) = world.get("/api/projects").await;
+    assert_eq!(status, 200);
+    let projects = projects.as_array().unwrap();
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0]["id"], world.project_id);
+    assert_eq!(projects[0]["repoRoot"], world.repo.to_str().unwrap());
+
+    let agent = world.create_agent("solo", false, "auto").await;
+    assert_eq!(agent["projectId"], world.project_id);
+}
+
+#[tokio::test]
+async fn registering_a_project_lets_agents_run_in_another_repo() {
+    let world = world().await;
+    let other_dir = tempfile::tempdir().unwrap();
+    let other_repo = other_dir.path().join("other-repo");
+    init_repo(&other_repo).await;
+
+    let (status, project) = world
+        .post(
+            "/api/projects",
+            json!({"name": "other project", "path": other_repo.to_str().unwrap()}),
+        )
+        .await;
+    assert_eq!(status, 200, "body: {project}");
+    assert_eq!(project["name"], "other project");
+    let other_project_id = project["id"].as_str().unwrap().to_owned();
+
+    let (_, projects) = world.get("/api/projects").await;
+    assert_eq!(projects.as_array().unwrap().len(), 2);
+
+    let (status, agent) = world
+        .post(
+            "/api/agents",
+            json!({"name": "elsewhere", "projectId": other_project_id, "useWorktree": true, "approvalMode": "auto"}),
+        )
+        .await;
+    assert_eq!(status, 200, "body: {agent}");
+    assert_eq!(agent["projectId"], other_project_id);
+    assert_eq!(agent["worktree"]["repoRoot"], other_repo.to_str().unwrap());
+    let worktree_path = agent["worktree"]["path"].as_str().unwrap();
+    assert!(Path::new(worktree_path).join("README.md").exists());
+}
+
+#[tokio::test]
+async fn create_project_rejects_nonexistent_path() {
+    let world = world().await;
+    let (status, body) = world
+        .post(
+            "/api/projects",
+            json!({"name": "ghost", "path": "/no/such/path/at/all"}),
+        )
+        .await;
+    assert_eq!(status, 400);
+    assert!(body["error"].as_str().unwrap().contains("does not exist"));
+}
+
+#[tokio::test]
+async fn create_project_rejects_relative_path() {
+    let world = world().await;
+    let (status, body) = world
+        .post("/api/projects", json!({"name": "rel", "path": "relative/path"}))
+        .await;
+    assert_eq!(status, 400);
+    assert!(body["error"].as_str().unwrap().contains("absolute"));
+}
+
+#[tokio::test]
+async fn create_project_rejects_blank_name() {
+    let world = world().await;
+    let (status, body) = world
+        .post(
+            "/api/projects",
+            json!({"name": "  ", "path": world.repo.to_str().unwrap()}),
+        )
+        .await;
+    assert_eq!(status, 400);
+    assert!(body["error"].as_str().unwrap().contains("name"));
+}
+
+#[tokio::test]
+async fn create_agent_with_unknown_project_is_404() {
+    let world = world().await;
+    let (status, _) = world
+        .post(
+            "/api/agents",
+            json!({"name": "orphan", "projectId": "ghost-project", "approvalMode": "auto"}),
+        )
+        .await;
+    assert_eq!(status, 404);
+}
+
+#[tokio::test]
+async fn deleting_a_project_in_use_is_conflict() {
+    let world = world().await;
+    world.create_agent("keeps project alive", false, "auto").await;
+    let (status, body) = {
+        let response = world
+            .http
+            .delete(format!("{}/api/projects/{}", world.base_url, world.project_id))
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        (status, response.json::<Value>().await.unwrap())
+    };
+    assert_eq!(status, 409, "body: {body}");
+}
+
+#[tokio::test]
+async fn deleting_an_unused_project_succeeds() {
+    let world = world().await;
+    let other_dir = tempfile::tempdir().unwrap();
+    let other_repo = other_dir.path().join("other-repo");
+    init_repo(&other_repo).await;
+    let (_, project) = world
+        .post(
+            "/api/projects",
+            json!({"name": "temp", "path": other_repo.to_str().unwrap()}),
+        )
+        .await;
+    let project_id = project["id"].as_str().unwrap();
+
+    let response = world
+        .http
+        .delete(format!("{}/api/projects/{project_id}", world.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let (_, projects) = world.get("/api/projects").await;
+    assert_eq!(projects.as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn deleting_an_unknown_project_is_404() {
+    let world = world().await;
+    let response = world
+        .http
+        .delete(format!("{}/api/projects/ghost", world.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 404);
+}
+
+#[tokio::test]
+async fn fork_stays_in_the_parents_project() {
+    let world = world().await;
+    let agent = world.create_agent("parent", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let (status, fork) = world
+        .post(&format!("/api/agents/{agent_id}/fork"), json!({"name": "child"}))
+        .await;
+    assert_eq!(status, 200, "body: {fork}");
+    assert_eq!(fork["projectId"], world.project_id);
+}
+
+#[tokio::test]
+async fn ws_snapshot_includes_projects() {
+    let world = world().await;
+    let (stream, _) = tokio_tungstenite::connect_async(&world.ws_url).await.unwrap();
+    let mut ws = Ws { stream };
+    let snapshot = ws.next_event().await;
+    let projects = snapshot["projects"].as_array().unwrap();
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0]["id"], world.project_id);
+    ws.close().await;
+}
+
+#[tokio::test]
+async fn renaming_an_agent_updates_its_summary() {
+    let world = world().await;
+    let agent = world.create_agent("old name", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let mut ws = world.ws().await;
+
+    let response = world
+        .http
+        .patch(format!("{}/api/agents/{agent_id}/name", world.base_url))
+        .json(&json!({"name": "new name"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let renamed: Value = response.json().await.unwrap();
+    assert_eq!(renamed["name"], "new name");
+
+    let event = ws.collect_until(|event| event["type"] == "agentUpdated").await;
+    assert_eq!(event.last().unwrap()["agent"]["name"], "new name");
+    ws.close().await;
+
+    let (_, fetched) = world.get(&format!("/api/agents/{agent_id}")).await;
+    assert_eq!(fetched["name"], "new name");
+}
+
+#[tokio::test]
+async fn renaming_rejects_blank_name() {
+    let world = world().await;
+    let agent = world.create_agent("keeper", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let response = world
+        .http
+        .patch(format!("{}/api/agents/{agent_id}/name", world.base_url))
+        .json(&json!({"name": "   "}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 400);
+}
+
+#[tokio::test]
+async fn renaming_unknown_agent_is_404() {
+    let world = world().await;
+    let response = world
+        .http
+        .patch(format!("{}/api/agents/ghost/name", world.base_url))
+        .json(&json!({"name": "x"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 404);
+}
+
+#[tokio::test]
 async fn model_profiles_crud_and_secret_redaction() {
     let world = world().await;
     assert!(world.get("/api/models").await.1.as_array().unwrap().is_empty());
@@ -1256,7 +1503,7 @@ async fn agent_runs_with_its_model_profile_environment() {
     let (status, agent) = world
         .post(
             "/api/agents",
-            json!({"name": "modelled", "useWorktree": false, "approvalMode": "auto", "modelProfileId": model_id}),
+            json!({"name": "modelled", "useWorktree": false, "projectId": world.project_id, "approvalMode": "auto", "modelProfileId": model_id}),
         )
         .await;
     assert_eq!(status, 200, "create agent failed: {agent}");
@@ -1292,7 +1539,7 @@ async fn creating_agent_with_unknown_model_is_404() {
     let (status, _) = world
         .post(
             "/api/agents",
-            json!({"name": "bad", "useWorktree": false, "approvalMode": "auto", "modelProfileId": "ghost"}),
+            json!({"name": "bad", "useWorktree": false, "projectId": world.project_id, "approvalMode": "auto", "modelProfileId": "ghost"}),
         )
         .await;
     assert_eq!(status, 404);
@@ -1319,7 +1566,7 @@ async fn switching_model_restarts_with_new_environment() {
     let (_, agent) = world
         .post(
             "/api/agents",
-            json!({"name": "switcher", "useWorktree": false, "approvalMode": "auto", "modelProfileId": first}),
+            json!({"name": "switcher", "useWorktree": false, "projectId": world.project_id, "approvalMode": "auto", "modelProfileId": first}),
         )
         .await;
     let agent_id = agent["id"].as_str().unwrap().to_owned();
@@ -1373,7 +1620,7 @@ async fn model_in_use_cannot_be_deleted_until_agent_archived() {
     let (_, agent) = world
         .post(
             "/api/agents",
-            json!({"name": "user", "useWorktree": false, "approvalMode": "auto", "modelProfileId": model_id}),
+            json!({"name": "user", "useWorktree": false, "projectId": world.project_id, "approvalMode": "auto", "modelProfileId": model_id}),
         )
         .await;
     let agent_id = agent["id"].as_str().unwrap().to_owned();
@@ -1408,7 +1655,7 @@ async fn updating_a_model_refreshes_the_label_on_its_agents() {
     let (_, agent) = world
         .post(
             "/api/agents",
-            json!({"name": "labelled", "useWorktree": false, "approvalMode": "auto", "modelProfileId": model_id}),
+            json!({"name": "labelled", "useWorktree": false, "projectId": world.project_id, "approvalMode": "auto", "modelProfileId": model_id}),
         )
         .await;
     let agent_id = agent["id"].as_str().unwrap().to_owned();
@@ -1443,7 +1690,7 @@ async fn agent_with_vertex_credentials_gets_a_credentials_file() {
     let (status, agent) = world
         .post(
             "/api/agents",
-            json!({"name": "vertexed", "useWorktree": false, "approvalMode": "auto", "modelProfileId": model_id}),
+            json!({"name": "vertexed", "useWorktree": false, "projectId": world.project_id, "approvalMode": "auto", "modelProfileId": model_id}),
         )
         .await;
     assert_eq!(status, 200, "create agent failed: {agent}");
@@ -1564,7 +1811,7 @@ async fn clearing_then_reswitching_model_without_prompting() {
     let (_, agent) = world
         .post(
             "/api/agents",
-            json!({"name": "clearer", "useWorktree": false, "approvalMode": "auto", "modelProfileId": model_id}),
+            json!({"name": "clearer", "useWorktree": false, "projectId": world.project_id, "approvalMode": "auto", "modelProfileId": model_id}),
         )
         .await;
     let agent_id = agent["id"].as_str().unwrap().to_owned();
@@ -1621,9 +1868,11 @@ async fn agent_referencing_a_deleted_model_starts_with_an_empty_overlay() {
             })
             .await
             .unwrap();
+        let project_id = manager.list_projects().await[0].id.clone();
         let agent = manager
             .create_agent(clai2_web_server::manager::CreateAgent {
                 name: "orphan".to_owned(),
+                project_id,
                 use_worktree: false,
                 base_branch: None,
                 approval_mode: clai2_web_server::model::ApprovalMode::Auto,

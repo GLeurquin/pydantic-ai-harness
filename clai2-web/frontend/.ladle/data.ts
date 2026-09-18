@@ -4,6 +4,7 @@ import type {
   AgentSummary,
   ApprovalView,
   PermissionOption,
+  ProjectSummary,
   RedactedProfile,
   SessionSummary,
   ToolCallView,
@@ -11,6 +12,15 @@ import type {
   WorktreeDiff,
   WorktreeInfo,
 } from '../src/api/types';
+
+export function makeProject(overrides: Partial<ProjectSummary> = {}): ProjectSummary {
+  return {
+    id: 'project-1',
+    name: 'clai',
+    repoRoot: '/home/dev/projects/clai',
+    ...overrides,
+  };
+}
 
 export function makeWorktree(overrides: Partial<WorktreeInfo> = {}): WorktreeInfo {
   return {
@@ -36,6 +46,7 @@ export function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
   return {
     id: 'agent-1',
     name: 'fix-auth-bug',
+    projectId: 'project-1',
     status: 'idle',
     approvalMode: 'always_ask',
     worktree: null,
@@ -52,7 +63,7 @@ export function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
 
 export function makeProfile(overrides: Partial<RedactedProfile> = {}): RedactedProfile {
   return {
-    id: 'profile-1',
+    id: 'model-anthropic',
     label: 'Claude Sonnet',
     provider: 'anthropic',
     model: 'claude-sonnet-4-6',
@@ -67,19 +78,25 @@ export function makeProfile(overrides: Partial<RedactedProfile> = {}): RedactedP
 
 export const sampleProfiles: RedactedProfile[] = [
   makeProfile(),
-  makeProfile({ id: 'profile-2', label: 'GPT', provider: 'openai', model: 'gpt-6' }),
   makeProfile({
-    id: 'profile-3',
+    id: 'model-openai',
+    label: 'GPT-6',
+    provider: 'openai',
+    model: 'gpt-6',
+    hasApiKey: true,
+  }),
+  makeProfile({
+    id: 'model-vertex',
     label: 'Vertex Gemini',
     provider: 'google_vertex',
     model: 'gemini-2.5-pro',
     hasApiKey: false,
-    projectId: 'my-project',
+    projectId: 'my-gcp-project',
     region: 'us-central1',
     hasCredentials: true,
     extraEnv: [
-      { name: 'HTTP_PROXY', value: 'http://proxy:8080', secret: false },
-      { name: 'VERTEX_TOKEN', value: null, secret: true },
+      { name: 'GOOGLE_CLOUD_QUOTA_PROJECT', value: 'billing-project', secret: false },
+      { name: 'VERTEX_API_TOKEN', value: null, secret: true },
     ],
   }),
 ];

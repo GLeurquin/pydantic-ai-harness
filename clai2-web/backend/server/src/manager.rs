@@ -17,7 +17,8 @@ use crate::acp::{AcpClient, AcpEvent, PermissionRequest, SessionUpdate};
 use crate::approvals::{decide, ApprovalLedger, ApprovalOutcome, PolicyDecision};
 use crate::events::{Event, EventHub};
 use crate::model::{
-    AgentStatus, AgentSummary, ApprovalMode, ApprovalView, SessionSummary, StopReason, ToolCallView, TranscriptItem,
+    AgentStatus, AgentSummary, ApprovalMode, ApprovalView, ProjectSummary, SessionSummary, StopReason, ToolCallView,
+    TranscriptItem,
 };
 use crate::models::{ModelProfile, ProfileEdit, RedactedProfile};
 use crate::store::{PersistedAgent, Store, StoreError};
@@ -43,6 +44,10 @@ pub enum ManagerError {
     ModelInUse,
     #[error("agent is busy")]
     Busy,
+    #[error("project not found")]
+    ProjectNotFound,
+    #[error("project is in use by a live agent")]
+    ProjectInUse,
     #[error("invalid request: {0}")]
     Invalid(String),
     #[error(transparent)]
@@ -57,6 +62,8 @@ pub enum ManagerError {
 
 #[derive(Debug, Clone)]
 pub struct ManagerConfig {
+    /// Repository bootstrapped as the default project on first start. Ignored
+    /// on later starts once the project registry is non-empty.
     pub repo_root: PathBuf,
     pub worktrees_dir: PathBuf,
     pub data_dir: PathBuf,
@@ -68,6 +75,7 @@ pub struct ManagerConfig {
 #[derive(Debug, Clone)]
 pub struct CreateAgent {
     pub name: String,
+    pub project_id: String,
     pub use_worktree: bool,
     pub base_branch: Option<String>,
     pub approval_mode: ApprovalMode,
@@ -124,6 +132,7 @@ pub struct AgentManager {
     ledger: Arc<ApprovalLedger>,
     agents: Mutex<Vec<AgentEntry>>,
     models: Mutex<Vec<ModelProfile>>,
+    projects: Mutex<Vec<ProjectSummary>>,
     /// Serializes process spawns and ACP session opens, so two concurrent
     /// prompts cannot double-spawn an agent or double-open a session.
     spawn_lock: Mutex<()>,
@@ -171,16 +180,44 @@ pub fn history_preamble(items: &[TranscriptItem]) -> String {
     )
 }
 
+/// Display name for a project bootstrapped from a repo path: its final
+/// component, or the whole path when it has none (e.g. `/`).
+fn default_project_name(repo_root: &std::path::Path) -> String {
+    repo_root
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| repo_root.to_string_lossy().into_owned())
+}
+
 impl AgentManager {
     pub async fn new(config: ManagerConfig) -> Result<Arc<Self>, ManagerError> {
         let store = Store::new(config.data_dir.clone());
         let worktrees = WorktreeService::new(config.worktrees_dir.clone());
+        let mut projects = store.load_projects().await?;
+        if projects.is_empty() {
+            let bootstrap = ProjectSummary {
+                id: Uuid::new_v4().to_string(),
+                name: default_project_name(&config.repo_root),
+                repo_root: config.repo_root.clone(),
+            };
+            store.save_projects(std::slice::from_ref(&bootstrap)).await?;
+            projects.push(bootstrap);
+        }
         let persisted = store.load_roster().await?;
         let models = store.load_models().await?;
-        let agents = persisted
+        // Roster files predating the project registry have no project_id
+        // (defaults to empty on deserialize); backfill them to the bootstrap
+        // default project rather than leaving them pointing nowhere.
+        let default_project_id = projects[0].id.clone();
+        let mut migrated = false;
+        let agents: Vec<AgentEntry> = persisted
             .into_iter()
             .map(|agent| {
                 let mut summary = agent.summary;
+                if summary.project_id.is_empty() {
+                    summary.project_id = default_project_id.clone();
+                    migrated = true;
+                }
                 if !matches!(summary.status, AgentStatus::Archived) {
                     summary.status = AgentStatus::Idle;
                 }
@@ -199,6 +236,16 @@ impl AgentManager {
                 }
             })
             .collect();
+        if migrated {
+            let persisted: Vec<PersistedAgent> = agents
+                .iter()
+                .map(|entry| PersistedAgent {
+                    summary: entry.summary.clone(),
+                    command: entry.command.clone(),
+                })
+                .collect();
+            store.save_roster(&persisted).await?;
+        }
         Ok(Arc::new(Self {
             config,
             worktrees,
@@ -207,6 +254,7 @@ impl AgentManager {
             ledger: Arc::new(ApprovalLedger::default()),
             agents: Mutex::new(agents),
             models: Mutex::new(models),
+            projects: Mutex::new(projects),
             spawn_lock: Mutex::new(()),
         }))
     }
@@ -231,6 +279,92 @@ impl AgentManager {
             .find(|entry| entry.summary.id == agent_id)
             .map(|entry| entry.summary.clone())
             .ok_or(ManagerError::AgentNotFound)
+    }
+
+    pub async fn list_projects(&self) -> Vec<ProjectSummary> {
+        self.projects.lock().await.clone()
+    }
+
+    async fn project(&self, project_id: &str) -> Result<ProjectSummary, ManagerError> {
+        self.projects
+            .lock()
+            .await
+            .iter()
+            .find(|project| project.id == project_id)
+            .cloned()
+            .ok_or(ManagerError::ProjectNotFound)
+    }
+
+    async fn persist_projects(&self) -> Result<(), ManagerError> {
+        let projects = self.projects.lock().await.clone();
+        self.store.save_projects(&projects).await?;
+        Ok(())
+    }
+
+    /// Register a project: a repository agents can be created in. `repo_root`
+    /// must be an absolute path to an existing directory.
+    pub async fn add_project(&self, name: String, repo_root: PathBuf) -> Result<ProjectSummary, ManagerError> {
+        let name = name.trim().to_owned();
+        if name.is_empty() {
+            return Err(ManagerError::Invalid("project name must not be empty".to_owned()));
+        }
+        if !repo_root.is_absolute() {
+            return Err(ManagerError::Invalid(format!(
+                "project path must be absolute: {}",
+                repo_root.display()
+            )));
+        }
+        let metadata = tokio::fs::metadata(&repo_root)
+            .await
+            .map_err(|_err| ManagerError::Invalid(format!("path does not exist: {}", repo_root.display())))?;
+        if !metadata.is_dir() {
+            return Err(ManagerError::Invalid(format!(
+                "path is not a directory: {}",
+                repo_root.display()
+            )));
+        }
+        let project = ProjectSummary {
+            id: Uuid::new_v4().to_string(),
+            name,
+            repo_root,
+        };
+        {
+            let mut projects = self.projects.lock().await;
+            projects.push(project.clone());
+        }
+        self.persist_projects().await?;
+        self.hub.publish(Event::ProjectAdded {
+            project: project.clone(),
+        });
+        Ok(project)
+    }
+
+    /// Remove a project. Rejected while a non-archived agent still belongs to
+    /// it, so a live agent never loses the project it reports.
+    pub async fn remove_project(&self, project_id: &str) -> Result<(), ManagerError> {
+        {
+            let agents = self.agents.lock().await;
+            let in_use = agents.iter().any(|entry| {
+                entry.summary.project_id == project_id && !matches!(entry.summary.status, AgentStatus::Archived)
+            });
+            if in_use {
+                return Err(ManagerError::ProjectInUse);
+            }
+        }
+        let removed = {
+            let mut projects = self.projects.lock().await;
+            let before = projects.len();
+            projects.retain(|project| project.id != project_id);
+            before != projects.len()
+        };
+        if !removed {
+            return Err(ManagerError::ProjectNotFound);
+        }
+        self.persist_projects().await?;
+        self.hub.publish(Event::ProjectRemoved {
+            project_id: project_id.to_owned(),
+        });
+        Ok(())
     }
 
     async fn persist_roster(&self) -> Result<(), ManagerError> {
@@ -267,6 +401,7 @@ impl AgentManager {
         if name.is_empty() {
             return Err(ManagerError::Invalid("agent name must not be empty".to_owned()));
         }
+        let project = self.project(&request.project_id).await?;
         {
             let agents = self.agents.lock().await;
             let live = agents
@@ -283,11 +418,11 @@ impl AgentManager {
         let worktree = if request.use_worktree {
             let base_branch = match request.base_branch {
                 Some(branch) if !branch.trim().is_empty() => branch,
-                _ => self.worktrees.current_branch(&self.config.repo_root).await?,
+                _ => self.worktrees.current_branch(&project.repo_root).await?,
             };
             Some(
                 self.worktrees
-                    .create(&self.config.repo_root, &base_branch, &unique_slug)
+                    .create(&project.repo_root, &base_branch, &unique_slug)
                     .await?,
             )
         } else {
@@ -296,10 +431,11 @@ impl AgentManager {
         let cwd = worktree
             .as_ref()
             .map(|worktree| worktree.path.clone())
-            .unwrap_or_else(|| self.config.repo_root.clone());
+            .unwrap_or_else(|| project.repo_root.clone());
         let summary = AgentSummary {
             id: agent_id.clone(),
             name,
+            project_id: project.id,
             status: AgentStatus::Starting,
             approval_mode: request.approval_mode,
             worktree,
@@ -744,6 +880,7 @@ impl AgentManager {
         let summary = AgentSummary {
             id: agent_id.clone(),
             name,
+            project_id: parent_summary.project_id,
             status: AgentStatus::Starting,
             approval_mode: parent_summary.approval_mode,
             worktree,
@@ -882,6 +1019,24 @@ impl AgentManager {
                 .find(|entry| entry.summary.id == agent_id)
                 .ok_or(ManagerError::AgentNotFound)?;
             entry.summary.approval_mode = mode;
+        }
+        self.publish_agent(agent_id).await;
+        self.persist_roster().await?;
+        self.agent(agent_id).await
+    }
+
+    pub async fn rename_agent(&self, agent_id: &str, name: String) -> Result<AgentSummary, ManagerError> {
+        let name = name.trim().to_owned();
+        if name.is_empty() {
+            return Err(ManagerError::Invalid("agent name must not be empty".to_owned()));
+        }
+        {
+            let mut agents = self.agents.lock().await;
+            let entry = agents
+                .iter_mut()
+                .find(|entry| entry.summary.id == agent_id)
+                .ok_or(ManagerError::AgentNotFound)?;
+            entry.summary.name = name;
         }
         self.publish_agent(agent_id).await;
         self.persist_roster().await?;
@@ -1216,6 +1371,11 @@ mod tests {
         }
     }
 
+    /// The project bootstrapped from `config()`'s `repo_root` on first start.
+    async fn default_project_id(manager: &AgentManager) -> String {
+        manager.list_projects().await.into_iter().next().unwrap().id
+    }
+
     #[tokio::test]
     async fn new_reports_corrupt_roster() {
         let dir = tempfile::tempdir().unwrap();
@@ -1227,15 +1387,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn new_backfills_a_roster_persisted_before_projects_existed() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        tokio::fs::create_dir_all(&data).await.unwrap();
+        // No `projectId` field: the shape written by a pre-projects build.
+        let legacy_roster = serde_json::json!([{
+            "summary": {
+                "id": "legacy-1",
+                "name": "old agent",
+                "status": "idle",
+                "approvalMode": "always_ask",
+                "worktree": null,
+                "cwd": dir.path(),
+                "sessions": [],
+                "pendingApprovals": 0,
+                "forkedFrom": null,
+                "lastError": null,
+            },
+            "command": ["stub"],
+        }]);
+        tokio::fs::write(data.join("agents.json"), serde_json::to_vec(&legacy_roster).unwrap())
+            .await
+            .unwrap();
+
+        let manager = AgentManager::new(config(dir.path(), vec!["stub".to_owned()]))
+            .await
+            .unwrap();
+        let default_project = manager.list_projects().await.into_iter().next().unwrap();
+        let agents = manager.snapshot().await;
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].project_id, default_project.id);
+
+        // The fix is persisted, not just applied in memory: a second start
+        // from the same data dir reads the already-backfilled roster.
+        let reopened = AgentManager::new(config(dir.path(), vec!["stub".to_owned()]))
+            .await
+            .unwrap();
+        let reopened_agents = reopened.snapshot().await;
+        assert_eq!(reopened_agents[0].project_id, default_project.id);
+    }
+
+    #[tokio::test]
     async fn create_agent_with_worktree_in_non_git_repo_errors() {
         let dir = tempfile::tempdir().unwrap();
         // repo_root is a plain directory, so resolving the base branch fails.
         let manager = AgentManager::new(config(dir.path(), vec!["stub".to_owned()]))
             .await
             .unwrap();
+        let project_id = default_project_id(&manager).await;
         let err = manager
             .create_agent(CreateAgent {
                 name: "x".to_owned(),
+                project_id,
                 use_worktree: true,
                 base_branch: None,
                 approval_mode: ApprovalMode::Auto,
@@ -1279,9 +1483,11 @@ mod tests {
         let manager = AgentManager::new(config(dir.path(), vec!["/nonexistent/agent".to_owned()]))
             .await
             .unwrap();
+        let project_id = default_project_id(&manager).await;
         let agent = manager
             .create_agent(CreateAgent {
                 name: "doomed".to_owned(),
+                project_id,
                 use_worktree: false,
                 base_branch: None,
                 approval_mode: ApprovalMode::Auto,

@@ -1,12 +1,13 @@
 //! REST and WebSocket surface over the agent manager.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, patch, post};
+use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
@@ -23,8 +24,12 @@ impl IntoResponse for ManagerError {
             ManagerError::AgentNotFound
             | ManagerError::SessionNotFound
             | ManagerError::ApprovalNotFound
-            | ManagerError::ModelNotFound => StatusCode::NOT_FOUND,
-            ManagerError::CapReached(_) | ManagerError::ModelInUse | ManagerError::Busy => StatusCode::CONFLICT,
+            | ManagerError::ModelNotFound
+            | ManagerError::ProjectNotFound => StatusCode::NOT_FOUND,
+            ManagerError::CapReached(_)
+            | ManagerError::ModelInUse
+            | ManagerError::ProjectInUse
+            | ManagerError::Busy => StatusCode::CONFLICT,
             ManagerError::Archived | ManagerError::NoWorktree | ManagerError::Invalid(_) => StatusCode::BAD_REQUEST,
             ManagerError::Git(_) | ManagerError::Store(_) | ManagerError::Spawn(_) | ManagerError::Rpc(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
@@ -38,6 +43,7 @@ impl IntoResponse for ManagerError {
 #[serde(rename_all = "camelCase")]
 struct CreateAgentBody {
     name: String,
+    project_id: String,
     #[serde(default)]
     use_worktree: bool,
     #[serde(default)]
@@ -45,6 +51,12 @@ struct CreateAgentBody {
     approval_mode: ApprovalMode,
     #[serde(default)]
     model_profile_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct CreateProjectBody {
+    name: String,
+    path: String,
 }
 
 #[derive(Deserialize)]
@@ -66,6 +78,11 @@ struct SideSessionBody {
 #[serde(rename_all = "camelCase")]
 struct ApprovalModeBody {
     approval_mode: ApprovalMode,
+}
+
+#[derive(Deserialize)]
+struct RenameAgentBody {
+    name: String,
 }
 
 #[derive(Deserialize)]
@@ -103,6 +120,7 @@ async fn create_agent(
     let agent = manager
         .create_agent(CreateAgent {
             name: body.name,
+            project_id: body.project_id,
             use_worktree: body.use_worktree,
             base_branch: body.base_branch,
             approval_mode: body.approval_mode,
@@ -110,6 +128,26 @@ async fn create_agent(
         })
         .await?;
     Ok(Json(json!(agent)))
+}
+
+async fn list_projects(State(manager): State<AppState>) -> Json<serde_json::Value> {
+    Json(json!(manager.list_projects().await))
+}
+
+async fn create_project(
+    State(manager): State<AppState>,
+    Json(body): Json<CreateProjectBody>,
+) -> Result<Json<serde_json::Value>, ManagerError> {
+    let project = manager.add_project(body.name, PathBuf::from(body.path)).await?;
+    Ok(Json(json!(project)))
+}
+
+async fn delete_project(
+    State(manager): State<AppState>,
+    Path(project_id): Path<String>,
+) -> Result<Json<serde_json::Value>, ManagerError> {
+    manager.remove_project(&project_id).await?;
+    Ok(Json(json!({"ok": true})))
 }
 
 async fn get_agent(
@@ -168,6 +206,14 @@ async fn set_approval_mode(
     Ok(Json(json!(
         manager.set_approval_mode(&agent_id, body.approval_mode).await?
     )))
+}
+
+async fn rename_agent(
+    State(manager): State<AppState>,
+    Path(agent_id): Path<String>,
+    Json(body): Json<RenameAgentBody>,
+) -> Result<Json<serde_json::Value>, ManagerError> {
+    Ok(Json(json!(manager.rename_agent(&agent_id, body.name).await?)))
 }
 
 async fn agent_approvals(
@@ -252,6 +298,7 @@ async fn ws_connection(mut socket: WebSocket, manager: AppState) {
         "type": "snapshot",
         "agents": manager.snapshot().await,
         "approvals": manager.pending_approvals().await,
+        "projects": manager.list_projects().await,
     });
     if socket.send(Message::Text(snapshot.to_string().into())).await.is_err() {
         return;
@@ -292,6 +339,7 @@ pub fn build_router(manager: AppState) -> Router {
             get(transcript),
         )
         .route("/api/agents/{agent_id}/approval-mode", patch(set_approval_mode))
+        .route("/api/agents/{agent_id}/name", patch(rename_agent))
         .route("/api/agents/{agent_id}/approvals", get(agent_approvals))
         .route("/api/agents/{agent_id}/diff", get(diff))
         .route("/api/agents/{agent_id}/model", patch(set_agent_model))
@@ -299,6 +347,8 @@ pub fn build_router(manager: AppState) -> Router {
         .route("/api/approvals/{approval_id}", post(resolve_approval))
         .route("/api/models", get(list_models).post(create_model))
         .route("/api/models/{model_id}", patch(update_model).delete(delete_model))
+        .route("/api/projects", get(list_projects).post(create_project))
+        .route("/api/projects/{project_id}", delete(delete_project))
         .route("/api/ws", get(ws_upgrade))
         .with_state(manager)
 }

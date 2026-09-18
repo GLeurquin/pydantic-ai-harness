@@ -14,6 +14,7 @@ function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
   return {
     id: 'a1',
     name: 'Alpha',
+    projectId: 'project-1',
     status: 'idle',
     approvalMode: 'always_ask',
     worktree: null,
@@ -51,6 +52,7 @@ function renderPane(overrides: Partial<Parameters<typeof MainPane>[0]> = {}) {
     onSetModel: vi.fn(),
     onManageModels: vi.fn(),
     onArchive: vi.fn(),
+    onRename: vi.fn(),
     ...overrides,
   };
   return { ...render(<MainPane {...props} />), props };
@@ -130,5 +132,15 @@ describe('MainPane', () => {
     expect(screen.getByLabelText('Approval mode')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Archive agent' })).toBeInTheDocument();
     expect(screen.queryByLabelText('Prompt')).toBeNull();
+  });
+
+  it('wires onRename through to the settings panel', async () => {
+    const user = userEvent.setup();
+    const { props } = renderPane({ view: { kind: 'settings' } });
+    const input = screen.getByLabelText('Agent name');
+    await user.clear(input);
+    await user.type(input, 'Renamed');
+    await user.click(screen.getByRole('button', { name: 'Rename' }));
+    expect(props.onRename).toHaveBeenCalledWith('Renamed');
   });
 });

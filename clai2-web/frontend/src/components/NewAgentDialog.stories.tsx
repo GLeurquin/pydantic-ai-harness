@@ -1,15 +1,21 @@
 import type { Story } from '@ladle/react';
 
-import { sampleProfiles } from '../../.ladle/data';
+import { makeProject, sampleProfiles } from '../../.ladle/data';
+import type { ProjectSummary } from '../api/types';
 import { NewAgentDialog } from './NewAgentDialog';
 
 const noop = () => undefined;
 const resolveCreate = () => Promise.resolve();
+const resolveCreateProject = (): Promise<ProjectSummary> => Promise.resolve(makeProject());
+const projects = [makeProject(), makeProject({ id: 'project-2', name: 'other-repo', repoRoot: '/home/dev/other-repo' })];
 
 export const Open: Story = () => (
-  <NewAgentDialog models={sampleProfiles} onCreate={resolveCreate} onClose={noop} onManageModels={noop} />
-);
-
-export const NoProfiles: Story = () => (
-  <NewAgentDialog models={[]} onCreate={resolveCreate} onClose={noop} onManageModels={noop} />
+  <NewAgentDialog
+    models={sampleProfiles}
+    projects={projects}
+    onCreate={resolveCreate}
+    onCreateProject={resolveCreateProject}
+    onClose={noop}
+    onManageModels={noop}
+  />
 );

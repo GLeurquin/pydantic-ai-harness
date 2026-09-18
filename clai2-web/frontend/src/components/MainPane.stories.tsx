@@ -45,6 +45,7 @@ function Frame({ agent, initialView }: { agent: AgentSummary; initialView: MainV
         onSetModel={noop}
         onManageModels={noop}
         onArchive={noop}
+        onRename={noop}
       />
     </div>
   );

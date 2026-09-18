@@ -38,3 +38,7 @@ wheels/
 .hypothesis/
 .vscode/
 mutants/
+
+# clai2-web runtime state when the server is launched with --repo pointing
+# at this checkout (its default data dir is <repo>/.clai2-web).
+.clai2-web/

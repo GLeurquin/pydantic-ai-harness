@@ -13,6 +13,7 @@ export const AlwaysAskWithWorktree: Story = () => (
     onSetModel={noop}
     onManageModels={noop}
     onArchive={noop}
+    onRename={noop}
   />
 );
 
@@ -24,6 +25,7 @@ export const AutoModeWarning: Story = () => (
     onSetModel={noop}
     onManageModels={noop}
     onArchive={noop}
+    onRename={noop}
   />
 );
 
@@ -39,5 +41,6 @@ export const ArchivedAgent: Story = () => (
     onSetModel={noop}
     onManageModels={noop}
     onArchive={noop}
+    onRename={noop}
   />
 );

@@ -11,6 +11,13 @@ export interface WorktreeInfo {
   baseBranch: string;
 }
 
+/** A repository agents can be created in. */
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  repoRoot: string;
+}
+
 export interface SessionSummary {
   id: string;
   acpSessionId: string | null;
@@ -21,6 +28,7 @@ export interface SessionSummary {
 export interface AgentSummary {
   id: string;
   name: string;
+  projectId: string;
   status: AgentStatus;
   approvalMode: ApprovalMode;
   worktree: WorktreeInfo | null;
@@ -150,6 +158,8 @@ export type ServerEvent =
   | { type: 'agentAdded'; agent: AgentSummary }
   | { type: 'agentUpdated'; agent: AgentSummary }
   | { type: 'agentRemoved'; agentId: string }
+  | { type: 'projectAdded'; project: ProjectSummary }
+  | { type: 'projectRemoved'; projectId: string }
   | { type: 'userMessage'; agentId: string; sessionId: string; text: string }
   | { type: 'messageChunk'; agentId: string; sessionId: string; text: string }
   | { type: 'thoughtChunk'; agentId: string; sessionId: string; text: string }
@@ -162,10 +172,16 @@ export type ServerEvent =
 
 export interface CreateAgentRequest {
   name: string;
+  projectId: string;
   useWorktree: boolean;
   baseBranch?: string;
   approvalMode: ApprovalMode;
   modelProfileId?: string;
+}
+
+export interface CreateProjectRequest {
+  name: string;
+  path: string;
 }
 
 export interface ForkAgentRequest {

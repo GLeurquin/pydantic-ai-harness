@@ -69,6 +69,12 @@ export function App() {
     useAppStore.getState().selectAgent(agent.id);
   };
 
+  const createProject = async (name: string, path: string) => {
+    const project = await api.createProject({ name, path });
+    useAppStore.getState().applyEvent({ type: 'projectAdded', project });
+    return project;
+  };
+
   return (
     <div className="app">
       <Header
@@ -80,9 +86,12 @@ export function App() {
       />
       <Sidebar
         agents={store.agents}
+        projects={store.projects}
+        selectedProjectId={store.selectedProjectId}
         selectedAgentId={store.selectedAgentId}
         maxAgents={MAX_AGENTS}
         onSelect={store.selectAgent}
+        onSelectProject={store.selectProjectFilter}
         onNewAgent={() => setDialog('new-agent')}
       />
       {selected ? (
@@ -103,6 +112,7 @@ export function App() {
           onSetModel={(modelProfileId) => void api.setAgentModel(selected.id, modelProfileId)}
           onManageModels={() => setDialog('models')}
           onArchive={(removeWorktree) => void api.archiveAgent(selected.id, removeWorktree)}
+          onRename={(name) => void api.rename(selected.id, name)}
         />
       ) : (
         <main className="main">
@@ -112,7 +122,10 @@ export function App() {
       {dialog === 'new-agent' ? (
         <NewAgentDialog
           models={store.models}
+          projects={store.projects}
+          {...(store.selectedProjectId !== 'all' ? { defaultProjectId: store.selectedProjectId } : {})}
           onCreate={createAgent}
+          onCreateProject={createProject}
           onClose={() => setDialog('none')}
           onManageModels={() => setDialog('models')}
         />

@@ -22,11 +22,11 @@ export interface MainPaneProps {
   onSetModel: SettingsPanelProps['onSetModel'];
   onManageModels: SettingsPanelProps['onManageModels'];
   onArchive: SettingsPanelProps['onArchive'];
+  onRename: SettingsPanelProps['onRename'];
 }
 
 export function MainPane(props: MainPaneProps) {
   const { agent, view } = props;
-  const archived = agent.status === 'archived';
   return (
     <main className="main">
       <div className="tabs" role="tablist">
@@ -59,18 +59,6 @@ export function MainPane(props: MainPaneProps) {
         >
           Settings
         </button>
-        <span className="tab-actions">
-          {archived ? null : (
-            <>
-              <button onClick={props.onSideSession} title="Open a side conversation with this agent">
-                Side conversation
-              </button>
-              <button onClick={props.onFork} title="Fork this agent into a new worktree">
-                Fork
-              </button>
-            </>
-          )}
-        </span>
       </div>
       {view.kind === 'session' ? (
         <Conversation
@@ -81,6 +69,8 @@ export function MainPane(props: MainPaneProps) {
           onPrompt={(text) => props.onPrompt(view.sessionId, text)}
           onCancel={props.onCancel}
           onResolveApproval={props.onResolveApproval}
+          onFork={props.onFork}
+          onSideSession={props.onSideSession}
         />
       ) : null}
       {view.kind === 'changes' ? <DiffPanel agentId={agent.id} loadDiff={props.loadDiff} /> : null}
@@ -92,6 +82,7 @@ export function MainPane(props: MainPaneProps) {
           onSetModel={props.onSetModel}
           onManageModels={props.onManageModels}
           onArchive={props.onArchive}
+          onRename={props.onRename}
         />
       ) : null}
     </main>

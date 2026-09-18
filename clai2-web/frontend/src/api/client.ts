@@ -4,9 +4,11 @@ import type {
   AgentSummary,
   ApprovalView,
   CreateAgentRequest,
+  CreateProjectRequest,
   ForkAgentRequest,
   ApprovalMode,
   ProfileEdit,
+  ProjectSummary,
   RedactedProfile,
   TranscriptItem,
   WorktreeDiff,
@@ -72,6 +74,20 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify({ approvalMode }),
     }),
+
+  rename: (agentId: string, name: string) =>
+    request<AgentSummary>(`/api/agents/${agentId}/name`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name }),
+    }),
+
+  listProjects: () => request<ProjectSummary[]>('/api/projects'),
+
+  createProject: (body: CreateProjectRequest) =>
+    request<ProjectSummary>('/api/projects', { method: 'POST', body: JSON.stringify(body) }),
+
+  deleteProject: (projectId: string) =>
+    request<{ ok: boolean }>(`/api/projects/${projectId}`, { method: 'DELETE' }),
 
   pendingApprovals: () => request<ApprovalView[]>('/api/approvals'),
 

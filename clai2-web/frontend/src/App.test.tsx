@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeAll, beforeEach, vi } from 'vitest';
 
 import { App } from './App';
-import type { AgentSummary, ApprovalView, RedactedProfile, TranscriptItem } from './api/types';
+import type { AgentSummary, ApprovalView, ProjectSummary, RedactedProfile, TranscriptItem } from './api/types';
 import { useAppStore } from './state/store';
 import type { WsHandlers } from './ws';
 
@@ -17,6 +17,10 @@ const apiMock = vi.hoisted(() => ({
   fork: vi.fn(),
   openSideSession: vi.fn(),
   setApprovalMode: vi.fn(),
+  rename: vi.fn(),
+  listProjects: vi.fn(),
+  createProject: vi.fn(),
+  deleteProject: vi.fn(),
   pendingApprovals: vi.fn(),
   resolveApproval: vi.fn(),
   transcript: vi.fn(),
@@ -53,6 +57,7 @@ function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
   return {
     id: 'a1',
     name: 'Alpha',
+    projectId: 'project-1',
     status: 'idle',
     approvalMode: 'always_ask',
     worktree: null,
@@ -70,7 +75,7 @@ function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
 function makeProfile(overrides: Partial<RedactedProfile> = {}): RedactedProfile {
   return {
     id: 'm1',
-    label: 'Claude Sonnet',
+    label: 'Sonnet',
     provider: 'anthropic',
     model: 'claude-sonnet-4-6',
     hasApiKey: true,
@@ -100,9 +105,13 @@ function makeApproval(overrides: Partial<ApprovalView> = {}): ApprovalView {
   };
 }
 
-async function snapshot(agents: AgentSummary[], approvals: ApprovalView[] = []) {
+function makeProject(overrides: Partial<ProjectSummary> = {}): ProjectSummary {
+  return { id: 'project-1', name: 'clai', repoRoot: '/repo', ...overrides };
+}
+
+async function snapshot(agents: AgentSummary[], approvals: ApprovalView[] = [], projects: ProjectSummary[] = [makeProject()]) {
   await act(async () => {
-    handlers().onSnapshot({ agents, approvals });
+    handlers().onSnapshot({ agents, approvals, projects });
   });
 }
 
@@ -118,6 +127,8 @@ beforeEach(() => {
     agents: [],
     approvals: [],
     models: [],
+    projects: [],
+    selectedProjectId: 'all',
     transcripts: {},
     selectedAgentId: null,
     view: { kind: 'session', sessionId: 'main' },
@@ -126,9 +137,10 @@ beforeEach(() => {
   apiMock.prompt.mockResolvedValue({ ok: true });
   apiMock.resolveApproval.mockResolvedValue({ ok: true });
   apiMock.setApprovalMode.mockResolvedValue(makeAgent());
+  apiMock.rename.mockResolvedValue(makeAgent());
   apiMock.archiveAgent.mockResolvedValue(makeAgent({ status: 'archived' }));
-  apiMock.listModels.mockResolvedValue([]);
   apiMock.setAgentModel.mockResolvedValue(makeAgent());
+  apiMock.listModels.mockResolvedValue([]);
 });
 
 describe('App', () => {
@@ -236,6 +248,7 @@ describe('App', () => {
     await user.click(screen.getByRole('button', { name: 'Start agent' }));
     expect(apiMock.createAgent).toHaveBeenCalledWith({
       name: 'Builder',
+      projectId: 'project-1',
       useWorktree: true,
       approvalMode: 'always_ask',
     });
@@ -306,63 +319,111 @@ describe('App', () => {
     expect(apiMock.archiveAgent).toHaveBeenCalledWith('a1', false);
   });
 
-  it('loads the model profiles into the store on mount', async () => {
+  it('renames the selected agent from the Settings tab', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await snapshot([makeAgent()]);
+    await user.click(screen.getByRole('tab', { name: 'Settings' }));
+    const input = screen.getByLabelText('Agent name');
+    await user.clear(input);
+    await user.type(input, 'Renamed');
+    await user.click(screen.getByRole('button', { name: 'Rename' }));
+    expect(apiMock.rename).toHaveBeenCalledWith('a1', 'Renamed');
+  });
+
+  it('filters the sidebar by project and defaults new-agent dialog to it', async () => {
+    const user = userEvent.setup();
+    const otherProject = makeProject({ id: 'project-2', name: 'other-repo' });
+    render(<App />);
+    await snapshot(
+      [makeAgent({ id: 'a1', name: 'InClai' }), makeAgent({ id: 'a2', name: 'InOther', projectId: 'project-2' })],
+      [],
+      [makeProject(), otherProject],
+    );
+    await user.selectOptions(screen.getByLabelText('Filter by project'), 'project-2');
+    const sidebar = screen.getByRole('navigation', { name: 'Agents' });
+    expect(within(sidebar).queryByText('InClai')).toBeNull();
+    expect(within(sidebar).getByText('InOther')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'New' }));
+    expect(within(screen.getByRole('dialog', { name: 'New agent' })).getByLabelText('Project')).toHaveValue('project-2');
+  });
+
+  it('creates a project inline from the new-agent dialog', async () => {
+    const user = userEvent.setup();
+    const project = makeProject({ id: 'project-9', name: 'brand-new', repoRoot: '/brand-new' });
+    apiMock.createProject.mockResolvedValue(project);
+    render(<App />);
+    await snapshot([makeAgent()]);
+    await user.click(screen.getByRole('button', { name: 'New' }));
+    await user.click(screen.getByRole('button', { name: '+ New project' }));
+    await user.type(screen.getByPlaceholderText('my-other-repo'), 'brand-new');
+    await user.type(screen.getByPlaceholderText('/Users/you/code/my-other-repo'), '/brand-new');
+    await user.click(screen.getByRole('button', { name: 'Add project' }));
+    expect(apiMock.createProject).toHaveBeenCalledWith({ name: 'brand-new', path: '/brand-new' });
+    await waitFor(() => expect(screen.getByLabelText('Project')).toHaveValue('project-9'));
+  });
+
+  it('loads model profiles on mount and stores them', async () => {
     apiMock.listModels.mockResolvedValue([makeProfile()]);
     render(<App />);
     await waitFor(() => expect(useAppStore.getState().models).toEqual([makeProfile()]));
     expect(apiMock.listModels).toHaveBeenCalledTimes(1);
   });
 
-  it('ignores a failed model profile load', async () => {
+  it('ignores a failed model profiles fetch', async () => {
     apiMock.listModels.mockRejectedValue(new Error('offline'));
     render(<App />);
     await snapshot([makeAgent()]);
     expect(useAppStore.getState().models).toEqual([]);
   });
 
-  it('opens the Models dialog from the header', async () => {
+  it('opens the model profiles dialog from the header and closes it', async () => {
     const user = userEvent.setup();
-    apiMock.listModels.mockResolvedValue([]);
-    render(<App />);
-    await user.click(screen.getByRole('button', { name: 'Model profiles' }));
-    expect(await screen.findByRole('dialog', { name: 'Model profiles' })).toBeInTheDocument();
-  });
-
-  it('passes the chosen model profile to createAgent', async () => {
-    const user = userEvent.setup();
-    apiMock.listModels.mockResolvedValue([makeProfile({ id: 'm1', label: 'Claude Sonnet' })]);
-    apiMock.createAgent.mockResolvedValue(makeAgent({ id: 'b1', name: 'Builder' }));
     render(<App />);
     await snapshot([makeAgent()]);
-    await waitFor(() => expect(useAppStore.getState().models).toHaveLength(1));
-    await user.click(screen.getByRole('button', { name: 'New' }));
-    await user.type(screen.getByPlaceholderText('fix-auth-bug'), 'Builder');
-    await user.selectOptions(screen.getByRole('combobox', { name: 'Model' }), 'm1');
-    await user.click(screen.getByRole('button', { name: 'Start agent' }));
-    expect(apiMock.createAgent).toHaveBeenCalledWith({
-      name: 'Builder',
-      useWorktree: true,
-      approvalMode: 'always_ask',
-      modelProfileId: 'm1',
-    });
+    await user.click(screen.getByRole('button', { name: 'Model profiles' }));
+    expect(await screen.findByRole('dialog', { name: 'Model profiles' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Model profiles' })).toBeNull());
   });
 
-  it('sets the agent model from the Settings tab', async () => {
+  it('stores the updated profile list when the dialog reports a change', async () => {
     const user = userEvent.setup();
-    apiMock.listModels.mockResolvedValue([makeProfile({ id: 'm1', label: 'Claude Sonnet' })]);
+    const created = makeProfile({ id: 'created', label: 'New Sonnet' });
+    apiMock.createModel.mockResolvedValue(created);
+    render(<App />);
+    await snapshot([makeAgent()]);
+    await user.click(screen.getByRole('button', { name: 'Model profiles' }));
+    await user.click(await screen.findByRole('button', { name: 'New profile' }));
+    await user.type(screen.getByLabelText('Name'), 'New Sonnet');
+    await user.type(screen.getByLabelText('Model'), 'claude-sonnet-4-6');
+    await user.click(screen.getByRole('button', { name: 'Add profile' }));
+    await waitFor(() => expect(useAppStore.getState().models).toEqual([created]));
+  });
+
+  it('switches the selected agent model from the Settings tab', async () => {
+    const user = userEvent.setup();
+    apiMock.listModels.mockResolvedValue([makeProfile({ id: 'm2', label: 'GPT' })]);
     render(<App />);
     await snapshot([makeAgent()]);
     await waitFor(() => expect(useAppStore.getState().models).toHaveLength(1));
     await user.click(screen.getByRole('tab', { name: 'Settings' }));
-    await user.selectOptions(screen.getByLabelText('Model profile'), 'm1');
-    expect(apiMock.setAgentModel).toHaveBeenCalledWith('a1', 'm1');
-    await user.selectOptions(screen.getByLabelText('Model profile'), 'Default (server environment)');
-    expect(apiMock.setAgentModel).toHaveBeenLastCalledWith('a1', null);
+    await user.selectOptions(screen.getByLabelText('Model profile'), 'm2');
+    expect(apiMock.setAgentModel).toHaveBeenCalledWith('a1', 'm2');
   });
 
-  it('switches from the New agent dialog to the Models dialog', async () => {
+  it('opens the profiles dialog from the Settings tab', async () => {
     const user = userEvent.setup();
-    apiMock.listModels.mockResolvedValue([]);
+    render(<App />);
+    await snapshot([makeAgent()]);
+    await user.click(screen.getByRole('tab', { name: 'Settings' }));
+    await user.click(screen.getByRole('button', { name: 'Manage profiles' }));
+    expect(await screen.findByRole('dialog', { name: 'Model profiles' })).toBeInTheDocument();
+  });
+
+  it('opens the profiles dialog from the new-agent dialog', async () => {
+    const user = userEvent.setup();
     render(<App />);
     await snapshot([makeAgent()]);
     await user.click(screen.getByRole('button', { name: 'New' }));
@@ -371,40 +432,24 @@ describe('App', () => {
     expect(screen.queryByRole('dialog', { name: 'New agent' })).toBeNull();
   });
 
-  it('opens the Models dialog from the Settings tab', async () => {
+  it('creates an agent with both a project and a model profile', async () => {
     const user = userEvent.setup();
-    apiMock.listModels.mockResolvedValue([]);
+    apiMock.listModels.mockResolvedValue([makeProfile({ id: 'm2', label: 'GPT' })]);
+    apiMock.createAgent.mockResolvedValue(makeAgent({ id: 'b1', name: 'Builder' }));
     render(<App />);
     await snapshot([makeAgent()]);
-    await user.click(screen.getByRole('tab', { name: 'Settings' }));
-    await user.click(screen.getByRole('button', { name: 'Manage profiles' }));
-    expect(await screen.findByRole('dialog', { name: 'Model profiles' })).toBeInTheDocument();
-  });
-
-  it('updates the store when a profile is created in the Models dialog', async () => {
-    const user = userEvent.setup();
-    apiMock.listModels.mockResolvedValue([]);
-    apiMock.createModel.mockResolvedValue(makeProfile({ id: 'new1', label: 'New Model' }));
-    render(<App />);
-    await user.click(screen.getByRole('button', { name: 'Model profiles' }));
-    const dialog = await screen.findByRole('dialog', { name: 'Model profiles' });
-    await user.click(within(dialog).getByRole('button', { name: 'New profile' }));
-    await user.type(screen.getByPlaceholderText('Vertex Gemini'), 'New Model');
-    await user.type(screen.getByPlaceholderText('claude-sonnet-4-6'), 'claude-sonnet-4-6');
-    await user.click(screen.getByRole('button', { name: 'Add profile' }));
-    await waitFor(() =>
-      expect(useAppStore.getState().models).toEqual([makeProfile({ id: 'new1', label: 'New Model' })]),
-    );
-  });
-
-  it('closes the Models dialog from its Close button', async () => {
-    const user = userEvent.setup();
-    apiMock.listModels.mockResolvedValue([]);
-    render(<App />);
-    await user.click(screen.getByRole('button', { name: 'Model profiles' }));
-    const dialog = await screen.findByRole('dialog', { name: 'Model profiles' });
-    await user.click(within(dialog).getByRole('button', { name: 'Close' }));
-    expect(screen.queryByRole('dialog', { name: 'Model profiles' })).toBeNull();
+    await waitFor(() => expect(useAppStore.getState().models).toHaveLength(1));
+    await user.click(screen.getByRole('button', { name: 'New' }));
+    await user.type(screen.getByPlaceholderText('fix-auth-bug'), 'Builder');
+    await user.selectOptions(screen.getByLabelText('Model'), 'm2');
+    await user.click(screen.getByRole('button', { name: 'Start agent' }));
+    expect(apiMock.createAgent).toHaveBeenCalledWith({
+      name: 'Builder',
+      projectId: 'project-1',
+      useWorktree: true,
+      approvalMode: 'always_ask',
+      modelProfileId: 'm2',
+    });
   });
 
   it('closes the websocket connection on unmount', () => {
