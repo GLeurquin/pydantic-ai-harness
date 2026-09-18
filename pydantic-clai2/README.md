@@ -263,7 +263,8 @@ The browser follows Code Puppy's project/session design:
   confirmation before deletion. The active session cannot be deleted.
 - Esc goes back; Ctrl-C closes. Narrow screens show one focused pane at a time.
 - Selecting a session from another directory asks for confirmation. It does not
-  change directories. Direct cross-directory resume asks you to use the browser.
+  change directories or move the saved conversation out of its original project
+  group. Direct cross-directory resume asks you to use the browser.
 
 The browser counts loaded summaries, not a separate unbounded catalog. Search
 runs against the full catalog before pagination. It does not index tool output,

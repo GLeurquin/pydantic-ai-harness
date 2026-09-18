@@ -140,7 +140,7 @@ async def test_queued_work_disabled_before_execution(tmp_path: Path) -> None:
     checked = anyio.Event()
 
     async def generate(prompt: str) -> NamingResult:
-        pytest.fail('Disabled work must not call the model')
+        pytest.fail('Disabled work must not call the model')  # pragma: no cover
 
     def disabled() -> bool:
         checked.set()

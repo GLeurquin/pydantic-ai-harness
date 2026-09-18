@@ -102,6 +102,8 @@ async def test_cross_workspace_and_bad_id_leave_active_session_unchanged(tmp_pat
         await second.resume(first.summary.id)
     assert second.messages == []
     await second.resume(first.summary.id, allow_other_workspace=True)
+    assert second.workspace == str((tmp_path / 'elsewhere').resolve())
+    assert second.summary.workspace == first.workspace
     previous = second.messages
     with pytest.raises(LookupError):
         await second.resume('not-a-session')

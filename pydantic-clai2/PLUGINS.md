@@ -554,7 +554,9 @@ already committed snapshot. No new CLAI lifecycle hooks are introduced.
 
 Session naming is a shell-owned background service over Harness's `SessionNamer`.
 It never writes into the agent transcript or loads plugin code. `/resume` does
-not fire plugin load/unload hooks or restore previous plugin approvals. The
+not fire plugin load/unload hooks or restore previous plugin approvals. Cross-project
+resume keeps the current working directory and the saved conversation's original
+project grouping. The
 project/session browser is a dedicated Termflow widget: unlike a single-pane
 `MenuBuilder`, it has two independently navigable panes and two-line cards. Its
 pure frame and scripted-key tests follow the same headless menu conventions.
