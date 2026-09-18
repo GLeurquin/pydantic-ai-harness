@@ -302,7 +302,7 @@ class TestApprovalDecisions:
         )
 
         @agent.tool_plain(requires_approval=True)
-        def danger() -> str:
+        def danger() -> str:  # pragma: no cover - denied before execution
             nonlocal executed
             executed = True
             return 'ran'
@@ -345,7 +345,7 @@ class TestApprovalDecisions:
     async def test_unselected_approval_bubbles_up_without_calling_the_judge(self) -> None:
         calls = 0
 
-        def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:  # pragma: no cover - not selected
             nonlocal calls
             calls += 1
             return ModelResponse(parts=[TextPart('unexpected')])
