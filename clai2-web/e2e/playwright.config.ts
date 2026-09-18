@@ -4,6 +4,9 @@ const PORT = 8977;
 
 export default defineConfig({
   testDir: './tests',
+  // Visual regression runs under its own config against the Ladle build,
+  // not this app server; see playwright.visual.config.ts.
+  testIgnore: 'visual.spec.ts',
   globalSetup: './global-setup.ts',
   // One worker: the suite shares one backend and asserts on live agent state.
   workers: 1,

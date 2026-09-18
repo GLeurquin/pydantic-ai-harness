@@ -8,5 +8,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["tests", "playwright.config.ts", "global-setup.ts"]
+  "include": ["tests", "playwright.config.ts", "playwright.visual.config.ts", "global-setup.ts"]
 }

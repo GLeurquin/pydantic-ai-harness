@@ -121,6 +121,19 @@ The frontend proxies `/api` to `http://127.0.0.1:8787` in dev, so
   view, and archiving.
 - Mutation testing runs on a schedule: `cargo-mutants` for the backend
   services and Stryker for the frontend state and API modules.
+- Visual regression screenshot-diffs every Ladle story (`clai2-web/e2e/tests/visual.spec.ts`),
+  driven by `?story=<id>&mode=preview` against the built component catalog.
+  Runs `workflow_dispatch`-only for now: rendering varies enough by host
+  OS/libs that the baselines have to come from the exact
+  `mcr.microsoft.com/playwright` image the CI job runs in, not from a
+  contributor's own machine. To bless baselines: run the `CLAI Web` workflow
+  manually with `update_visual_baselines` checked, download the
+  `visual-baselines` artifact it uploads, and commit its contents to
+  `clai2-web/e2e/tests/visual.spec.ts-snapshots/`. Once that exists, `pnpm
+  --dir clai2-web/e2e visual` compares against it locally inside the same
+  Docker image (`docker run --rm -v "$PWD":/work -w /work/clai2-web/e2e
+  mcr.microsoft.com/playwright:v1.63.0-noble pnpm visual`, after building the
+  frontend and Ladle catalog first).
 
 ## The stub agent
 

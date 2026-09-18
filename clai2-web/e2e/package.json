@@ -4,10 +4,12 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "test": "playwright test"
+    "test": "playwright test",
+    "visual": "playwright test -c playwright.visual.config.ts",
+    "visual:update": "playwright test -c playwright.visual.config.ts --update-snapshots"
   },
   "devDependencies": {
-    "@playwright/test": "^1.49.1",
+    "@playwright/test": "1.63.0",
     "@types/node": "^22.10.2"
   }
 }
