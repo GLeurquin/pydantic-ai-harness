@@ -77,6 +77,10 @@ pub struct AgentSummary {
     pub pending_approvals: u32,
     /// Agent this one was forked from, if any.
     pub forked_from: Option<String>,
+    /// Model profile the agent runs under, if one was selected.
+    pub model_profile_id: Option<String>,
+    /// Label of that profile, snapshotted for display.
+    pub model_label: Option<String>,
     /// Last error message when `status == Error`.
     pub last_error: Option<String>,
 }

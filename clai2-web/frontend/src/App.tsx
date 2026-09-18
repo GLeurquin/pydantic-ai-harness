@@ -5,6 +5,7 @@ import type { CreateAgentRequest } from './api/types';
 import { errorMessage } from './errors';
 import { Header } from './components/Header';
 import { MainPane } from './components/MainPane';
+import { ModelsDialog } from './components/ModelsDialog';
 import { NameDialog } from './components/NameDialog';
 import { NewAgentDialog } from './components/NewAgentDialog';
 import { NotificationTray } from './components/NotificationTray';
@@ -13,7 +14,7 @@ import { transcriptKey } from './state/transcript';
 import { useAppStore } from './state/store';
 import { connectWs, wsUrl } from './ws';
 
-type Dialog = 'none' | 'new-agent' | 'fork' | 'side-session';
+type Dialog = 'none' | 'new-agent' | 'fork' | 'side-session' | 'models';
 
 /** Fire a write action; a rejection surfaces as a notification instead of
  * vanishing. The rest of the UI does not wait on it. */
@@ -32,6 +33,7 @@ export function App() {
       onEvent: useAppStore.getState().applyEvent,
       onConnected: useAppStore.getState().setConnected,
     });
+    void api.listModels().then(useAppStore.getState().setModels, () => undefined);
     return connection.close;
   }, []);
 
@@ -87,6 +89,7 @@ export function App() {
         approvals={store.approvals}
         agents={store.agents}
         onResolveApproval={resolveApproval}
+        onManageModels={() => setDialog('models')}
       />
       <Sidebar
         agents={store.agents}
@@ -111,7 +114,10 @@ export function App() {
           onFork={() => setDialog('fork')}
           onSideSession={() => setDialog('side-session')}
           loadDiff={loadDiff}
+          models={store.models}
           onSetApprovalMode={(mode) => runAction(api.setApprovalMode(selected.id, mode))}
+          onSetModel={(modelProfileId) => runAction(api.setAgentModel(selected.id, modelProfileId))}
+          onManageModels={() => setDialog('models')}
           onArchive={(removeWorktree) => runAction(api.archiveAgent(selected.id, removeWorktree))}
           onRename={(name) => runAction(api.rename(selected.id, name))}
         />
@@ -122,12 +128,17 @@ export function App() {
       )}
       {dialog === 'new-agent' ? (
         <NewAgentDialog
+          models={store.models}
           projects={store.projects}
           {...(store.selectedProjectId !== 'all' ? { defaultProjectId: store.selectedProjectId } : {})}
           onCreate={createAgent}
           onCreateProject={createProject}
           onClose={() => setDialog('none')}
+          onManageModels={() => setDialog('models')}
         />
+      ) : null}
+      {dialog === 'models' ? (
+        <ModelsDialog onClose={() => setDialog('none')} onChanged={useAppStore.getState().setModels} />
       ) : null}
       {dialog === 'fork' && selected ? (
         <NameDialog

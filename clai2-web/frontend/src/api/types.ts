@@ -36,7 +36,56 @@ export interface AgentSummary {
   sessions: SessionSummary[];
   pendingApprovals: number;
   forkedFrom: string | null;
+  modelProfileId: string | null;
+  modelLabel: string | null;
   lastError: string | null;
+}
+
+export type Provider =
+  | 'anthropic'
+  | 'openai'
+  | 'google_gla'
+  | 'google_vertex'
+  | 'bedrock'
+  | 'azure'
+  | 'custom';
+
+export interface RedactedEnvVar {
+  name: string;
+  /** Present only for non-secret entries. */
+  value: string | null;
+  secret: boolean;
+}
+
+export interface RedactedProfile {
+  id: string;
+  label: string;
+  provider: Provider;
+  model: string;
+  hasApiKey: boolean;
+  projectId: string | null;
+  region: string | null;
+  hasCredentials: boolean;
+  extraEnv: RedactedEnvVar[];
+}
+
+/** One env entry in a create/edit request. Omit `value` to keep a stored secret. */
+export interface EnvEdit {
+  name: string;
+  value?: string;
+  secret: boolean;
+}
+
+/** Body for creating or editing a model profile. Secret fields are optional. */
+export interface ProfileEdit {
+  label: string;
+  provider: Provider;
+  model: string;
+  apiKey?: string;
+  projectId?: string;
+  region?: string;
+  credentialsJson?: string;
+  extraEnv: EnvEdit[];
 }
 
 export type PermissionOptionKind = 'allow_once' | 'allow_always' | 'reject_once' | 'reject_always';
@@ -127,6 +176,7 @@ export interface CreateAgentRequest {
   useWorktree: boolean;
   baseBranch?: string;
   approvalMode: ApprovalMode;
+  modelProfileId?: string;
 }
 
 export interface CreateProjectRequest {

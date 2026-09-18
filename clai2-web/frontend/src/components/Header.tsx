@@ -8,9 +8,10 @@ export interface HeaderProps {
   approvals: ApprovalView[];
   agents: AgentSummary[];
   onResolveApproval: (approvalId: string, optionId: string) => void;
+  onManageModels: () => void;
 }
 
-export function Header({ connected, approvals, agents, onResolveApproval }: HeaderProps) {
+export function Header({ connected, approvals, agents, onResolveApproval, onManageModels }: HeaderProps) {
   const [open, setOpen] = useState(false);
   const agentName = (agentId: string) => agents.find((agent) => agent.id === agentId)?.name ?? agentId;
   return (
@@ -22,6 +23,9 @@ export function Header({ connected, approvals, agents, onResolveApproval }: Head
       <span className={connected ? 'connection online' : 'connection offline'}>
         {connected ? 'connected' : 'reconnecting...'}
       </span>
+      <button onClick={onManageModels} aria-label="Model profiles">
+        Models
+      </button>
       <div className="inbox">
         <button onClick={() => setOpen(!open)} aria-expanded={open} aria-label="Approval inbox">
           Approvals

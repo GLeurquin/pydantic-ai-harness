@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import type { AgentSummary, ApprovalView, ServerEvent, ToolCallView, TranscriptItem } from '../api/types';
+import type { AgentSummary, ApprovalView, RedactedProfile, ServerEvent, ToolCallView, TranscriptItem } from '../api/types';
 import { reduceEvent, useAppStore, type AppState } from './store';
 
 function agent(id: string, name = id): AgentSummary {
@@ -15,7 +15,23 @@ function agent(id: string, name = id): AgentSummary {
     sessions: [],
     pendingApprovals: 0,
     forkedFrom: null,
+    modelProfileId: null,
+    modelLabel: null,
     lastError: null,
+  };
+}
+
+function profile(id: string, label = id): RedactedProfile {
+  return {
+    id,
+    label,
+    provider: 'anthropic',
+    model: 'claude-sonnet-4-6',
+    hasApiKey: true,
+    projectId: null,
+    region: null,
+    hasCredentials: false,
+    extraEnv: [],
   };
 }
 
@@ -38,6 +54,7 @@ function resetStore(partial: Partial<AppState> = {}): void {
     connected: false,
     agents: [],
     approvals: [],
+    models: [],
     projects: [],
     selectedProjectId: 'all',
     maxAgents: 100,
@@ -207,6 +224,12 @@ describe('useAppStore actions', () => {
     expect(state().connected).toBe(true);
     state().setConnected(false);
     expect(state().connected).toBe(false);
+  });
+
+  it('setModels replaces the model profile list', () => {
+    resetStore({ models: [profile('m1')] });
+    state().setModels([profile('m2', 'GPT'), profile('m3', 'Gemini')]);
+    expect(state().models).toEqual([profile('m2', 'GPT'), profile('m3', 'Gemini')]);
   });
 
   it('applySnapshot keeps a selection that still exists', () => {

@@ -122,6 +122,28 @@ impl World {
         agent
     }
 
+    async fn patch(&self, path: &str, body: Value) -> (reqwest::StatusCode, Value) {
+        let response = self
+            .http
+            .patch(format!("{}{path}", self.base_url))
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        let value = response.json().await.unwrap_or(Value::Null);
+        (status, value)
+    }
+
+    async fn delete(&self, path: &str) -> reqwest::StatusCode {
+        self.http
+            .delete(format!("{}{path}", self.base_url))
+            .send()
+            .await
+            .unwrap()
+            .status()
+    }
+
     async fn prompt(&self, agent_id: &str, session_id: &str, text: &str) {
         let (status, body) = self
             .post(
@@ -765,6 +787,7 @@ async fn roster_survives_backend_restart_with_history_replay() {
                 use_worktree: false,
                 base_branch: None,
                 approval_mode: clai2_web_server::model::ApprovalMode::Auto,
+                model_profile_id: None,
             })
             .await
             .unwrap();
@@ -1397,4 +1420,506 @@ async fn renaming_unknown_agent_is_404() {
         .await
         .unwrap();
     assert_eq!(response.status(), 404);
+}
+
+#[tokio::test]
+async fn model_profiles_crud_and_secret_redaction() {
+    let world = world().await;
+    assert!(world.get("/api/models").await.1.as_array().unwrap().is_empty());
+
+    let (status, created) = world
+        .post(
+            "/api/models",
+            json!({
+                "label": "Vertex Gemini",
+                "provider": "google_vertex",
+                "model": "gemini-2.5-pro",
+                "projectId": "my-project",
+                "region": "us-central1",
+                "credentialsJson": "{\"type\":\"service_account\"}",
+                "extraEnv": [{"name": "TOKEN", "value": "shh", "secret": true}]
+            }),
+        )
+        .await;
+    assert_eq!(status, 200, "create model failed: {created}");
+    let model_id = created["id"].as_str().unwrap().to_owned();
+    // Secrets are never echoed back; presence is flagged instead.
+    assert_eq!(created["hasCredentials"], true);
+    assert_eq!(created["projectId"], "my-project");
+    assert!(created.get("credentialsJson").is_none());
+    assert_eq!(created["extraEnv"][0]["value"], Value::Null);
+    assert_eq!(created["extraEnv"][0]["secret"], true);
+
+    // Editing without resending the secret keeps it.
+    let (status, updated) = world
+        .patch(
+            &format!("/api/models/{model_id}"),
+            json!({
+                "label": "Vertex Gemini Flash",
+                "provider": "google_vertex",
+                "model": "gemini-2.5-flash",
+                "projectId": "my-project",
+                "region": "us-central1",
+                "extraEnv": [{"name": "TOKEN", "secret": true}]
+            }),
+        )
+        .await;
+    assert_eq!(status, 200, "update model failed: {updated}");
+    assert_eq!(updated["label"], "Vertex Gemini Flash");
+    assert_eq!(updated["model"], "gemini-2.5-flash");
+    assert_eq!(updated["hasCredentials"], true);
+
+    // Validation: blank label is rejected.
+    let (status, _) = world
+        .post(
+            "/api/models",
+            json!({"label": "", "provider": "openai", "model": "gpt"}),
+        )
+        .await;
+    assert_eq!(status, 400);
+
+    let (status, _) = world
+        .patch(
+            "/api/models/nope",
+            json!({"label": "x", "provider": "openai", "model": "gpt"}),
+        )
+        .await;
+    assert_eq!(status, 404);
+
+    assert_eq!(world.delete("/api/models/nope").await, reqwest::StatusCode::NOT_FOUND);
+    assert_eq!(
+        world.delete(&format!("/api/models/{model_id}")).await,
+        reqwest::StatusCode::OK
+    );
+    assert!(world.get("/api/models").await.1.as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn agent_runs_with_its_model_profile_environment() {
+    let world = world().await;
+    let (_, model) = world
+        .post(
+            "/api/models",
+            json!({
+                "label": "Anthropic",
+                "provider": "anthropic",
+                "model": "claude-sonnet-4-6",
+                "apiKey": "sk-test-123"
+            }),
+        )
+        .await;
+    let model_id = model["id"].as_str().unwrap().to_owned();
+
+    let (status, agent) = world
+        .post(
+            "/api/agents",
+            json!({"name": "modelled", "useWorktree": false, "projectId": world.project_id, "approvalMode": "auto", "modelProfileId": model_id}),
+        )
+        .await;
+    assert_eq!(status, 200, "create agent failed: {agent}");
+    assert_eq!(agent["modelProfileId"], model_id);
+    assert_eq!(agent["modelLabel"], "Anthropic");
+    let agent_id = agent["id"].as_str().unwrap().to_owned();
+
+    // The stub echoes an env var, proving the profile's environment reached
+    // the process: CLAI_MODEL is provider-qualified, and the API key is set.
+    let mut ws = world.ws().await;
+    world.prompt(&agent_id, "main", "env:CLAI_MODEL").await;
+    let events = ws.collect_until(|event| event["type"] == "turnEnded").await;
+    let chunks = events_of_type(&events, "messageChunk");
+    assert!(
+        chunks
+            .iter()
+            .any(|chunk| chunk["text"] == "env CLAI_MODEL=anthropic:claude-sonnet-4-6"),
+        "chunks: {chunks:?}"
+    );
+
+    world.prompt(&agent_id, "main", "env:ANTHROPIC_API_KEY").await;
+    let events = ws.collect_until(|event| event["type"] == "turnEnded").await;
+    let chunks = events_of_type(&events, "messageChunk");
+    assert!(chunks
+        .iter()
+        .any(|chunk| chunk["text"] == "env ANTHROPIC_API_KEY=sk-test-123"));
+    ws.close().await;
+}
+
+#[tokio::test]
+async fn creating_agent_with_unknown_model_is_404() {
+    let world = world().await;
+    let (status, _) = world
+        .post(
+            "/api/agents",
+            json!({"name": "bad", "useWorktree": false, "projectId": world.project_id, "approvalMode": "auto", "modelProfileId": "ghost"}),
+        )
+        .await;
+    assert_eq!(status, 404);
+}
+
+#[tokio::test]
+async fn switching_model_restarts_with_new_environment() {
+    let world = world().await;
+    let (_, first_model) = world
+        .post(
+            "/api/models",
+            json!({"label": "GPT six", "provider": "openai", "model": "gpt-6", "apiKey": "k"}),
+        )
+        .await;
+    let first = first_model["id"].as_str().unwrap().to_owned();
+    let (_, second_model) = world
+        .post(
+            "/api/models",
+            json!({"label": "GPT mini", "provider": "openai", "model": "gpt-6-mini", "apiKey": "k"}),
+        )
+        .await;
+    let second = second_model["id"].as_str().unwrap().to_owned();
+
+    let (_, agent) = world
+        .post(
+            "/api/agents",
+            json!({"name": "switcher", "useWorktree": false, "projectId": world.project_id, "approvalMode": "auto", "modelProfileId": first}),
+        )
+        .await;
+    let agent_id = agent["id"].as_str().unwrap().to_owned();
+
+    // Establish history with a plain prompt (no stub directive, so it replays
+    // cleanly). The pre-switch environment is covered by another test.
+    let mut ws = world.ws().await;
+    world.prompt(&agent_id, "main", "remember the teal sky").await;
+    ws.collect_until(|event| event["type"] == "turnEnded").await;
+
+    // Switch the model; the agent keeps its identity and label updates.
+    let (status, updated) = world
+        .patch(
+            &format!("/api/agents/{agent_id}/model"),
+            json!({"modelProfileId": second}),
+        )
+        .await;
+    assert_eq!(status, 200, "switch failed: {updated}");
+    assert_eq!(updated["modelLabel"], "GPT mini");
+
+    // The next prompt runs on a fresh process and replays the history
+    // preamble (a normal prompt echoes the full wire text).
+    world.prompt(&agent_id, "main", "continue").await;
+    let events = ws.collect_until(|event| event["type"] == "turnEnded").await;
+    let echo: String = events_of_type(&events, "messageChunk")
+        .iter()
+        .map(|chunk| chunk["text"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(echo.contains("<conversation-history>"), "echo: {echo}");
+    assert!(echo.contains("User: remember the teal sky"), "echo: {echo}");
+
+    // The new provider environment is in effect on the fresh process.
+    world.prompt(&agent_id, "main", "env:CLAI_MODEL").await;
+    let events = ws.collect_until(|event| event["type"] == "turnEnded").await;
+    assert!(events_of_type(&events, "messageChunk")
+        .iter()
+        .any(|chunk| chunk["text"] == "env CLAI_MODEL=openai:gpt-6-mini"));
+    ws.close().await;
+}
+
+#[tokio::test]
+async fn model_in_use_cannot_be_deleted_until_agent_archived() {
+    let world = world().await;
+    let (_, model) = world
+        .post(
+            "/api/models",
+            json!({"label": "M", "provider": "openai", "model": "gpt-6"}),
+        )
+        .await;
+    let model_id = model["id"].as_str().unwrap().to_owned();
+    let (_, agent) = world
+        .post(
+            "/api/agents",
+            json!({"name": "user", "useWorktree": false, "projectId": world.project_id, "approvalMode": "auto", "modelProfileId": model_id}),
+        )
+        .await;
+    let agent_id = agent["id"].as_str().unwrap().to_owned();
+
+    assert_eq!(
+        world.delete(&format!("/api/models/{model_id}")).await,
+        reqwest::StatusCode::CONFLICT
+    );
+
+    world
+        .http
+        .delete(format!("{}/api/agents/{agent_id}", world.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        world.delete(&format!("/api/models/{model_id}")).await,
+        reqwest::StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn updating_a_model_refreshes_the_label_on_its_agents() {
+    let world = world().await;
+    let (_, model) = world
+        .post(
+            "/api/models",
+            json!({"label": "Old", "provider": "openai", "model": "gpt-6"}),
+        )
+        .await;
+    let model_id = model["id"].as_str().unwrap().to_owned();
+    let (_, agent) = world
+        .post(
+            "/api/agents",
+            json!({"name": "labelled", "useWorktree": false, "projectId": world.project_id, "approvalMode": "auto", "modelProfileId": model_id}),
+        )
+        .await;
+    let agent_id = agent["id"].as_str().unwrap().to_owned();
+
+    world
+        .patch(
+            &format!("/api/models/{model_id}"),
+            json!({"label": "New", "provider": "openai", "model": "gpt-6"}),
+        )
+        .await;
+    let (_, fetched) = world.get(&format!("/api/agents/{agent_id}")).await;
+    assert_eq!(fetched["modelLabel"], "New");
+}
+
+#[tokio::test]
+async fn agent_with_vertex_credentials_gets_a_credentials_file() {
+    let world = world().await;
+    let (_, model) = world
+        .post(
+            "/api/models",
+            json!({
+                "label": "Vertex",
+                "provider": "google_vertex",
+                "model": "gemini-2.5-pro",
+                "projectId": "proj",
+                "region": "us-central1",
+                "credentialsJson": "{\"type\":\"service_account\"}"
+            }),
+        )
+        .await;
+    let model_id = model["id"].as_str().unwrap().to_owned();
+    let (status, agent) = world
+        .post(
+            "/api/agents",
+            json!({"name": "vertexed", "useWorktree": false, "projectId": world.project_id, "approvalMode": "auto", "modelProfileId": model_id}),
+        )
+        .await;
+    assert_eq!(status, 200, "create agent failed: {agent}");
+    let agent_id = agent["id"].as_str().unwrap().to_owned();
+
+    // Spawning the agent writes the service-account JSON to a file and points
+    // GOOGLE_APPLICATION_CREDENTIALS at it. The stub echoes the value back.
+    let mut ws = world.ws().await;
+    world
+        .prompt(&agent_id, "main", "env:GOOGLE_APPLICATION_CREDENTIALS")
+        .await;
+    let events = ws.collect_until(|event| event["type"] == "turnEnded").await;
+    let path = events_of_type(&events, "messageChunk")
+        .iter()
+        .find_map(|chunk| {
+            chunk["text"]
+                .as_str()
+                .and_then(|text| text.strip_prefix("env GOOGLE_APPLICATION_CREDENTIALS="))
+                .map(str::to_owned)
+        })
+        .expect("credentials env var echoed");
+    assert!(!path.is_empty(), "credentials path should be non-empty");
+    assert!(Path::new(&path).exists(), "credentials file should exist: {path}");
+    ws.close().await;
+}
+
+#[tokio::test]
+async fn setting_model_on_a_busy_agent_is_409() {
+    let world = world().await;
+    let (_, model) = world
+        .post(
+            "/api/models",
+            json!({"label": "M", "provider": "openai", "model": "gpt-6"}),
+        )
+        .await;
+    let model_id = model["id"].as_str().unwrap().to_owned();
+    let agent = world.create_agent("busy", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap().to_owned();
+
+    let mut ws = world.ws().await;
+    world.prompt(&agent_id, "main", "slow").await;
+    ws.collect_until(|event| event["type"] == "messageChunk").await;
+    let (status, _) = world
+        .patch(
+            &format!("/api/agents/{agent_id}/model"),
+            json!({"modelProfileId": model_id}),
+        )
+        .await;
+    assert_eq!(status, 409);
+
+    // Release the held turn so the world tears down cleanly.
+    world.post(&format!("/api/agents/{agent_id}/cancel"), json!({})).await;
+    ws.collect_until(|event| event["type"] == "turnEnded").await;
+    ws.close().await;
+}
+
+#[tokio::test]
+async fn setting_model_on_an_archived_agent_is_400() {
+    let world = world().await;
+    let (_, model) = world
+        .post(
+            "/api/models",
+            json!({"label": "M", "provider": "openai", "model": "gpt-6"}),
+        )
+        .await;
+    let model_id = model["id"].as_str().unwrap().to_owned();
+    let agent = world.create_agent("gone", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap().to_owned();
+    world
+        .http
+        .delete(format!("{}/api/agents/{agent_id}", world.base_url))
+        .send()
+        .await
+        .unwrap();
+
+    let (status, _) = world
+        .patch(
+            &format!("/api/agents/{agent_id}/model"),
+            json!({"modelProfileId": model_id}),
+        )
+        .await;
+    assert_eq!(status, 400);
+}
+
+#[tokio::test]
+async fn setting_model_on_an_unknown_agent_is_404() {
+    let world = world().await;
+    let (status, _) = world
+        .patch("/api/agents/ghost/model", json!({"modelProfileId": null}))
+        .await;
+    assert_eq!(status, 404);
+}
+
+#[tokio::test]
+async fn setting_model_to_an_unknown_model_is_404() {
+    let world = world().await;
+    let agent = world.create_agent("picky", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap().to_owned();
+    let (status, _) = world
+        .patch(
+            &format!("/api/agents/{agent_id}/model"),
+            json!({"modelProfileId": "ghost"}),
+        )
+        .await;
+    assert_eq!(status, 404);
+}
+
+#[tokio::test]
+async fn clearing_then_reswitching_model_without_prompting() {
+    let world = world().await;
+    let (_, model) = world
+        .post(
+            "/api/models",
+            json!({"label": "M", "provider": "openai", "model": "gpt-6", "apiKey": "k"}),
+        )
+        .await;
+    let model_id = model["id"].as_str().unwrap().to_owned();
+    let (_, agent) = world
+        .post(
+            "/api/agents",
+            json!({"name": "clearer", "useWorktree": false, "projectId": world.project_id, "approvalMode": "auto", "modelProfileId": model_id}),
+        )
+        .await;
+    let agent_id = agent["id"].as_str().unwrap().to_owned();
+
+    // The first switch clears the profile and kills the live process.
+    let (status, cleared) = world
+        .patch(
+            &format!("/api/agents/{agent_id}/model"),
+            json!({"modelProfileId": null}),
+        )
+        .await;
+    assert_eq!(status, 200, "clear failed: {cleared}");
+    assert!(cleared["modelProfileId"].is_null());
+    assert!(cleared["modelLabel"].is_null());
+
+    // The second switch runs with no prompt in between, so the runtime is
+    // already gone and there is no client to kill.
+    let (status, reset) = world
+        .patch(
+            &format!("/api/agents/{agent_id}/model"),
+            json!({"modelProfileId": model_id}),
+        )
+        .await;
+    assert_eq!(status, 200, "reset failed: {reset}");
+    assert_eq!(reset["modelProfileId"], model_id);
+    assert_eq!(reset["modelLabel"], "M");
+}
+
+#[tokio::test]
+async fn agent_referencing_a_deleted_model_starts_with_an_empty_overlay() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    init_repo(&repo).await;
+    let config = ManagerConfig {
+        repo_root: repo.clone(),
+        worktrees_dir: dir.path().join("worktrees"),
+        data_dir: dir.path().join("data"),
+        agent_command: vec![STUB_AGENT.to_owned()],
+        max_agents: 50,
+    };
+
+    let agent_id = {
+        let manager = AgentManager::new(config.clone()).await.unwrap();
+        let model = manager
+            .create_model(clai2_web_server::models::ProfileEdit {
+                label: "Doomed".to_owned(),
+                provider: clai2_web_server::models::Provider::Openai,
+                model: "gpt-6".to_owned(),
+                api_key: None,
+                project_id: None,
+                region: None,
+                credentials_json: None,
+                extra_env: vec![],
+            })
+            .await
+            .unwrap();
+        let project_id = manager.list_projects().await[0].id.clone();
+        let agent = manager
+            .create_agent(clai2_web_server::manager::CreateAgent {
+                name: "orphan".to_owned(),
+                project_id,
+                use_worktree: false,
+                base_branch: None,
+                approval_mode: clai2_web_server::model::ApprovalMode::Auto,
+                model_profile_id: Some(model.id.clone()),
+            })
+            .await
+            .unwrap();
+        agent.id
+    };
+
+    // Drop the profile from disk so the restart cannot resolve it, standing in
+    // for a profile deleted while an agent still references it.
+    tokio::fs::write(config.data_dir.join("models.json"), b"[]")
+        .await
+        .unwrap();
+
+    let manager = AgentManager::new(config).await.unwrap();
+    // A prompt respawns the process; spawn_env finds no profile and runs with
+    // an empty overlay rather than refusing to start.
+    let mut receiver = manager.hub().subscribe();
+    manager
+        .prompt(&agent_id, "main", "env:CLAI_MODEL".to_owned())
+        .await
+        .unwrap();
+    let mut echo = String::new();
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(30), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match event {
+            clai2_web_server::events::Event::MessageChunk { text, .. } => echo.push_str(&text),
+            clai2_web_server::events::Event::TurnEnded { .. } => break,
+            _ => {}
+        }
+    }
+    // No profile means no CLAI_MODEL overlay, so the stub echoes an empty value.
+    assert!(echo.starts_with("env CLAI_MODEL="), "echo: {echo}");
+    assert!(!echo.contains("gpt-6"), "echo: {echo}");
 }

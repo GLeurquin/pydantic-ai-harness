@@ -5,6 +5,7 @@ import type {
   ApprovalView,
   PermissionOption,
   ProjectSummary,
+  RedactedProfile,
   SessionSummary,
   ToolCallView,
   TranscriptItem,
@@ -53,10 +54,52 @@ export function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
     sessions: [makeSession()],
     pendingApprovals: 0,
     forkedFrom: null,
+    modelProfileId: null,
+    modelLabel: null,
     lastError: null,
     ...overrides,
   };
 }
+
+export function makeProfile(overrides: Partial<RedactedProfile> = {}): RedactedProfile {
+  return {
+    id: 'model-anthropic',
+    label: 'Claude Sonnet',
+    provider: 'anthropic',
+    model: 'claude-sonnet-4-6',
+    hasApiKey: true,
+    projectId: null,
+    region: null,
+    hasCredentials: false,
+    extraEnv: [],
+    ...overrides,
+  };
+}
+
+export const sampleProfiles: RedactedProfile[] = [
+  makeProfile(),
+  makeProfile({
+    id: 'model-openai',
+    label: 'GPT-6',
+    provider: 'openai',
+    model: 'gpt-6',
+    hasApiKey: true,
+  }),
+  makeProfile({
+    id: 'model-vertex',
+    label: 'Vertex Gemini',
+    provider: 'google_vertex',
+    model: 'gemini-2.5-pro',
+    hasApiKey: false,
+    projectId: 'my-gcp-project',
+    region: 'us-central1',
+    hasCredentials: true,
+    extraEnv: [
+      { name: 'GOOGLE_CLOUD_QUOTA_PROJECT', value: 'billing-project', secret: false },
+      { name: 'VERTEX_API_TOKEN', value: null, secret: true },
+    ],
+  }),
+];
 
 export function makeToolCall(overrides: Partial<ToolCallView> = {}): ToolCallView {
   return {

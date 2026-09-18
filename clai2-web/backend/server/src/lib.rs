@@ -6,6 +6,7 @@ pub mod approvals;
 pub mod events;
 pub mod manager;
 pub mod model;
+pub mod models;
 pub mod store;
 pub mod worktrees;
 

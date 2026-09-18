@@ -7,7 +7,9 @@ import type {
   CreateProjectRequest,
   ForkAgentRequest,
   ApprovalMode,
+  ProfileEdit,
   ProjectSummary,
+  RedactedProfile,
   TranscriptItem,
   WorktreeDiff,
 } from './types';
@@ -99,4 +101,21 @@ export const api = {
     request<TranscriptItem[]>(`/api/agents/${agentId}/sessions/${sessionId}/transcript`),
 
   diff: (agentId: string) => request<WorktreeDiff>(`/api/agents/${agentId}/diff`),
+
+  listModels: () => request<RedactedProfile[]>('/api/models'),
+
+  createModel: (body: ProfileEdit) =>
+    request<RedactedProfile>('/api/models', { method: 'POST', body: JSON.stringify(body) }),
+
+  updateModel: (modelId: string, body: ProfileEdit) =>
+    request<RedactedProfile>(`/api/models/${modelId}`, { method: 'PATCH', body: JSON.stringify(body) }),
+
+  deleteModel: (modelId: string) =>
+    request<{ ok: boolean }>(`/api/models/${modelId}`, { method: 'DELETE' }),
+
+  setAgentModel: (agentId: string, modelProfileId: string | null) =>
+    request<AgentSummary>(`/api/agents/${agentId}/model`, {
+      method: 'PATCH',
+      body: JSON.stringify({ modelProfileId }),
+    }),
 };

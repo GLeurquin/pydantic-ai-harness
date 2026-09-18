@@ -15,6 +15,8 @@ function agent(id: string, name: string, status: AgentStatus, projectId = 'proje
     sessions: [],
     pendingApprovals: 0,
     forkedFrom: null,
+    modelProfileId: null,
+    modelLabel: null,
     lastError: null,
   };
 }

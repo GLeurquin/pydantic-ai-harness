@@ -2,7 +2,14 @@
 
 import { create } from 'zustand';
 
-import type { AgentSummary, ApprovalView, ProjectSummary, ServerEvent, TranscriptItem } from '../api/types';
+import type {
+  AgentSummary,
+  ApprovalView,
+  ProjectSummary,
+  RedactedProfile,
+  ServerEvent,
+  TranscriptItem,
+} from '../api/types';
 import { addNotification, dismissNotification as removeNotification, type Notification } from './notifications';
 import { appendItem, transcriptKey } from './transcript';
 
@@ -22,6 +29,7 @@ export interface AppState {
   connected: boolean;
   agents: AgentSummary[];
   approvals: ApprovalView[];
+  models: RedactedProfile[];
   projects: ProjectSummary[];
   selectedProjectId: ProjectFilter;
   maxAgents: number;
@@ -33,6 +41,7 @@ export interface AppState {
   setConnected: (connected: boolean) => void;
   applySnapshot: (snapshot: Snapshot) => void;
   applyEvent: (event: ServerEvent) => void;
+  setModels: (models: RedactedProfile[]) => void;
   selectAgent: (agentId: string) => void;
   selectProjectFilter: (projectId: ProjectFilter) => void;
   setView: (view: MainView) => void;
@@ -147,6 +156,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   connected: false,
   agents: [],
   approvals: [],
+  models: [],
   projects: [],
   selectedProjectId: 'all',
   maxAgents: 100,
@@ -173,6 +183,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       get().notifyError(event.message);
     }
   },
+  setModels: (models) => set({ models }),
   selectAgent: (agentId) => set({ selectedAgentId: agentId, view: { kind: 'session', sessionId: 'main' } }),
   selectProjectFilter: (projectId) => set({ selectedProjectId: projectId }),
   setView: (view) => set({ view }),

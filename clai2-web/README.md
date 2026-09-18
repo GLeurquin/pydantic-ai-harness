@@ -23,6 +23,8 @@ CLAI coder launcher.
 - Open side conversations: additional sessions against the same agent process
   and worktree, for questions that should not disturb the main thread.
 - Review each agent's work as a diff against its base branch.
+- Configure model profiles (provider, model, and credentials) in the browser
+  and choose which one each agent runs under, switchable per agent.
 
 ## Layout
 
@@ -63,6 +65,28 @@ for example, `--agent-cmd "python serve_agent.py"`, where the script calls
 The server binds to localhost for a single operator. It adds no auth,
 sandboxing, or approval layer beyond the approval modes described here; agents
 run as local subprocesses with your permissions.
+
+## Model profiles
+
+A model profile names a provider, a model, and the credentials to run it with.
+The "Models" button in the header manages them; the New Agent dialog and an
+agent's Settings tab pick which profile an agent uses. When an agent starts,
+the backend applies the profile's environment to that agent's process alone and
+sets `CLAI_MODEL` to the provider-qualified model string (for example
+`google-vertex:gemini-2.5-pro`), which the agent launcher passes to its
+`Agent(...)`. Anthropic, OpenAI, and Google (Gemini API) profiles set the
+provider's API-key variable; a Vertex profile sets `GOOGLE_CLOUD_PROJECT`,
+`GOOGLE_CLOUD_LOCATION`, and, when given service-account JSON, writes it to a
+per-agent file referenced by `GOOGLE_APPLICATION_CREDENTIALS`. A profile can
+also carry arbitrary extra environment variables. Switching an agent's profile
+restarts its process and replays the conversation so far to the new model.
+
+Secrets entered in the UI are stored in `models.json` (and Vertex credentials
+files) under the server's data directory, written with owner-only permissions
+on Unix, and are never returned to the browser once saved: a read reports only
+whether a secret is present. Because the file holds provider secrets in
+plaintext on the host, run the server on a machine you trust, and prefer
+referencing existing credentials over pasting long-lived keys where you can.
 
 ### Server options
 
@@ -146,4 +170,5 @@ prompt text, so every layer above the protocol can be tested without a model:
 | `approve:<kind>` | announce a tool call of `<kind>`, request permission, then complete or fail it per the answer |
 | `slow` | stream one chunk, then wait for cancellation |
 | `fail` | answer the turn with a JSON-RPC error |
+| `env:<NAME>` | echo the value of environment variable `<NAME>` |
 | anything else | echo the prompt back |

@@ -1,7 +1,15 @@
 import type { Story } from '@ladle/react';
 import { useState } from 'react';
 
-import { makeAgent, makeSession, makeWorktree, richTranscript, sampleDiff, streamingTranscript } from '../../.ladle/data';
+import {
+  makeAgent,
+  makeSession,
+  makeWorktree,
+  richTranscript,
+  sampleDiff,
+  sampleProfiles,
+  streamingTranscript,
+} from '../../.ladle/data';
 import type { AgentSummary, TranscriptItem, WorktreeDiff } from '../api/types';
 import type { MainView } from '../state/store';
 import { MainPane } from './MainPane';
@@ -32,7 +40,10 @@ function Frame({ agent, initialView }: { agent: AgentSummary; initialView: MainV
         onFork={noop}
         onSideSession={noop}
         loadDiff={loadDiff}
+        models={sampleProfiles}
         onSetApprovalMode={noop}
+        onSetModel={noop}
+        onManageModels={noop}
         onArchive={noop}
         onRename={noop}
       />

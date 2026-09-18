@@ -1,19 +1,29 @@
 import { useState } from 'react';
 
-import type { ApprovalMode, CreateAgentRequest, ProjectSummary } from '../api/types';
+import type { ApprovalMode, CreateAgentRequest, ProjectSummary, RedactedProfile } from '../api/types';
 import { errorMessage } from '../errors';
 import { MODE_LABELS } from './SettingsPanel';
 
 export interface NewAgentDialogProps {
+  models: RedactedProfile[];
   projects: ProjectSummary[];
   /** The sidebar's active project filter, if any, to preselect. */
   defaultProjectId?: string;
   onCreate: (request: CreateAgentRequest) => Promise<void>;
   onCreateProject: (name: string, path: string) => Promise<ProjectSummary>;
   onClose: () => void;
+  onManageModels: () => void;
 }
 
-export function NewAgentDialog({ projects, defaultProjectId, onCreate, onCreateProject, onClose }: NewAgentDialogProps) {
+export function NewAgentDialog({
+  models,
+  projects,
+  defaultProjectId,
+  onCreate,
+  onCreateProject,
+  onClose,
+  onManageModels,
+}: NewAgentDialogProps) {
   const [name, setName] = useState('');
   const [newProject, setNewProject] = useState<ProjectSummary | null>(null);
   const options = newProject && !projects.some((project) => project.id === newProject.id) ? [...projects, newProject] : projects;
@@ -26,6 +36,7 @@ export function NewAgentDialog({ projects, defaultProjectId, onCreate, onCreateP
   const [useWorktree, setUseWorktree] = useState(true);
   const [baseBranch, setBaseBranch] = useState('');
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('always_ask');
+  const [modelProfileId, setModelProfileId] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -65,6 +76,9 @@ export function NewAgentDialog({ projects, defaultProjectId, onCreate, onCreateP
       const request: CreateAgentRequest = { name: name.trim(), projectId, useWorktree, approvalMode };
       if (useWorktree && baseBranch.trim()) {
         request.baseBranch = baseBranch.trim();
+      }
+      if (modelProfileId) {
+        request.modelProfileId = modelProfileId;
       }
       await onCreate(request);
       onClose();
@@ -149,6 +163,20 @@ export function NewAgentDialog({ projects, defaultProjectId, onCreate, onCreateP
                 ))}
               </select>
             </label>
+            <label>
+              Model
+              <select value={modelProfileId} onChange={(change) => setModelProfileId(change.target.value)}>
+                <option value="">Default (server environment)</option>
+                {models.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button className="link-button" onClick={onManageModels}>
+              Manage model profiles
+            </button>
             {error ? <div className="form-error">{error}</div> : null}
             <div className="dialog-actions">
               <button onClick={onClose}>Cancel</button>

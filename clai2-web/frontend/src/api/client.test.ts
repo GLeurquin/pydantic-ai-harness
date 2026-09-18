@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { api, ApiError } from './client';
-import type { CreateAgentRequest, CreateProjectRequest, ForkAgentRequest } from './types';
+import type { CreateAgentRequest, CreateProjectRequest, ForkAgentRequest, ProfileEdit } from './types';
 
 const JSON_HEADERS = { headers: { 'content-type': 'application/json' } };
 
@@ -186,6 +186,65 @@ describe('api', () => {
     fetchMock.mockResolvedValue(okResponse(payload));
     await expect(api.diff('a1')).resolves.toEqual(payload);
     expect(fetchMock).toHaveBeenCalledWith('/api/agents/a1/diff', JSON_HEADERS);
+  });
+
+  it('listModels GETs /api/models', async () => {
+    const payload = [{ id: 'm1', label: 'Sonnet' }];
+    fetchMock.mockResolvedValue(okResponse(payload));
+    await expect(api.listModels()).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith('/api/models', JSON_HEADERS);
+  });
+
+  it('createModel POSTs the profile body', async () => {
+    const body: ProfileEdit = { label: 'Sonnet', provider: 'anthropic', model: 'claude-sonnet-4-6', apiKey: 'sk-1', extraEnv: [] };
+    const payload = { id: 'm1' };
+    fetchMock.mockResolvedValue(okResponse(payload));
+    await expect(api.createModel(body)).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith('/api/models', {
+      ...JSON_HEADERS,
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  });
+
+  it('updateModel PATCHes the profile body', async () => {
+    const body: ProfileEdit = { label: 'Renamed', provider: 'openai', model: 'gpt-6', extraEnv: [] };
+    const payload = { id: 'm1' };
+    fetchMock.mockResolvedValue(okResponse(payload));
+    await expect(api.updateModel('m1', body)).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith('/api/models/m1', {
+      ...JSON_HEADERS,
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    });
+  });
+
+  it('deleteModel DELETEs the profile', async () => {
+    fetchMock.mockResolvedValue(okResponse({ ok: true }));
+    await expect(api.deleteModel('m1')).resolves.toEqual({ ok: true });
+    expect(fetchMock).toHaveBeenCalledWith('/api/models/m1', { ...JSON_HEADERS, method: 'DELETE' });
+  });
+
+  it('setAgentModel PATCHes the chosen profile id', async () => {
+    const payload = { id: 'a1', modelProfileId: 'm1' };
+    fetchMock.mockResolvedValue(okResponse(payload));
+    await expect(api.setAgentModel('a1', 'm1')).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith('/api/agents/a1/model', {
+      ...JSON_HEADERS,
+      method: 'PATCH',
+      body: JSON.stringify({ modelProfileId: 'm1' }),
+    });
+  });
+
+  it('setAgentModel PATCHes a null profile id to clear the override', async () => {
+    const payload = { id: 'a1', modelProfileId: null };
+    fetchMock.mockResolvedValue(okResponse(payload));
+    await expect(api.setAgentModel('a1', null)).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/agents/a1/model', {
+      ...JSON_HEADERS,
+      method: 'PATCH',
+      body: JSON.stringify({ modelProfileId: null }),
+    });
   });
 });
 

@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
 
-import type { CreateAgentRequest, ProjectSummary } from '../api/types';
+import type { CreateAgentRequest, ProjectSummary, RedactedProfile } from '../api/types';
 import { NewAgentDialog } from './NewAgentDialog';
 
 function deferred<T>() {
@@ -18,12 +18,31 @@ const projects: ProjectSummary[] = [
   { id: 'p2', name: 'other-repo', repoRoot: '/other' },
 ];
 
+function makeProfile(overrides: Partial<RedactedProfile> = {}): RedactedProfile {
+  return {
+    id: 'm1',
+    label: 'Sonnet',
+    provider: 'anthropic',
+    model: 'claude-sonnet-4-6',
+    hasApiKey: true,
+    projectId: null,
+    region: null,
+    hasCredentials: false,
+    extraEnv: [],
+    ...overrides,
+  };
+}
+
+const models: RedactedProfile[] = [makeProfile(), makeProfile({ id: 'm2', label: 'GPT', provider: 'openai', model: 'gpt-6' })];
+
 function renderDialog(props: Partial<Parameters<typeof NewAgentDialog>[0]> = {}) {
   const defaults = {
+    models,
     projects,
     onCreate: vi.fn<(request: CreateAgentRequest) => Promise<void>>().mockResolvedValue(undefined),
     onCreateProject: vi.fn<(name: string, path: string) => Promise<ProjectSummary>>(),
     onClose: vi.fn(),
+    onManageModels: vi.fn(),
   };
   const merged = { ...defaults, ...props };
   return { ...render(<NewAgentDialog {...merged} />), props: merged };
@@ -200,5 +219,36 @@ describe('NewAgentDialog', () => {
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByPlaceholderText('my-other-repo')).toBeNull();
     expect(screen.getByRole('button', { name: '+ New project' })).toBeInTheDocument();
+  });
+
+  it('defaults the model select to the server environment and lists every profile', () => {
+    renderDialog();
+    const select = screen.getByLabelText('Model');
+    expect(select).toHaveValue('');
+    const options = within(select).getAllByRole('option');
+    expect(options.map((option) => [option.getAttribute('value'), option.textContent])).toEqual([
+      ['', 'Default (server environment)'],
+      ['m1', 'Sonnet'],
+      ['m2', 'GPT'],
+    ]);
+  });
+
+  it('includes the chosen model profile in the created request', async () => {
+    const user = userEvent.setup();
+    const onCreate = vi.fn<(request: CreateAgentRequest) => Promise<void>>().mockResolvedValue(undefined);
+    renderDialog({ onCreate });
+    await user.type(screen.getByPlaceholderText('fix-auth-bug'), 'agent');
+    await user.selectOptions(screen.getByLabelText('Model'), 'm2');
+    await user.click(screen.getByRole('button', { name: 'Start agent' }));
+    expect(onCreate.mock.calls).toStrictEqual([
+      [{ name: 'agent', projectId: 'p1', useWorktree: true, approvalMode: 'always_ask', modelProfileId: 'm2' }],
+    ]);
+  });
+
+  it('fires onManageModels from the Manage model profiles button', async () => {
+    const user = userEvent.setup();
+    const { props } = renderDialog();
+    await user.click(screen.getByRole('button', { name: 'Manage model profiles' }));
+    expect(props.onManageModels).toHaveBeenCalledTimes(1);
   });
 });
