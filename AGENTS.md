@@ -152,6 +152,28 @@ CI runs the repository-wide typecheck, test, and combined coverage gates.
 Do not run repository-wide Pyright, pytest, or coverage locally.
 If CI reports a coverage gap, run coverage only for the flagged file or focused test.
 
+### Workspace And Python 3.10
+
+```bash
+uv sync --locked --all-packages --all-extras --group lint
+```
+
+Harness and `pydantic-clai2` share the root `uv.lock`, `.venv`, and Pyright
+configuration. Workspace commands require Python 3.11+ because CLAI depends on
+Termflow. Harness's package metadata and Pyright target remain Python 3.10+.
+Tracking issue: https://github.com/pydantic/pydantic-ai-harness/issues/875.
+
+```bash
+uv venv /tmp/harness-py310 --python 3.10
+uv pip install --python /tmp/harness-py310/bin/python --group dev --editable . --requirements pyproject.toml --all-extras
+/tmp/harness-py310/bin/python -m pytest -p no:cacheprovider tests/code_mode
+```
+
+Use `uv pip` for Python 3.10 to resolve Harness without CLAI's Python requirement.
+These installs do not use the workspace lock. Add `--resolution lowest-direct`
+to the install command to check dependency floors, as CI does. Run the environment's
+Python directly so `uv run` does not select the workspace interpreter.
+
 ## File structure
 
 The tree is discoverable by listing it; only the conventions that are not are

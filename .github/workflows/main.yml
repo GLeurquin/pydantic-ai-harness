@@ -132,7 +132,7 @@ jobs:
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
           cache-suffix: lint
 
-      - run: uv sync --locked --all-groups --all-extras
+      - run: uv sync --locked --all-packages --all-groups --all-extras
 
       - uses: pre-commit/action@646c83fcd040023954eafda54b4db0192ce70507 # v3.0.0
         with:
@@ -176,10 +176,16 @@ jobs:
           python-version: ${{ matrix.python-version }}
           enable-cache: true # zizmor: ignore[cache-poisoning] -- Job does not produce release artifacts and does not have sensitive permissions
 
-      - run: uv sync --locked --group dev ${{ matrix.install.extras }}
+      - if: matrix.python-version != '3.10'
+        run: uv sync --locked --group dev ${{ matrix.install.extras }}
+      # CLAI makes the workspace require 3.11; test Harness's published requirements on 3.10.
+      - if: matrix.python-version == '3.10'
+        run: |
+          uv venv --python 3.10
+          uv pip install --group dev --editable . --requirements pyproject.toml ${{ matrix.install.extras }}
       - run: mkdir -p coverage-data
       - run: sudo apt-get update && sudo apt-get install -y ripgrep
-      - run: uv run coverage run -m pytest
+      - run: .venv/bin/python -m coverage run -m pytest
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-${{ matrix.python-version }}-${{ matrix.install.name }}
@@ -188,9 +194,9 @@ jobs:
 
   # Verify the harness still works against the lowest direct-dep versions we claim
   # compatibility with (the `>=` floors in pyproject.toml — including pydantic-ai-slim
-  # but also any other direct dep). The default `test` matrix above resolves against
-  # the lock (= latest published satisfying our constraints); this job exercises the
-  # entire claimed compatibility envelope. Mirrors pydantic-ai's `test-lowest-versions`
+  # but also any other direct dep). The `test` matrix uses the lock on Python 3.11+
+  # and resolves published requirements on 3.10; this job checks the lower bounds.
+  # Mirrors pydantic-ai's `test-lowest-versions`
   # job so the convention is consistent across the workspace.
   #
   # Bleeding-edge compat with pydantic-ai's main branch is verified by pydantic-ai's
@@ -217,11 +223,16 @@ jobs:
       # The lock validation must be off here: this job deviates from the lock
       # on purpose, and under UV_LOCKED=1 the lowest-direct resolution fails
       # because uv refuses to write the lowest-resolved lockfile it produces.
-      - run: uv sync --resolution lowest-direct --group dev --all-extras
+      - if: matrix.python-version != '3.10'
+        run: uv sync --resolution lowest-direct --group dev --all-extras
         env:
           UV_LOCKED: '0'
+      - if: matrix.python-version == '3.10'
+        run: |
+          uv venv --python 3.10
+          uv pip install --resolution lowest-direct --group dev --editable . --requirements pyproject.toml --all-extras
       - run: sudo apt-get update && sudo apt-get install -y ripgrep
-      - run: uv run --no-sync pytest
+      - run: .venv/bin/python -m pytest
 
   # Verify the harness works against the latest published pydantic-ai packages,
   # not just the lock. The `test` matrix resolves against the lock, so harness
