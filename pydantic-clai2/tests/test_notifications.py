@@ -3,7 +3,6 @@
 import asyncio
 import io
 import json
-import os
 import sys
 from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
@@ -11,6 +10,7 @@ from subprocess import DEVNULL, CompletedProcess
 
 import anyio
 import pytest
+from anyio.abc import Process
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, DeltaToolCalls, FunctionModel
@@ -223,36 +223,42 @@ async def test_questions_notify_before_answering_and_delivery_errors_are_harmles
     await loader.close('exit')
 
 
-@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX file descriptors and process existence check')
-@pytest.mark.parametrize('cancel', [False, True], ids=['timeout', 'outer-cancellation'])
-async def test_async_delivery_reaps_the_child_on_timeout_or_cancellation(
-    cancel: bool, loader_factory: Callable[[], PluginLoader[None]], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    read_fd, write_fd = os.pipe()
-    scopes: list[anyio.CancelScope] = []
-    completed: list[bool] = []
-    finished = anyio.Event()
-    pid: int | None = None
+class SleepingProcess:
+    def __init__(self) -> None:
+        self.started = anyio.Event()
+        self.child: Process | None = None
 
-    async def run_process(
-        command: list[str], *, stdin: int, stdout: int, stderr: int, env: dict[str, str], check: bool
+    async def __call__(
+        self, command: list[str], *, stdin: int, stdout: int, stderr: int, env: dict[str, str], check: bool
     ) -> CompletedProcess[bytes]:
-        return await anyio.run_process(
-            [
-                sys.executable,
-                '-c',
-                'import os, sys, time; os.write(int(sys.argv[1]), str(os.getpid()).encode()); time.sleep(60)',
-                str(write_fd),
-            ],
+        async with await anyio.open_process(
+            [sys.executable, '-c', 'import time; time.sleep(60)'],
             stdin=stdin,
             stdout=stdout,
             stderr=stderr,
-            check=check,
-            pass_fds=(write_fd,),
-        )
+            env=env,
+        ) as process:
+            self.child = process
+            self.started.set()
+            code = await process.wait()
+        return CompletedProcess(command, code)
 
-    monkeypatch.setattr(notifications, 'run_process', run_process)
+
+@pytest.fixture
+def sleeping_process(monkeypatch: pytest.MonkeyPatch) -> SleepingProcess:
+    process = SleepingProcess()
+    monkeypatch.setattr(notifications, 'run_process', process)
     monkeypatch.setattr(notifications, 'platform', 'linux')
+    return process
+
+
+@pytest.mark.parametrize('cancel', [False, True], ids=['timeout', 'outer-cancellation'])
+async def test_async_delivery_reaps_the_child_on_timeout_or_cancellation(
+    cancel: bool, loader_factory: Callable[[], PluginLoader[None]], sleeping_process: SleepingProcess
+) -> None:
+    scopes: list[anyio.CancelScope] = []
+    completed: list[bool] = []
+    finished = anyio.Event()
     loader = loader_factory()
     await loader.load_all()
 
@@ -267,48 +273,22 @@ async def test_async_delivery_reaps_the_child_on_timeout_or_cancellation(
         with anyio.fail_after(READINESS_TIMEOUT):
             async with anyio.create_task_group() as workers:
                 workers.start_soon(deliver)
-                await anyio.wait_readable(read_fd)
-                pid = int(os.read(read_fd, 100))
+                await sleeping_process.started.wait()
                 assert completed == []
                 if cancel:
                     scopes[0].cancel()
                 await finished.wait()
         assert completed == ([] if cancel else [True])
-        assert pid is not None
-        with pytest.raises(ProcessLookupError):
-            os.kill(pid, 0)
+        assert sleeping_process.child is not None
+        assert sleeping_process.child.returncode is not None
     finally:
-        os.close(read_fd)
-        os.close(write_fd)
         await loader.close('exit')
 
 
-@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX file descriptors and process existence check')
 @pytest.mark.parametrize('through_interrupts', [False, True])
 async def test_native_cancellation_reaps_child_and_stays_cancelled(
-    through_interrupts: bool, loader_factory: Callable[[], PluginLoader[None]], monkeypatch: pytest.MonkeyPatch
+    through_interrupts: bool, loader_factory: Callable[[], PluginLoader[None]], sleeping_process: SleepingProcess
 ) -> None:
-    read_fd, write_fd = os.pipe()
-
-    async def run_process(
-        command: list[str], *, stdin: int, stdout: int, stderr: int, env: dict[str, str], check: bool
-    ) -> CompletedProcess[bytes]:
-        return await anyio.run_process(
-            [
-                sys.executable,
-                '-c',
-                'import os, sys, time; os.write(int(sys.argv[1]), str(os.getpid()).encode()); time.sleep(60)',
-                str(write_fd),
-            ],
-            stdin=stdin,
-            stdout=stdout,
-            stderr=stderr,
-            check=check,
-            pass_fds=(write_fd,),
-        )
-
-    monkeypatch.setattr(notifications, 'run_process', run_process)
-    monkeypatch.setattr(notifications, 'platform', 'linux')
     loader = loader_factory()
     await loader.load_all()
     interrupts = Interrupts()
@@ -324,8 +304,7 @@ async def test_native_cancellation_reaps_child_and_stays_cancelled(
     task = asyncio.create_task(interruptible() if through_interrupts else deliver())
     try:
         with anyio.fail_after(READINESS_TIMEOUT):
-            await anyio.wait_readable(read_fd)
-            pid = int(os.read(read_fd, 100))
+            await sleeping_process.started.wait()
             if through_interrupts:
                 assert interrupts.cancel()
                 await task
@@ -334,11 +313,9 @@ async def test_native_cancellation_reaps_child_and_stays_cancelled(
                 with pytest.raises(asyncio.CancelledError):
                     await task
         assert completed == []
-        with pytest.raises(ProcessLookupError):
-            os.kill(pid, 0)
+        assert sleeping_process.child is not None
+        assert sleeping_process.child.returncode is not None
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-        os.close(read_fd)
-        os.close(write_fd)
         await loader.close('exit')
