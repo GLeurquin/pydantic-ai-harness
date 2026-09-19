@@ -7,6 +7,7 @@ import sys
 import threading
 from collections.abc import AsyncIterable
 from pathlib import Path
+from types import ModuleType
 
 import anyio
 import pytest
@@ -24,6 +25,8 @@ from termflow.tui.completion import CompleteEvent, Document  # pyright: ignore[r
 from pydantic_clai2 import DEFAULT_PLUGINS, Session, chat
 from pydantic_clai2.command_context import CommandContext
 from pydantic_clai2.commands import Command, Commands, set_completions
+from pydantic_clai2.config import PluginSettings
+from pydantic_clai2.plugins import PluginHost, TurnEnd, TurnStart
 from pydantic_clai2.settings_store import SettingsStore
 from pydantic_clai2.splash import Splash
 
@@ -422,3 +425,60 @@ async def test_add_model_and_select_saved_model(tmp_path: Path) -> None:
     assert 'success' in output.getvalue()
     assert store.models() == ['test']
     assert store.load().model == 'test'
+
+
+@pytest.mark.parametrize('phase', ['start', 'end'])
+async def test_live_editor_interrupts_slow_turn_hooks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    started = anyio.Event()
+    cleaned = anyio.Event()
+    done = anyio.Event()
+    module = ModuleType('slow_turn_test')
+
+    async def wait() -> None:
+        try:
+            started.set()
+            await anyio.sleep_forever()
+        finally:
+            cleaned.set()
+
+    def activate(host: PluginHost[None]) -> None:
+        @host.on('turn_start')
+        async def before(event: TurnStart) -> None:
+            if phase == 'start':
+                await wait()
+
+        @host.on('turn_end')
+        async def after(event: TurnEnd) -> None:
+            if phase == 'end':
+                await wait()
+
+    module.__dict__['activate'] = activate
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    store = SettingsStore(tmp_path / 'config.db')
+    store.save_plugin(PluginSettings(id='slow', factory=module.__name__))
+    output = io.StringIO()
+
+    async def run() -> None:
+        await chat(
+            Agent(TestModel(custom_output_text='completed')),
+            deps=None,
+            console=Console(file=output, force_terminal=True),
+            store=store,
+        )
+        done.set()
+
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()), anyio.fail_after(10):
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(run)
+            pipe.send_text('hello\n')
+            await started.wait()
+            pipe.send_text('draft\x03')
+            await cleaned.wait()
+            pipe.send_text('\x15/exit\n')
+            await done.wait()
+    assert 'Goodbye.' in output.getvalue()
+    if phase == 'start':
+        assert 'Turn cancelled' in output.getvalue()
+        assert 'completed' not in output.getvalue()

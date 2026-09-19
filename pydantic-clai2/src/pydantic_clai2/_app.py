@@ -430,41 +430,42 @@ class _Shell(Generic[DepsT, OutputT]):
 
     async def _turn(self, text: str) -> bool:
         start = TurnStart(text=text)
+        ended: TurnEnd | None = None
+
+        async def run_turn() -> None:
+            nonlocal ended
+            ended = await self._run_turn(start)
+
+        completed = await self.interrupts.run(run_turn())
+        self.sessions.namer.submit(self.session.summary.id)
+        _report_interrupt(completed, self.console)
+        await self.interrupts.run(self.loader.fire(ended or TurnEnd(text=start.text, outcome='cancelled')))
+        return self.interrupts.exit_requested
+
+    async def _run_turn(self, start: TurnStart) -> TurnEnd:
         try:
             await self.loader.fire(start)
         except PluginError as exc:
             self.console.print(str(exc), style=theme.ERROR, markup=False)
             self.console.print()
-            await self.loader.fire(TurnEnd(text=start.text, outcome='failed', error=exc))
-            return False
+            return TurnEnd(text=start.text, outcome='failed', error=exc)
         if start.cancelled:
             self.console.print(
                 f'Turn cancelled by a plugin: {start.cancel_reason or "no reason given"}', style=theme.WARNING
             )
             self.console.print()
-            await self.loader.fire(TurnEnd(text=start.text, outcome='cancelled'))
-            return False
+            return TurnEnd(text=start.text, outcome='cancelled')
         self.session.plugins = (*self.plugins, *self.loader.capabilities())
         self.session.model_settings = self.context.model_settings(self.session.model or _model_label(self.agent))
-        ended: TurnEnd | None = None
-
-        async def run_prompt() -> None:
-            nonlocal ended
-            ended = await _run_prompt(
-                self.session,
-                start.text,
-                console=self.console,
-                settings=self.context.settings,
-                status=self.status,
-                renderers=self.loader.renderers(),
-                screen=self.screen,
-            )
-
-        completed = await self.interrupts.run(run_prompt())
-        self.sessions.namer.submit(self.session.summary.id)
-        _report_interrupt(completed, self.console)
-        await self.loader.fire(ended or TurnEnd(text=start.text, outcome='cancelled'))
-        return self.interrupts.exit_requested
+        return await _run_prompt(
+            self.session,
+            start.text,
+            console=self.console,
+            settings=self.context.settings,
+            status=self.status,
+            renderers=self.loader.renderers(),
+            screen=self.screen,
+        )
 
 
 def _report_project(project: ProjectSettings, console: Console) -> None:
