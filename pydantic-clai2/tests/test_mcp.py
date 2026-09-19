@@ -10,6 +10,7 @@ from pathlib import Path
 import anyio
 import pytest
 from anyio.abc import SocketAttribute, SocketStream
+from anyio.streams.buffered import BufferedByteReceiveStream
 from pydantic import JsonValue
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelResponse
@@ -318,7 +319,8 @@ class TestMCPPlugin:
 
         async def receive(stream: SocketStream) -> None:
             async with stream:
-                assert int(await stream.receive()) == int((tmp_path / 'server.pid').read_text())
+                expected = (tmp_path / 'server.pid').read_bytes()
+                assert await BufferedByteReceiveStream(stream).receive_exactly(len(expected)) == expected
                 ready.set()
 
         with anyio.fail_after(READY_TIMEOUT):

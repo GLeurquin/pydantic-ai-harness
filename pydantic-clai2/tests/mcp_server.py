@@ -21,7 +21,8 @@ def context() -> str:
 @server.tool()
 async def wait() -> str:
     async with await anyio.connect_tcp('127.0.0.1', int(os.environ['CLAI_MCP_READY_PORT'])) as stream:
-        await stream.send(str(os.getpid()).encode())
+        for byte in str(os.getpid()).encode():
+            await stream.send(bytes((byte,)))
         await anyio.sleep_forever()
     return 'unreachable'  # pragma: no cover -- the test cancels this tool while it is waiting.
 

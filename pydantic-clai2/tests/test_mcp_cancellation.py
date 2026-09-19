@@ -7,6 +7,7 @@ from pathlib import Path
 import anyio
 import pytest
 from anyio.abc import SocketAttribute, SocketStream
+from anyio.streams.buffered import BufferedByteReceiveStream
 from fastmcp.client.transports import StdioTransport
 from pydantic_ai import Agent
 from pydantic_ai.mcp import MCPToolset
@@ -30,7 +31,8 @@ async def test_outer_anyio_cancel_closes_stdio(tmp_path: Path) -> None:
 
     async def receive(stream: SocketStream) -> None:
         async with stream:
-            assert int(await stream.receive()) == int(pid_path.read_text())
+            expected = pid_path.read_bytes()
+            assert await BufferedByteReceiveStream(stream).receive_exactly(len(expected)) == expected
             ready.set()
 
     with anyio.fail_after(READY_TIMEOUT):
