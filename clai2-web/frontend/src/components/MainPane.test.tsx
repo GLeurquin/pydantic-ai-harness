@@ -93,19 +93,20 @@ describe('MainPane', () => {
     expect(props.onSetView).toHaveBeenLastCalledWith({ kind: 'settings' });
   });
 
-  it('fires the Fork and Side conversation callbacks', async () => {
+  it('fires the Fork and Side conversation callbacks from the actions menu', async () => {
     const user = userEvent.setup();
     const { props } = renderPane();
-    await user.click(screen.getByRole('button', { name: 'Fork' }));
+    await user.click(screen.getByRole('button', { name: 'More actions' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Fork' }));
     expect(props.onFork).toHaveBeenCalledTimes(1);
-    await user.click(screen.getByRole('button', { name: 'Side conversation' }));
+    await user.click(screen.getByRole('button', { name: 'More actions' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Side conversation' }));
     expect(props.onSideSession).toHaveBeenCalledTimes(1);
   });
 
-  it('hides Fork and Side conversation for archived agents', () => {
+  it('hides the actions menu for archived agents', () => {
     renderPane({ agent: makeAgent({ status: 'archived' }) });
-    expect(screen.queryByRole('button', { name: 'Fork' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Side conversation' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'More actions' })).toBeNull();
   });
 
   it('renders the conversation for a session view with that session transcript', () => {

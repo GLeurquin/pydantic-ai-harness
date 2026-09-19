@@ -38,6 +38,7 @@ export function Conversation({
   onSideSession,
 }: ConversationProps) {
   const [draft, setDraft] = useState('');
+  const [actionsOpen, setActionsOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const blocks = buildBlocks(items);
   const busy = agent.status === 'working' || agent.status === 'waiting_approval';
@@ -120,16 +121,6 @@ export function Conversation({
         <ApprovalBanner key={approval.id} approval={approval} onResolve={onResolveApproval} />
       ))}
       <div className="composer">
-        {archived ? null : (
-          <div className="composer-actions">
-            <button onClick={onSideSession} title="Open a side conversation with this agent">
-              Side conversation
-            </button>
-            <button onClick={onFork} title="Fork this agent into a new worktree">
-              Fork
-            </button>
-          </div>
-        )}
         <textarea
           value={draft}
           placeholder={busy ? 'Agent is working...' : `Message ${agent.name}`}
@@ -142,6 +133,41 @@ export function Conversation({
           }}
           aria-label="Prompt"
         />
+        {archived ? null : (
+          <div className="composer-menu">
+            <button
+              type="button"
+              onClick={() => setActionsOpen((value) => !value)}
+              aria-expanded={actionsOpen}
+              aria-label="More actions"
+              title="More actions"
+            >
+              &#8942;
+            </button>
+            {actionsOpen ? (
+              <div className="composer-menu-panel" role="menu" aria-label="Conversation actions">
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setActionsOpen(false);
+                    onSideSession();
+                  }}
+                >
+                  Side conversation
+                </button>
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setActionsOpen(false);
+                    onFork();
+                  }}
+                >
+                  Fork
+                </button>
+              </div>
+            ) : null}
+          </div>
+        )}
         {busy ? (
           <button className="danger" onClick={onCancel}>
             Cancel

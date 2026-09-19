@@ -193,18 +193,26 @@ describe('Conversation', () => {
     expect(props.onResolveApproval).toHaveBeenCalledWith('ap1', 'allow-once');
   });
 
-  it('shows Fork and Side conversation next to the composer and fires their callbacks', async () => {
+  it('offers Fork and Side conversation from the actions menu next to Send, and fires their callbacks', async () => {
     const user = userEvent.setup();
     const { props } = renderConversation();
-    await user.click(screen.getByRole('button', { name: 'Fork' }));
+    const menuButton = screen.getByRole('button', { name: 'More actions' });
+    expect(screen.queryByRole('menu')).toBeNull();
+
+    await user.click(menuButton);
+    expect(menuButton).toHaveAttribute('aria-expanded', 'true');
+    await user.click(screen.getByRole('menuitem', { name: 'Fork' }));
     expect(props.onFork).toHaveBeenCalledTimes(1);
-    await user.click(screen.getByRole('button', { name: 'Side conversation' }));
+    expect(screen.queryByRole('menuitem', { name: 'Fork' })).toBeNull();
+
+    await user.click(menuButton);
+    await user.click(screen.getByRole('menuitem', { name: 'Side conversation' }));
     expect(props.onSideSession).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('menu')).toBeNull();
   });
 
-  it('hides Fork and Side conversation for an archived agent', () => {
+  it('hides the actions menu for an archived agent', () => {
     renderConversation({ agent: makeAgent({ status: 'archived' }) });
-    expect(screen.queryByRole('button', { name: 'Fork' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Side conversation' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'More actions' })).toBeNull();
   });
 });

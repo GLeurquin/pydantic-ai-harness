@@ -131,32 +131,18 @@ export function NewAgentDialog({
 
   return (
     <div className="dialog-backdrop" onClick={onClose}>
-      <div className="dialog" role="dialog" aria-label="New agent" onClick={(click) => click.stopPropagation()}>
-        <h2>New agent</h2>
-        <label>
-          Name
-          <input
-            autoFocus
-            value={name}
-            onChange={(change) => setName(change.target.value)}
-            placeholder="fix-auth-bug"
-          />
-        </label>
-        <label>
-          Project
-          <select value={projectId} onChange={(change) => setProjectId(change.target.value)} aria-label="Project">
-            {options.map((project) => (
-              <option key={project.id} value={project.id}>
-                {project.name}
-              </option>
-            ))}
-          </select>
-        </label>
+      <div className="dialog" role="dialog" aria-label={addingProject ? 'Add project' : 'New agent'} onClick={(click) => click.stopPropagation()}>
         {addingProject ? (
           <>
+            <h2>Add project</h2>
             <label>
               Project name
-              <input value={projectName} onChange={(change) => setProjectName(change.target.value)} placeholder="my-other-repo" />
+              <input
+                autoFocus
+                value={projectName}
+                onChange={(change) => setProjectName(change.target.value)}
+                placeholder="my-other-repo"
+              />
             </label>
             <label>
               Repository path (absolute)
@@ -175,10 +161,28 @@ export function NewAgentDialog({
             </div>
           </>
         ) : (
-          <button onClick={() => setAddingProject(true)}>+ New project</button>
-        )}
-        {addingProject ? null : (
           <>
+            <h2>New agent</h2>
+            <label>
+              Name
+              <input
+                autoFocus
+                value={name}
+                onChange={(change) => setName(change.target.value)}
+                placeholder="fix-auth-bug"
+              />
+            </label>
+            <label>
+              Project
+              <select value={projectId} onChange={(change) => setProjectId(change.target.value)} aria-label="Project">
+                {options.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button onClick={() => setAddingProject(true)}>+ New project</button>
             <div className="dialog-row">
               <input
                 id="from-github"

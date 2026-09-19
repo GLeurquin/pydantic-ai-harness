@@ -266,6 +266,7 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
 }
 
 .main-empty {
@@ -640,10 +641,27 @@
   border-top: 1px solid var(--border);
 }
 
-.composer-actions {
+.composer-menu {
+  position: relative;
+}
+
+.composer-menu-panel {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  min-width: 160px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 4px;
   display: flex;
-  gap: 6px;
-  align-items: flex-start;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 20;
+}
+
+.composer-menu-panel button {
+  text-align: left;
 }
 
 .composer textarea {

@@ -154,7 +154,8 @@ test('forking carries the conversation into a new worktree agent', async ({ page
   await send(page, 'remember: the sky is teal');
   await expect(page.getByText('echo: remember: the sky is teal')).toBeVisible();
 
-  await page.getByRole('button', { name: 'Fork', exact: true }).click();
+  await page.getByRole('button', { name: 'More actions' }).click();
+  await page.getByRole('menuitem', { name: 'Fork' }).click();
   const dialog = page.getByRole('dialog', { name: `Fork ${name}` });
   await dialog.getByLabel('Name').fill(`${name}-fork`);
   await dialog.getByRole('button', { name: 'Fork agent' }).click();
@@ -177,7 +178,8 @@ test('side conversations stay isolated from the main thread', async ({ page }) =
   await send(page, 'main topic');
   await expect(page.getByText('echo: main topic')).toBeVisible();
 
-  await page.getByRole('button', { name: 'Side conversation' }).click();
+  await page.getByRole('button', { name: 'More actions' }).click();
+  await page.getByRole('menuitem', { name: 'Side conversation' }).click();
   const dialog = page.getByRole('dialog', { name: 'Side conversation' });
   await dialog.getByLabel('Name').fill('quick question');
   await dialog.getByRole('button', { name: 'Open', exact: true }).click();
@@ -236,7 +238,7 @@ test('registering a project lets an agent run in another repository', async ({ p
   testInfo.annotations.push({ type: 'other-repo', description: otherRepo });
 
   await page.getByRole('button', { name: 'New', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: 'New agent' });
+  const dialog = page.getByRole('dialog');
   await dialog.getByRole('button', { name: '+ New project' }).click();
   await dialog.getByLabel('Project name').fill('other-project');
   await dialog.getByLabel('Repository path (absolute)').fill(otherRepo);

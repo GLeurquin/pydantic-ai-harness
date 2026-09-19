@@ -215,6 +215,17 @@ describe('NewAgentDialog', () => {
     expect(await screen.findByText('rejected')).toHaveClass('form-error');
   });
 
+  it('shows a clean Add project screen, hiding the unrelated agent fields', async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    await user.click(screen.getByRole('button', { name: '+ New project' }));
+    expect(screen.getByRole('dialog', { name: 'Add project' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Add project' })).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('fix-auth-bug')).toBeNull();
+    expect(screen.queryByLabelText('Project')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Start agent' })).toBeNull();
+  });
+
   it('cancels the inline project form', async () => {
     const user = userEvent.setup();
     renderDialog();

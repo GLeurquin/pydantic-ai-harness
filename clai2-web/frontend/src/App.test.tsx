@@ -310,7 +310,8 @@ describe('App', () => {
     apiMock.fork.mockResolvedValue(fork);
     render(<App />);
     await snapshot([makeAgent()]);
-    await user.click(screen.getByRole('button', { name: 'Fork' }));
+    await user.click(screen.getByRole('button', { name: 'More actions' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Fork' }));
     const dialog = screen.getByRole('dialog', { name: 'Fork Alpha' });
     await user.type(within(dialog).getByPlaceholderText('Alpha fork'), 'Alpha two');
     await user.click(within(dialog).getByRole('button', { name: 'Fork agent' }));
@@ -331,7 +332,8 @@ describe('App', () => {
     apiMock.openSideSession.mockResolvedValue(updated);
     render(<App />);
     await snapshot([makeAgent()]);
-    await user.click(screen.getByRole('button', { name: 'Side conversation' }));
+    await user.click(screen.getByRole('button', { name: 'More actions' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Side conversation' }));
     const dialog = screen.getByRole('dialog', { name: 'Side conversation' });
     await user.type(within(dialog).getByPlaceholderText('Ask about the approach'), 'Approach chat');
     await user.click(within(dialog).getByRole('button', { name: 'Open' }));
