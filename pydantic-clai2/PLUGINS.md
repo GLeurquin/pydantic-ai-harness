@@ -430,7 +430,7 @@ and start `clai2 --web` to serve core's `Agent.to_web()` UI on
 | `turn_start`, `turn_end` | Registration raises and prevents startup. Use core run hooks for cross-interface guards. |
 | `host.full_screen()` | Raises when called; terminal widgets have no browser equivalent. |
 | Slash commands and `host.render(...)` | May register, but the browser does not dispatch or display them. Core renders its own stream. |
-| `host.console` | Writes to the server's terminal, not the browser. |
+| `host.console`, `host.notify(...)` | Write to the server's terminal, not the browser. No interactive terminal owns that output. |
 | `host.conversation`, `host.status` | Detached defaults, not the browser's history or status. Use core run context for run data. |
 
 The terminal `ask_user`, `persistence`, `notifications`, and `updates` modules
