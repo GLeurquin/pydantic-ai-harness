@@ -139,6 +139,8 @@ dev = [
     "pytest-recording>=0.13.4",
     "mongomock-motor>=0.0.36",
     "redis>=6.0.0",
+    # CLAI update-check cassettes use httpx2 (issue #966).
+    "cassetter>=0.11.0",
 ]
 lint = [
     'ruff>=0.14',
@@ -238,6 +240,7 @@ executionEnvironments = [
 ]
 
 [tool.pytest.ini_options]
+addopts = '-p no:cassetter'
 testpaths = ['tests']
 xfail_strict = true
 markers = ['modal_live: runs against a real Modal control plane; needs credentials']
