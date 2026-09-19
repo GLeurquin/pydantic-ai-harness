@@ -1,40 +1,29 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 
-import { api } from '../api/client';
 import type { RedactedGithubSettings } from '../api/types';
 import { errorMessage } from '../errors';
 
 export interface GithubSettingsDialogProps {
+  settings: RedactedGithubSettings;
+  onSaveToken: (token: string) => Promise<void>;
+  onClearToken: () => Promise<void>;
+  onSavePollInterval: (pollIntervalSecs: number) => Promise<void>;
   onClose: () => void;
-  /** Notifies the parent whenever the settings change. */
-  onChanged?: (settings: RedactedGithubSettings) => void;
 }
-
-const DEFAULT_POLL_MINUTES = '5';
 
 /** GitHub settings shared by every agent: the personal access token used to
  * import issues and poll CI status, and the base CI-polling interval. */
-export function GithubSettingsDialog({ onClose, onChanged }: GithubSettingsDialogProps) {
-  const [settings, setSettings] = useState<RedactedGithubSettings | null>(null);
+export function GithubSettingsDialog({
+  settings,
+  onSaveToken,
+  onClearToken,
+  onSavePollInterval,
+  onClose,
+}: GithubSettingsDialogProps) {
   const [tokenDraft, setTokenDraft] = useState('');
-  const [pollMinutes, setPollMinutes] = useState(DEFAULT_POLL_MINUTES);
+  const [pollMinutes, setPollMinutes] = useState(() => String(settings.pollIntervalSecs / 60));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    api.githubSettings().then(
-      (loaded) => {
-        setSettings(loaded);
-        setPollMinutes(String(loaded.pollIntervalSecs / 60));
-      },
-      (failure: unknown) => setError(errorMessage(failure)),
-    );
-  }, []);
-
-  const refresh = (next: RedactedGithubSettings) => {
-    setSettings(next);
-    onChanged?.(next);
-  };
 
   const saveToken = async () => {
     if (!tokenDraft.trim()) {
@@ -44,7 +33,7 @@ export function GithubSettingsDialog({ onClose, onChanged }: GithubSettingsDialo
     setBusy(true);
     setError(null);
     try {
-      refresh(await api.setGithubToken(tokenDraft.trim()));
+      await onSaveToken(tokenDraft.trim());
       setTokenDraft('');
     } catch (failure) {
       setError(errorMessage(failure));
@@ -57,7 +46,7 @@ export function GithubSettingsDialog({ onClose, onChanged }: GithubSettingsDialo
     setBusy(true);
     setError(null);
     try {
-      refresh(await api.clearGithubToken());
+      await onClearToken();
     } catch (failure) {
       setError(errorMessage(failure));
     } finally {
@@ -74,7 +63,7 @@ export function GithubSettingsDialog({ onClose, onChanged }: GithubSettingsDialo
     setBusy(true);
     setError(null);
     try {
-      refresh(await api.setGithubPollInterval(Math.round(minutes * 60)));
+      await onSavePollInterval(Math.round(minutes * 60));
     } catch (failure) {
       setError(errorMessage(failure));
     } finally {
@@ -97,14 +86,14 @@ export function GithubSettingsDialog({ onClose, onChanged }: GithubSettingsDialo
             type="password"
             value={tokenDraft}
             onChange={(change) => setTokenDraft(change.target.value)}
-            placeholder={settings?.hasToken ? 'unchanged' : 'ghp_...'}
+            placeholder={settings.hasToken ? 'unchanged' : 'ghp_...'}
           />
         </label>
         <div className="dialog-row">
           <button onClick={() => void saveToken()} disabled={busy}>
             Save token
           </button>
-          {settings?.hasToken ? (
+          {settings.hasToken ? (
             <button className="danger" onClick={() => void clearToken()} disabled={busy}>
               Clear token
             </button>

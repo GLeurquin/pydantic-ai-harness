@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { api } from './api/client';
-import type { CreateAgentRequest } from './api/types';
+import type { CreateAgentRequest, ProfileEdit } from './api/types';
 import { errorMessage } from './errors';
 import { CiTrackingDialog } from './components/CiTrackingDialog';
 import { GithubSettingsDialog } from './components/GithubSettingsDialog';
@@ -92,6 +92,35 @@ export function App() {
     useAppStore.getState().applyEvent({ type: 'projectRemoved', projectId });
   };
 
+  const createModel = async (body: ProfileEdit) => {
+    const created = await api.createModel(body);
+    useAppStore.getState().setModels([...useAppStore.getState().models, created]);
+    return created;
+  };
+
+  const updateModel = async (profileId: string, body: ProfileEdit) => {
+    const updated = await api.updateModel(profileId, body);
+    useAppStore.getState().setModels(useAppStore.getState().models.map((profile) => (profile.id === updated.id ? updated : profile)));
+    return updated;
+  };
+
+  const deleteModel = async (profileId: string) => {
+    await api.deleteModel(profileId);
+    useAppStore.getState().setModels(useAppStore.getState().models.filter((profile) => profile.id !== profileId));
+  };
+
+  const saveGithubToken = async (token: string) => {
+    useAppStore.getState().setGithubSettings(await api.setGithubToken(token));
+  };
+
+  const clearGithubToken = async () => {
+    useAppStore.getState().setGithubSettings(await api.clearGithubToken());
+  };
+
+  const saveGithubPollInterval = async (pollIntervalSecs: number) => {
+    useAppStore.getState().setGithubSettings(await api.setGithubPollInterval(pollIntervalSecs));
+  };
+
   return (
     <div className="app">
       <NotificationTray notifications={store.notifications} onDismiss={store.dismissNotification} />
@@ -172,12 +201,21 @@ export function App() {
         />
       ) : null}
       {dialog === 'models' ? (
-        <ModelsDialog onClose={() => setDialog('none')} onChanged={useAppStore.getState().setModels} />
+        <ModelsDialog
+          profiles={store.models}
+          onCreate={createModel}
+          onUpdate={updateModel}
+          onDelete={deleteModel}
+          onClose={() => setDialog('none')}
+        />
       ) : null}
       {dialog === 'github' ? (
         <GithubSettingsDialog
+          settings={store.githubSettings}
+          onSaveToken={saveGithubToken}
+          onClearToken={clearGithubToken}
+          onSavePollInterval={saveGithubPollInterval}
           onClose={() => setDialog('none')}
-          onChanged={useAppStore.getState().setGithubSettings}
         />
       ) : null}
       {dialog === 'fork' && selected ? (

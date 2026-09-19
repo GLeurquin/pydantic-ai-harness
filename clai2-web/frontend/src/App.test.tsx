@@ -499,6 +499,44 @@ describe('App', () => {
     await waitFor(() => expect(useAppStore.getState().models).toEqual([created]));
   });
 
+  it('edits a model profile from the dialog and replaces only its row', async () => {
+    const user = userEvent.setup();
+    const other = makeProfile({ id: 'm2', label: 'GPT' });
+    apiMock.listModels.mockResolvedValue([makeProfile(), other]);
+    const updated = makeProfile({ label: 'Renamed' });
+    apiMock.updateModel.mockResolvedValue(updated);
+    render(<App />);
+    await snapshot([makeAgent()]);
+    await waitFor(() => expect(useAppStore.getState().models).toHaveLength(2));
+    await user.click(screen.getByRole('button', { name: 'Model profiles' }));
+    const [firstEdit] = await screen.findAllByRole('button', { name: 'Edit' });
+    await user.click(firstEdit!);
+    const name = screen.getByLabelText('Name');
+    await user.clear(name);
+    await user.type(name, 'Renamed');
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(apiMock.updateModel).toHaveBeenCalledWith('m1', {
+      label: 'Renamed',
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      extraEnv: [],
+    });
+    await waitFor(() => expect(useAppStore.getState().models).toEqual([updated, other]));
+  });
+
+  it('deletes a model profile from the dialog and removes its row', async () => {
+    const user = userEvent.setup();
+    apiMock.listModels.mockResolvedValue([makeProfile()]);
+    apiMock.deleteModel.mockResolvedValue({ ok: true });
+    render(<App />);
+    await snapshot([makeAgent()]);
+    await waitFor(() => expect(useAppStore.getState().models).toHaveLength(1));
+    await user.click(screen.getByRole('button', { name: 'Model profiles' }));
+    await user.click(await screen.findByRole('button', { name: 'Delete' }));
+    expect(apiMock.deleteModel).toHaveBeenCalledWith('m1');
+    await waitFor(() => expect(useAppStore.getState().models).toEqual([]));
+  });
+
   it('switches the selected agent model from the Settings tab', async () => {
     const user = userEvent.setup();
     apiMock.listModels.mockResolvedValue([makeProfile({ id: 'm2', label: 'GPT' })]);
@@ -590,6 +628,43 @@ describe('App', () => {
     expect(apiMock.setGithubToken).toHaveBeenCalledWith('ghp_secret');
     await waitFor(() =>
       expect(useAppStore.getState().githubSettings).toEqual({ hasToken: true, pollIntervalSecs: 300 }),
+    );
+  });
+
+  it('clears a GitHub token from the GitHub settings dialog and stores the updated settings', async () => {
+    const user = userEvent.setup();
+    apiMock.githubSettings.mockResolvedValue({ hasToken: true, pollIntervalSecs: 300 });
+    apiMock.clearGithubToken.mockResolvedValue({ hasToken: false, pollIntervalSecs: 300 });
+    render(<App />);
+    await snapshot([makeAgent()]);
+    await waitFor(() =>
+      expect(useAppStore.getState().githubSettings).toEqual({ hasToken: true, pollIntervalSecs: 300 }),
+    );
+    await user.click(screen.getByRole('button', { name: 'GitHub settings' }));
+    await user.click(screen.getByRole('button', { name: 'Clear token' }));
+    expect(apiMock.clearGithubToken).toHaveBeenCalledTimes(1);
+    await waitFor(() =>
+      expect(useAppStore.getState().githubSettings).toEqual({ hasToken: false, pollIntervalSecs: 300 }),
+    );
+  });
+
+  it('saves the GitHub poll interval from the GitHub settings dialog and stores the updated settings', async () => {
+    const user = userEvent.setup();
+    apiMock.githubSettings.mockResolvedValue({ hasToken: false, pollIntervalSecs: 300 });
+    apiMock.setGithubPollInterval.mockResolvedValue({ hasToken: false, pollIntervalSecs: 150 });
+    render(<App />);
+    await snapshot([makeAgent()]);
+    await waitFor(() =>
+      expect(useAppStore.getState().githubSettings).toEqual({ hasToken: false, pollIntervalSecs: 300 }),
+    );
+    await user.click(screen.getByRole('button', { name: 'GitHub settings' }));
+    const field = screen.getByLabelText('Poll interval (minutes)');
+    await user.clear(field);
+    await user.type(field, '2.5');
+    await user.click(screen.getByRole('button', { name: 'Save interval' }));
+    expect(apiMock.setGithubPollInterval).toHaveBeenCalledWith(150);
+    await waitFor(() =>
+      expect(useAppStore.getState().githubSettings).toEqual({ hasToken: false, pollIntervalSecs: 150 }),
     );
   });
 

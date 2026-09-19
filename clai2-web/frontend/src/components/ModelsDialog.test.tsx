@@ -1,24 +1,9 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, vi } from 'vitest';
+import { vi } from 'vitest';
 
-import { api } from '../api/client';
 import type { RedactedProfile } from '../api/types';
 import { ModelsDialog } from './ModelsDialog';
-
-vi.mock('../api/client', () => ({
-  api: {
-    listModels: vi.fn(),
-    createModel: vi.fn(),
-    updateModel: vi.fn(),
-    deleteModel: vi.fn(),
-  },
-}));
-
-const listModels = vi.mocked(api.listModels);
-const createModel = vi.mocked(api.createModel);
-const updateModel = vi.mocked(api.updateModel);
-const deleteModel = vi.mocked(api.deleteModel);
 
 function makeProfile(overrides: Partial<RedactedProfile> = {}): RedactedProfile {
   return {
@@ -35,124 +20,102 @@ function makeProfile(overrides: Partial<RedactedProfile> = {}): RedactedProfile 
   };
 }
 
-beforeEach(() => {
-  vi.clearAllMocks();
-  listModels.mockResolvedValue([]);
-});
+function renderDialog(props: Partial<Parameters<typeof ModelsDialog>[0]> = {}) {
+  const defaults = {
+    profiles: [] as RedactedProfile[],
+    onCreate: vi.fn(),
+    onUpdate: vi.fn(),
+    onDelete: vi.fn<(profileId: string) => Promise<void>>().mockResolvedValue(undefined),
+    onClose: vi.fn(),
+  };
+  const merged = { ...defaults, ...props };
+  return { ...render(<ModelsDialog {...merged} />), props: merged };
+}
 
 describe('ModelsDialog', () => {
-  it('lists the profiles returned by listModels', async () => {
-    listModels.mockResolvedValue([
-      makeProfile(),
-      makeProfile({ id: 'p2', label: 'GPT', provider: 'openai', model: 'gpt-6' }),
-    ]);
-    render(<ModelsDialog onClose={vi.fn()} />);
-    expect(await screen.findByText('Claude Sonnet')).toBeInTheDocument();
+  it('lists the given profiles', () => {
+    renderDialog({
+      profiles: [makeProfile(), makeProfile({ id: 'p2', label: 'GPT', provider: 'openai', model: 'gpt-6' })],
+    });
+    expect(screen.getByText('Claude Sonnet')).toBeInTheDocument();
     expect(screen.getByText('Anthropic · claude-sonnet-4-6')).toBeInTheDocument();
     expect(screen.getByText('GPT')).toBeInTheDocument();
     expect(screen.getByText('OpenAI · gpt-6')).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: 'Edit' })).toHaveLength(2);
   });
 
-  it('shows the empty state once loaded with no profiles', async () => {
-    render(<ModelsDialog onClose={vi.fn()} />);
-    expect(await screen.findByText('No profiles yet.')).toBeInTheDocument();
+  it('shows the empty state with no profiles', () => {
+    renderDialog();
+    expect(screen.getByText('No profiles yet.')).toBeInTheDocument();
   });
 
-  it('shows the load error when listModels rejects', async () => {
-    listModels.mockRejectedValue(new Error('server down'));
-    render(<ModelsDialog onClose={vi.fn()} />);
-    expect(await screen.findByText('server down')).toHaveClass('form-error');
-  });
-
-  it('stringifies a non-Error load failure', async () => {
-    listModels.mockRejectedValue('nope');
-    render(<ModelsDialog onClose={vi.fn()} />);
-    expect(await screen.findByText('nope')).toHaveClass('form-error');
-  });
-
-  it('creates a profile, appends it to the list, and notifies onChanged', async () => {
+  it('creates a profile through onCreate and returns to the list', async () => {
     const user = userEvent.setup();
-    const onChanged = vi.fn();
     const created = makeProfile({ id: 'new1', label: 'New Sonnet' });
-    createModel.mockResolvedValue(created);
-    render(<ModelsDialog onClose={vi.fn()} onChanged={onChanged} />);
-    await screen.findByText('No profiles yet.');
+    const onCreate = vi.fn().mockResolvedValue(created);
+    renderDialog({ onCreate });
     await user.click(screen.getByRole('button', { name: 'New profile' }));
     await user.type(screen.getByLabelText('Name'), 'New Sonnet');
     await user.type(screen.getByLabelText('Model'), 'claude-sonnet-4-6');
     await user.click(screen.getByRole('button', { name: 'Add profile' }));
-    await waitFor(() => expect(createModel).toHaveBeenCalledTimes(1));
-    expect(createModel).toHaveBeenCalledWith({
+    await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(1));
+    expect(onCreate).toHaveBeenCalledWith({
       label: 'New Sonnet',
       provider: 'anthropic',
       model: 'claude-sonnet-4-6',
       extraEnv: [],
     });
-    expect(await screen.findByText('New Sonnet')).toBeInTheDocument();
-    expect(onChanged).toHaveBeenLastCalledWith([created]);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'New profile' })).toBeInTheDocument());
   });
 
-  it('edits a profile through updateModel and replaces only its row', async () => {
+  it('edits a profile through onUpdate', async () => {
     const user = userEvent.setup();
-    const onChanged = vi.fn();
     const other = makeProfile({ id: 'p2', label: 'GPT', provider: 'openai', model: 'gpt-6' });
-    listModels.mockResolvedValue([makeProfile(), other]);
     const updated = makeProfile({ label: 'Renamed' });
-    updateModel.mockResolvedValue(updated);
-    render(<ModelsDialog onClose={vi.fn()} onChanged={onChanged} />);
-    const [firstEdit] = await screen.findAllByRole('button', { name: 'Edit' });
+    const onUpdate = vi.fn().mockResolvedValue(updated);
+    renderDialog({ profiles: [makeProfile(), other], onUpdate });
+    const [firstEdit] = screen.getAllByRole('button', { name: 'Edit' });
     await user.click(firstEdit!);
     const name = screen.getByLabelText('Name');
     await user.clear(name);
     await user.type(name, 'Renamed');
     await user.click(screen.getByRole('button', { name: 'Save changes' }));
-    await waitFor(() => expect(updateModel).toHaveBeenCalledTimes(1));
-    expect(updateModel).toHaveBeenCalledWith('p1', {
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(1));
+    expect(onUpdate).toHaveBeenCalledWith('p1', {
       label: 'Renamed',
       provider: 'anthropic',
       model: 'claude-sonnet-4-6',
       extraEnv: [],
     });
-    expect(await screen.findByText('Renamed')).toBeInTheDocument();
-    expect(onChanged).toHaveBeenLastCalledWith([updated, other]);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'New profile' })).toBeInTheDocument());
   });
 
-  it('deletes a profile and removes its row', async () => {
+  it('deletes a profile through onDelete', async () => {
     const user = userEvent.setup();
-    const onChanged = vi.fn();
-    listModels.mockResolvedValue([makeProfile()]);
-    deleteModel.mockResolvedValue({ ok: true });
-    render(<ModelsDialog onClose={vi.fn()} onChanged={onChanged} />);
-    await user.click(await screen.findByRole('button', { name: 'Delete' }));
-    await waitFor(() => expect(deleteModel).toHaveBeenCalledWith('p1'));
-    await waitFor(() => expect(screen.queryByText('Claude Sonnet')).toBeNull());
-    expect(onChanged).toHaveBeenLastCalledWith([]);
+    const onDelete = vi.fn<(profileId: string) => Promise<void>>().mockResolvedValue(undefined);
+    renderDialog({ profiles: [makeProfile()], onDelete });
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(onDelete).toHaveBeenCalledWith('p1'));
   });
 
-  it('shows the delete error when deleteModel rejects', async () => {
+  it('shows the delete error when onDelete rejects', async () => {
     const user = userEvent.setup();
-    listModels.mockResolvedValue([makeProfile()]);
-    deleteModel.mockRejectedValue(new Error('model in use'));
-    render(<ModelsDialog onClose={vi.fn()} />);
-    await user.click(await screen.findByRole('button', { name: 'Delete' }));
+    renderDialog({ profiles: [makeProfile()], onDelete: vi.fn().mockRejectedValue(new Error('model in use')) });
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
     expect(await screen.findByText('model in use')).toHaveClass('form-error');
     expect(screen.getByText('Claude Sonnet')).toBeInTheDocument();
   });
 
   it('stringifies a non-Error delete failure', async () => {
     const user = userEvent.setup();
-    listModels.mockResolvedValue([makeProfile()]);
-    deleteModel.mockRejectedValue('conflict');
-    render(<ModelsDialog onClose={vi.fn()} />);
-    await user.click(await screen.findByRole('button', { name: 'Delete' }));
+    renderDialog({ profiles: [makeProfile()], onDelete: vi.fn().mockRejectedValue('conflict') });
+    await user.click(screen.getByRole('button', { name: 'Delete' }));
     expect(await screen.findByText('conflict')).toHaveClass('form-error');
   });
 
   it('returns to the list when the form is cancelled', async () => {
     const user = userEvent.setup();
-    render(<ModelsDialog onClose={vi.fn()} />);
-    await screen.findByText('No profiles yet.');
+    renderDialog();
     await user.click(screen.getByRole('button', { name: 'New profile' }));
     expect(screen.getByLabelText('Name')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Cancel' }));
@@ -162,30 +125,19 @@ describe('ModelsDialog', () => {
 
   it('fires onClose from the Close button', async () => {
     const user = userEvent.setup();
-    const onClose = vi.fn();
-    render(<ModelsDialog onClose={onClose} />);
-    await user.click(await screen.findByRole('button', { name: 'Close' }));
-    expect(onClose).toHaveBeenCalledTimes(1);
+    const { props } = renderDialog();
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    expect(props.onClose).toHaveBeenCalledTimes(1);
   });
 
   it('closes on a backdrop click but not on a click inside the dialog', async () => {
     const user = userEvent.setup();
-    const onClose = vi.fn();
-    const { container } = render(<ModelsDialog onClose={onClose} />);
+    const { props, container } = renderDialog();
     await user.click(screen.getByRole('dialog', { name: 'Model profiles' }));
-    expect(onClose).not.toHaveBeenCalled();
+    expect(props.onClose).not.toHaveBeenCalled();
     const backdrop = container.querySelector('.dialog-backdrop');
     expect(backdrop).not.toBeNull();
     await user.click(backdrop as Element);
-    expect(onClose).toHaveBeenCalledTimes(1);
-  });
-
-  it('lets onChanged be optional', async () => {
-    const user = userEvent.setup();
-    listModels.mockResolvedValue([makeProfile()]);
-    deleteModel.mockResolvedValue({ ok: true });
-    render(<ModelsDialog onClose={vi.fn()} />);
-    await user.click(await screen.findByRole('button', { name: 'Delete' }));
-    await waitFor(() => expect(screen.queryByText('Claude Sonnet')).toBeNull());
+    expect(props.onClose).toHaveBeenCalledTimes(1);
   });
 });

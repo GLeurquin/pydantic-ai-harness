@@ -1,50 +1,30 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 
-import { api } from '../api/client';
-import type { RedactedProfile } from '../api/types';
+import type { ProfileEdit, RedactedProfile } from '../api/types';
+import { errorMessage } from '../errors';
 import { PROVIDER_LABELS, toProfileEdit, type ModelFormState } from '../state/providers';
 import { ModelForm } from './ModelForm';
 
 export interface ModelsDialogProps {
+  profiles: RedactedProfile[];
+  onCreate: (body: ProfileEdit) => Promise<RedactedProfile>;
+  onUpdate: (profileId: string, body: ProfileEdit) => Promise<RedactedProfile>;
+  onDelete: (profileId: string) => Promise<void>;
   onClose: () => void;
-  /** Notifies the parent whenever the profile list changes. */
-  onChanged?: (profiles: RedactedProfile[]) => void;
 }
 
 type Editing = { kind: 'list' } | { kind: 'new' } | { kind: 'edit'; profile: RedactedProfile };
 
-export function ModelsDialog({ onClose, onChanged }: ModelsDialogProps) {
-  const [profiles, setProfiles] = useState<RedactedProfile[]>([]);
+export function ModelsDialog({ profiles, onCreate, onUpdate, onDelete, onClose }: ModelsDialogProps) {
   const [editing, setEditing] = useState<Editing>({ kind: 'list' });
   const [error, setError] = useState<string | null>(null);
-  const [loaded, setLoaded] = useState(false);
-
-  const refresh = (next: RedactedProfile[]) => {
-    setProfiles(next);
-    onChanged?.(next);
-  };
-
-  useEffect(() => {
-    api.listModels().then(
-      (loadedProfiles) => {
-        setProfiles(loadedProfiles);
-        setLoaded(true);
-      },
-      (failure: unknown) => {
-        setError(failure instanceof Error ? failure.message : String(failure));
-        setLoaded(true);
-      },
-    );
-  }, []);
 
   const save = async (form: ModelFormState) => {
     const body = toProfileEdit(form);
     if (editing.kind === 'edit') {
-      const updated = await api.updateModel(editing.profile.id, body);
-      refresh(profiles.map((profile) => (profile.id === updated.id ? updated : profile)));
+      await onUpdate(editing.profile.id, body);
     } else {
-      const created = await api.createModel(body);
-      refresh([...profiles, created]);
+      await onCreate(body);
     }
     setEditing({ kind: 'list' });
   };
@@ -52,10 +32,9 @@ export function ModelsDialog({ onClose, onChanged }: ModelsDialogProps) {
   const remove = async (profile: RedactedProfile) => {
     setError(null);
     try {
-      await api.deleteModel(profile.id);
-      refresh(profiles.filter((candidate) => candidate.id !== profile.id));
+      await onDelete(profile.id);
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : String(failure));
+      setError(errorMessage(failure));
     }
   };
 
@@ -71,7 +50,7 @@ export function ModelsDialog({ onClose, onChanged }: ModelsDialogProps) {
 
         {editing.kind === 'list' ? (
           <>
-            {loaded && profiles.length === 0 ? <div className="hint">No profiles yet.</div> : null}
+            {profiles.length === 0 ? <div className="hint">No profiles yet.</div> : null}
             <ul className="model-list">
               {profiles.map((profile) => (
                 <li key={profile.id} className="model-list-row">
