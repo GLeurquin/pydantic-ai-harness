@@ -76,8 +76,8 @@ Plugins load and unload while CLAI runs. The rules that make that safe:
   natural unit; nothing rebuilds the agent.
 - **Built-ins are declarations, not code paths.** `DEFAULT_PLUGINS` in
   `_app.py` lists what CLAI ships enabled (`coder`, `ask_user`, `repo_context`,
-  `compaction`, `persistence`). The loader treats them like drop-ins with the lowest
-  precedence: a store declaration with the same id replaces one, `disable`
+  `compaction`, `persistence`, `notifications`). The loader treats them like
+  drop-ins with the lowest precedence: a store declaration with the same id replaces one, `disable`
   persists an override, `remove` resets it. Do not special-case `Coder`
   anywhere else; the agent from `create_agent()` has no coding tools of its
   own. `coder` is declared with `repo_context: false` because `repo_context`
@@ -200,6 +200,7 @@ the pydantic.dev `pydantic-visual-identity` skill's `brand-identity.md`.
 | `settings_store.py` | the SQLite store under `$XDG_CONFIG_HOME/pydantic-clai2/` |
 | `project_settings.py` | `.clai/settings.json`: the walk-up to the git root, validation, `ProjectSettings` |
 | `repo_context.py` | the built-in `repo_context` plugin over harness `RepoContext` |
+| `notifications.py` | the built-in desktop notifications for turn outcomes and `AskUserRequestedEvent` |
 | `theme.py` | brand palette, colour roles, `sgr()` |
 
 Keep files concise - we don't need any 10,000 line files. Single responsibility.

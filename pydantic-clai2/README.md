@@ -682,6 +682,37 @@ plugin list. Use `/plugins list` to print it. Plugins are trusted code running a
 
 [PLUGINS.md](PLUGINS.md) has the full list of hooks, events, and rules.
 
+## Desktop notifications
+
+```text
+/plugins disable notifications
+/plugins enable notifications
+```
+
+The built-in `notifications` plugin is enabled by default. It sends a native
+notification when a turn completes or fails, and when `ask_user` needs an answer.
+Cancelled turns do not notify. Notifications use the title `CLAI2` and fixed
+status text, not prompts, answers, tool arguments, paths, or error details. This
+keeps conversation content out of desktop banners and notification history.
+They are sent even when the terminal is focused, without requesting a sound.
+
+macOS uses `/usr/bin/osascript`; notifications may appear under Script Editor.
+Allow notifications for that sender in System Settings if needed. Focus mode
+and OS notification settings can hide them. Linux uses `notify-send` when it is
+installed and a desktop notification service is available. Other platforms do
+nothing. Remote sessions notify the machine running CLAI, not your local client.
+
+Delivery uses an async subprocess with a two-second timeout and no shell
+interpolation. Its input and output do not touch the terminal. Missing utilities,
+nonzero exits, and timeouts are ignored so they do not fail a turn or a question.
+A stalled utility can delay the next prompt or question menu by up to two seconds;
+timeout or cancellation kills and reaps the child. No background workers or
+additional telemetry are added.
+
+Enable and disable choices persist. `/plugins remove notifications` restores the
+enabled default. The plugin has no settings; disabling it does not disable
+`ask_user`. See [PLUGINS.md](PLUGINS.md#notifications-native-desktop-alerts) for its hooks.
+
 ## Questions from the model
 
 When the task is ambiguous, the model can call `ask_user_question` instead of
