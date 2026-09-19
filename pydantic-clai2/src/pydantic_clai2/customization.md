@@ -142,7 +142,10 @@ cannot be undone.
 
 Reload ordering follows module-scope imports in the current source, including
 newly added dependencies between CLAI modules and new local modules. Function-local
-imports and `TYPE_CHECKING` guards do not create eager dependencies. New modules
+imports and `TYPE_CHECKING` guards do not create eager dependencies. Literal
+guards and direct platform/version comparisons select their active branch without
+executing source expressions. Other conditions are analyzed conservatively and
+may require a restart if their alternatives form a cycle. New modules
 are imported only if reached by the updated code; invalid source or a detected
 import cycle fails before reloads begin. Restart for changes to startup code,
 agent construction, or dynamically loaded dependencies. Third-party dependencies

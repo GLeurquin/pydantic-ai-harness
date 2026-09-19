@@ -254,7 +254,10 @@ previous module bindings and report the error, but cannot undo import-time side
 effects. Reload ordering is planned from current module-scope source imports,
 including newly referenced local modules and package initializers. Lazy imports
 inside functions and `TYPE_CHECKING` guards do not create eager dependencies;
-new modules are imported only when reached by the updated code. Invalid source
+new modules are imported only when reached by the updated code. Literal guards
+and direct platform/version comparisons select their active branch without
+executing guard expressions. Other conditions are analyzed conservatively and
+may require a restart if their alternatives form a cycle. Invalid source
 or a detected import cycle fails before module reloads begin. Restart for changes
 to startup code, dynamically loaded dependencies, or agent construction.
 Third-party dependencies are not recursively reloaded.

@@ -314,6 +314,10 @@ adding or changing imports between CLAI modules does not require a restart.
 Newly referenced local modules and package initializers are included when planning
 the dependency order, but Python imports them only if the updated code uses them.
 Function-local imports and `TYPE_CHECKING` guards do not create eager dependencies.
+Literal guards and direct comparisons of `sys.platform`, `os.name`, and
+`sys.version_info` select only the active branch, including imported aliases.
+Other conditions are analyzed conservatively and may require a restart if their
+alternative imports form a cycle. No guard expression is executed during planning.
 A detected import cycle or invalid source reports an error before reloading modules.
 
 Restart for changes to startup code, the custom agent's construction, or dependencies

@@ -3,17 +3,41 @@
 import ast
 import importlib
 import importlib.util
+import operator
+import os
 import sys
 import tokenize
 from collections.abc import Callable, Iterable
 from graphlib import TopologicalSorter
 from pathlib import Path
 from types import ModuleType
-from typing import TypeVar
+from typing import TypeAlias, TypeVar
 
 import pydantic_clai2
 
 T = TypeVar('T')
+_GuardValue: TypeAlias = str | int | tuple[str | int, ...]
+
+
+class _Unknown:
+    """A guard value that cannot be determined without executing source."""
+
+
+_UNKNOWN = _Unknown()
+_COMPARISONS: dict[type[ast.cmpop], Callable[[_GuardValue, _GuardValue], bool]] = {
+    ast.Eq: operator.eq,
+    ast.NotEq: operator.ne,
+    ast.Lt: operator.lt,
+    ast.LtE: operator.le,
+    ast.Gt: operator.gt,
+    ast.GtE: operator.ge,
+}
+_IMPORT_VALUES: dict[str, _GuardValue] = {
+    'sys.platform': sys.platform,
+    'sys.version_info': tuple(sys.version_info),
+    'os.name': os.name,
+    'typing.TYPE_CHECKING': False,
+}
 
 
 class _Imports(ast.NodeVisitor):
@@ -22,14 +46,23 @@ class _Imports(ast.NodeVisitor):
     def __init__(self, package: str) -> None:
         self.package = package
         self.names: set[str] = set()
+        self.values: dict[str, _GuardValue] = {}
 
     def visit_Import(self, node: ast.Import) -> None:
         self.names.update(alias.name for alias in node.names)
+        for alias in node.names:
+            for key, value in _IMPORT_VALUES.items():
+                if key.startswith(alias.name + '.'):
+                    self.values[key.replace(alias.name, alias.asname or alias.name, 1)] = value
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         name = importlib.util.resolve_name('.' * node.level + (node.module or ''), self.package)
         self.names.add(name)
         self.names.update(f'{name}.{alias.name}' for alias in node.names)
+        for alias in node.names:
+            key = f'{name}.{alias.name}'
+            if key in _IMPORT_VALUES:
+                self.values[alias.asname or alias.name] = _IMPORT_VALUES[key]
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         pass
@@ -37,15 +70,57 @@ class _Imports(ast.NodeVisitor):
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         pass
 
+    def visit_Assign(self, node: ast.Assign) -> None:
+        # A reassignment can shadow one of the standard-library guard aliases.
+        for target in node.targets:
+            for child in ast.walk(target):
+                if isinstance(child, ast.Name):
+                    self.values = {
+                        key: value
+                        for key, value in self.values.items()
+                        if key != child.id and not key.startswith(child.id + '.')
+                    }
+
+    def _value(self, node: ast.expr) -> _GuardValue | _Unknown:
+        key = ast.unparse(node)
+        if key in self.values:
+            return self.values[key]
+        if isinstance(node, ast.Constant) and isinstance(node.value, (str, int)):
+            return node.value
+        if isinstance(node, ast.Tuple):
+            values: list[str | int] = []
+            for item in node.elts:
+                value = self._value(item)
+                if not isinstance(value, (str, int)):
+                    return _UNKNOWN
+                values.append(value)
+            return tuple(values)
+        return _UNKNOWN
+
+    def _condition(self, node: ast.expr) -> bool | None:
+        value = self._value(node)
+        if not isinstance(value, _Unknown):
+            return bool(value)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            condition = self._condition(node.operand)
+            return None if condition is None else not condition
+        if isinstance(node, ast.Compare) and len(node.ops) == 1:
+            compare = _COMPARISONS.get(type(node.ops[0]))
+            left, right = self._value(node.left), self._value(node.comparators[0])
+            if compare is not None and not isinstance(left, _Unknown) and not isinstance(right, _Unknown):
+                try:
+                    return compare(left, right)
+                except TypeError:
+                    return None
+        return None
+
     def visit_If(self, node: ast.If) -> None:
-        test = node.test
-        type_only = (
-            isinstance(test, ast.Name)
-            and test.id == 'TYPE_CHECKING'
-            or isinstance(test, ast.Attribute)
-            and test.attr == 'TYPE_CHECKING'
-        )
-        for statement in node.orelse if type_only else (*node.body, *node.orelse):
+        condition = self._condition(node.test)
+        if condition is None:
+            statements = (*node.body, *node.orelse)
+        else:
+            statements = node.body if condition else node.orelse
+        for statement in statements:
             self.visit(statement)
 
 

@@ -31,6 +31,23 @@ def run_script(tmp_path: Path, script: str, mode: str) -> None:
     'mode',
     [
         'relative',
+        'unknown_guards',
+        'invalid_guard',
+        *(
+            f'guard:{name}'
+            for name in (
+                'platform',
+                'platform_alias',
+                'os_alias',
+                'version',
+                'version_lt',
+                'version_le',
+                'version_gt',
+                'constant',
+                'false',
+                'not',
+            )
+        ),
         'absolute',
         'module',
         'relative_module',

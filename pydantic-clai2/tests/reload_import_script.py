@@ -9,11 +9,31 @@ from pathlib import Path
 
 import pytest
 
+import pydantic_clai2
+from pydantic_clai2.reloading import reload_clai
+
+
+def conditional_source(mode: str) -> str:
+    guards = {
+        'platform': ('import sys', f'sys.platform == {sys.platform!r}', True),
+        'platform_alias': ('import sys as runtime', 'runtime.platform != "nonexistent"', True),
+        'os_alias': ('from os import name as system_name', f'system_name == {os.name!r}', True),
+        'version': ('import sys', 'sys.version_info >= (3, 10)', True),
+        'version_lt': ('import sys', 'sys.version_info < (100,)', True),
+        'version_le': ('import sys', 'sys.version_info <= (100,)', True),
+        'version_gt': ('import sys', 'sys.version_info > (1,)', True),
+        'constant': ('', 'True', True),
+        'false': ('', 'False', False),
+        'not': ('from typing import TYPE_CHECKING as checking', 'not checking', True),
+    }
+    imports, guard, selected = guards[mode]
+    first, second = ('reload_provider', 'reload_inactive') if selected else ('reload_inactive', 'reload_provider')
+    return f'{imports}\nif {guard}:\n    from .{first} import NEW\nelse:\n    from .{second} import NEW\nVALUE = NEW\n'
+
 
 def main(root: Path, mode: str) -> None:
     sys.path.insert(0, str(root))
-    # Import the fixture package rather than the installed shell.
-    from pydantic_clai2.reloading import reload_clai  # noqa: PLC0415
+    pydantic_clai2.__path__.insert(0, str(root / 'pydantic_clai2'))
 
     package = root / 'pydantic_clai2'
     provider_path = package / 'reload_provider.py'
@@ -26,16 +46,31 @@ def main(root: Path, mode: str) -> None:
     original_consumer = vars(consumer).copy()
     original_provider = vars(provider).copy()
     provider_path.write_text("NEW = 'new'\n")
-    new_consumer = 'from .reload_provider import NEW\nVALUE = NEW\n'
+    consumer_sources = {
+        'absolute': 'from pydantic_clai2.reload_provider import NEW\nVALUE = NEW\n',
+        'module': 'import pydantic_clai2.reload_provider as dependency\nVALUE = dependency.NEW\n',
+        'relative_module': 'from . import reload_provider as dependency\nVALUE = dependency.NEW\n',
+        'class': 'class Values:\n    from .reload_provider import NEW\nVALUE = Values.NEW\n',
+    }
+    new_consumer = consumer_sources.get(mode, 'from .reload_provider import NEW\nVALUE = NEW\n')
 
-    if mode == 'absolute':
-        new_consumer = 'from pydantic_clai2.reload_provider import NEW\nVALUE = NEW\n'
-    elif mode == 'module':
-        new_consumer = 'import pydantic_clai2.reload_provider as dependency\nVALUE = dependency.NEW\n'
-    elif mode == 'relative_module':
-        new_consumer = 'from . import reload_provider as dependency\nVALUE = dependency.NEW\n'
-    elif mode == 'class':
-        new_consumer = 'class Values:\n    from .reload_provider import NEW\nVALUE = Values.NEW\n'
+    if mode.startswith('guard:'):
+        (package / 'reload_inactive.py').write_text('from .reload_consumer import VALUE as NEW\n')
+        new_consumer = conditional_source(mode.removeprefix('guard:'))
+    elif mode == 'unknown_guards':
+        provider_path.write_text(
+            'import sys\n'
+            'sys = object()\n'
+            'from typing import TYPE_CHECKING\n'
+            'TYPE_CHECKING = False\n'
+            'if not bool(0):\n    from . import reload_leaf\n'
+            'if (True, object()):\n    from . import reload_leaf\n'
+            'if 0 < 1 < 2:\n    from . import reload_leaf\n'
+            'if 1 is not None:\n    from . import reload_leaf\n'
+            "NEW = 'new'\n"
+        )
+    elif mode == 'invalid_guard':
+        provider_path.write_text('if 1 < "invalid":\n    pass\n')
     elif mode == 'reverse':
         consumer_path.write_text('from . import reload_provider\nVALUE = reload_provider.VALUE\n')
         importlib.reload(consumer)
@@ -58,7 +93,7 @@ def main(root: Path, mode: str) -> None:
     elif mode in ('new_package', 'import_error', 'build_error'):
         bridge = package / 'reload_bridge'
         bridge.mkdir()
-        (bridge / '__init__.py').write_text('from ..reload_provider import NEW\n')
+        (bridge / '__init__.py').write_text('from ..reload_provider import NEW\nfrom .bridge import VALUE\n')
         bridge_path = bridge / 'bridge.py'
         bridge_path.write_text("from ..reload_provider import NEW\nVALUE = 'old'\n")
         py_compile.compile(str(bridge_path), doraise=True)
@@ -81,8 +116,8 @@ def main(root: Path, mode: str) -> None:
             raise RuntimeError('failed build')
         return consumer.VALUE
 
-    if mode in ('import_error', 'build_error', 'cycle', 'syntax'):
-        expected = CycleError if mode == 'cycle' else SyntaxError if mode == 'syntax' else RuntimeError
+    if mode in ('import_error', 'build_error', 'cycle', 'syntax', 'invalid_guard'):
+        expected = {'cycle': CycleError, 'syntax': SyntaxError, 'invalid_guard': TypeError}.get(mode, RuntimeError)
         with pytest.raises(expected):
             reload_clai(build)
         assert vars(consumer) == original_consumer
