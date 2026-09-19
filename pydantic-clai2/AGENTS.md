@@ -124,7 +124,11 @@ actions, `.footer_hint` for the key legend, `markdown_style()` for colours.
 - Nothing prints to the console while the menu is open; the alternate screen
   would hide it. Show empty states and errors inside the menu as disabled rows.
 - Esc and Ctrl-C close cleanly. They are not errors.
-- A menu opened mid-run (the `ask_user` question menu) goes inside
+- The built-in `ask_user` questions use a compact, non-full-screen prompt-toolkit
+  application so conversation scrollback stays available. Enter or a number
+  selects/toggles; multi-select uses a Done row, not Space + Enter. Do not put
+  these questions back on the alternate screen.
+- A widget opened mid-run (including `ask_user`) goes inside
   `async with host.full_screen()`, which flushes streamed text and suspends the
   editor's input reader first, preserving its draft. Slash-command handlers
   already run with the editor suspended. Do not start a second input reader

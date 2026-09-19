@@ -85,8 +85,8 @@ finish. They do not interrupt or steer the active turn. An unsubmitted draft sta
 in the editor as turns finish. Queued messages are not saved as conversation turns
 until execution starts, and are discarded on exit or `/reload`.
 
-Full-screen question menus and slash-command menus temporarily take over input.
-The editor and its draft return when the menu closes.
+Inline questions and full-screen slash-command menus temporarily take over input.
+The editor and its draft return when the interaction closes.
 Small terminals omit the border to leave room for output.
 
 ## Input history
@@ -685,13 +685,17 @@ plugin list. Use `/plugins list` to print it. Plugins are trusted code running a
 ## Questions from the model
 
 When the task is ambiguous, the model can call `ask_user_question` instead of
-guessing. Each question opens a full-screen menu: options as rows, the question
-and the highlighted option's description alongside, `question 2 of 3` in the
-title when there are several. Enter picks one; on multi-select questions Space
-toggles and Enter confirms (with nothing toggled, Enter picks the highlighted
-option); Esc or Ctrl-C declines, which the model is told so it can make a
-stated choice and carry on. Your picks are printed to the
-transcript afterwards.
+guessing. Questions appear below the conversation, without clearing it or opening
+the alternate screen. You can read the preceding output in terminal scrollback.
+The header shows `question 2 of 3` when there are several.
+
+Use Up/Down to move and Enter to pick an option, or press its number. For
+multi-select questions, Enter or a number toggles that option; move to `Done`
+and press Enter to submit. You must select at least one option. Space is not
+required. The highlighted option's description appears below the choices.
+Esc, Ctrl-C, or Ctrl-D declines the whole request, which tells the model you
+declined and lets the run continue. Your picks are printed to the transcript
+afterwards, and your editor draft returns unchanged.
 
 The menu is the built-in `ask_user` plugin around the harness's
 [`AskUser`](../docs/ask-user.md) capability. The capability only knows an
