@@ -27,11 +27,20 @@ pub enum Provider {
 
 impl Provider {
     /// The pydantic-ai model-string prefix, or `None` for `Custom`.
+    ///
+    /// `GoogleGla` and `GoogleVertex` both resolve through the same
+    /// `pydantic_ai.providers.google.GoogleProvider`, whose registered name
+    /// (and hence `infer_model` prefix) is `google` regardless of which
+    /// transport it wraps -- Vertex vs. the direct Gemini API is decided by
+    /// *how* the provider is constructed (an explicit `google.genai.Client`
+    /// vs. reading `GOOGLE_API_KEY`), not by a distinct string prefix.
+    /// `google-vertex` isn't a real `infer_model` prefix, so the agent
+    /// launcher special-cases it to build that Vertex client itself.
     fn prefix(self) -> Option<&'static str> {
         match self {
             Provider::Anthropic => Some("anthropic"),
             Provider::Openai => Some("openai"),
-            Provider::GoogleGla => Some("google-gla"),
+            Provider::GoogleGla => Some("google"),
             Provider::GoogleVertex => Some("google-vertex"),
             Provider::Bedrock => Some("bedrock"),
             Provider::Azure => Some("azure"),
@@ -309,6 +318,26 @@ mod tests {
     #[test]
     fn vertex_model_string_is_prefixed() {
         assert_eq!(vertex().model_string(), "google-vertex:gemini-2.5-pro");
+    }
+
+    #[test]
+    fn gla_model_string_uses_googles_infer_model_prefix() {
+        // `google`, not `google-gla`: pydantic_ai.providers.google.GoogleProvider.name
+        // is `'google'`, and `infer_model` looks up providers by that name, so a
+        // generic `infer_model(profile.model_string())` launcher only resolves a
+        // GLA profile with this exact prefix.
+        let profile = ModelProfile {
+            id: "p1".to_owned(),
+            label: "Gemini".to_owned(),
+            provider: Provider::GoogleGla,
+            model: "gemini-2.5-pro".to_owned(),
+            api_key: Some("k".to_owned()),
+            project_id: None,
+            region: None,
+            credentials_json: None,
+            extra_env: Vec::new(),
+        };
+        assert_eq!(profile.model_string(), "google:gemini-2.5-pro");
     }
 
     #[test]
