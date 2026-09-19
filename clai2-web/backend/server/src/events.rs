@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
-use crate::model::{AgentSummary, ApprovalView, PlanEntry, ProjectSummary, StopReason, ToolCallView};
+use crate::model::{AgentSummary, ApprovalView, PlanEntry, ProjectSummary, StopReason, ToolCallView, TurnUsage};
 
 /// Everything the UI can observe, in one tagged union.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -65,6 +65,7 @@ pub enum Event {
         agent_id: String,
         session_id: String,
         stop_reason: StopReason,
+        usage: Option<TurnUsage>,
     },
     AgentError {
         agent_id: String,

@@ -20,8 +20,8 @@ function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
     worktree: null,
     cwd: '/repo',
     sessions: [
-      { id: 'main', acpSessionId: null, label: 'Main', isMain: true },
-      { id: 'side', acpSessionId: null, label: 'Side chat', isMain: false },
+      { id: 'main', acpSessionId: null, label: 'Main', isMain: true, totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0 },
+      { id: 'side', acpSessionId: null, label: 'Side chat', isMain: false, totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0 },
     ],
     pendingApprovals: 0,
     forkedFrom: null,
@@ -142,5 +142,33 @@ describe('MainPane', () => {
     await user.type(input, 'Renamed');
     await user.click(screen.getByRole('button', { name: 'Rename' }));
     expect(props.onRename).toHaveBeenCalledWith('Renamed');
+  });
+
+  it('shows the active session usage once it has tokens', () => {
+    const agent = makeAgent({
+      sessions: [
+        {
+          id: 'main',
+          acpSessionId: null,
+          label: 'Main',
+          isMain: true,
+          totalInputTokens: 1200,
+          totalOutputTokens: 340,
+          totalTokens: 1540,
+        },
+      ],
+    });
+    renderPane({ agent, view: { kind: 'session', sessionId: 'main' } });
+    expect(screen.getByTitle('Total tokens used in this session')).toHaveTextContent('1,200 in / 340 out');
+  });
+
+  it('hides the usage readout for a session with no usage yet', () => {
+    renderPane({ view: { kind: 'session', sessionId: 'main' } });
+    expect(screen.queryByTitle('Total tokens used in this session')).toBeNull();
+  });
+
+  it('hides the usage readout outside the session view', () => {
+    renderPane({ agent: makeAgent({ worktree }), view: { kind: 'changes' } });
+    expect(screen.queryByTitle('Total tokens used in this session')).toBeNull();
   });
 });

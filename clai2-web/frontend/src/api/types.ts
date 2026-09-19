@@ -23,6 +23,18 @@ export interface SessionSummary {
   acpSessionId: string | null;
   label: string;
   isMain: boolean;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalTokens: number;
+}
+
+/** Token usage for one completed turn, reported by the model provider. */
+export interface TurnUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cachedReadTokens: number;
+  cachedWriteTokens: number;
 }
 
 export interface AgentSummary {
@@ -151,7 +163,7 @@ export type TranscriptItem =
   | { type: 'thoughtChunk'; text: string }
   | { type: 'toolCall'; toolCall: ToolCallView }
   | { type: 'plan'; entries: PlanEntry[] }
-  | { type: 'turnEnded'; stopReason: StopReason }
+  | { type: 'turnEnded'; stopReason: StopReason; usage: TurnUsage | null }
   | { type: 'error'; message: string };
 
 export type ServerEvent =
@@ -167,7 +179,7 @@ export type ServerEvent =
   | { type: 'plan'; agentId: string; sessionId: string; entries: PlanEntry[] }
   | { type: 'approvalRequested'; approval: ApprovalView }
   | { type: 'approvalResolved'; approvalId: string; agentId: string; optionId: string | null }
-  | { type: 'turnEnded'; agentId: string; sessionId: string; stopReason: StopReason }
+  | { type: 'turnEnded'; agentId: string; sessionId: string; stopReason: StopReason; usage: TurnUsage | null }
   | { type: 'agentError'; agentId: string; message: string };
 
 export interface CreateAgentRequest {

@@ -288,6 +288,33 @@ async fn prompt_streams_chunks_and_ends_turn() {
 }
 
 #[tokio::test]
+async fn prompting_twice_accumulates_session_usage_totals() {
+    let world = world().await;
+    let agent = world.create_agent("echoer", false, "always_ask").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let mut ws = world.ws().await;
+
+    world.prompt(agent_id, "main", "first").await;
+    let first_events = ws.collect_until(|event| event["type"] == "turnEnded").await;
+    let first_ended = events_of_type(&first_events, "turnEnded");
+    // The stub agent's default echo path reports totalTokens: 3, inputTokens: 2, outputTokens: 1.
+    assert_eq!(first_ended[0]["usage"]["inputTokens"], 2);
+    assert_eq!(first_ended[0]["usage"]["outputTokens"], 1);
+    assert_eq!(first_ended[0]["usage"]["totalTokens"], 3);
+
+    world.prompt(agent_id, "main", "second").await;
+    ws.collect_until(|event| event["type"] == "turnEnded").await;
+    ws.close().await;
+
+    let (_, fetched) = world.get(&format!("/api/agents/{agent_id}")).await;
+    let sessions = fetched["sessions"].as_array().unwrap();
+    let main = sessions.iter().find(|session| session["id"] == "main").unwrap();
+    assert_eq!(main["totalInputTokens"], 4);
+    assert_eq!(main["totalOutputTokens"], 2);
+    assert_eq!(main["totalTokens"], 6);
+}
+
+#[tokio::test]
 async fn thought_chunks_stream_separately() {
     let world = world().await;
     let agent = world.create_agent("thinker", false, "always_ask").await;

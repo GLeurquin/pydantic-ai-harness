@@ -134,10 +134,14 @@ export function reduceEvent(state: AppState, event: ServerEvent): Partial<AppSta
         }),
       };
     case 'turnEnded':
+      // Running per-session token totals arrive separately, already folded
+      // in, via the agentUpdated event the backend publishes right after
+      // this one -- this reducer only needs to record the per-turn usage.
       return {
         transcripts: withAppended(state.transcripts, event.agentId, event.sessionId, {
           type: 'turnEnded',
           stopReason: event.stopReason,
+          usage: event.usage,
         }),
       };
     case 'approvalRequested':

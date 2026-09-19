@@ -27,6 +27,7 @@ export interface MainPaneProps {
 
 export function MainPane(props: MainPaneProps) {
   const { agent, view } = props;
+  const activeSession = view.kind === 'session' ? agent.sessions.find((session) => session.id === view.sessionId) : undefined;
   return (
     <main className="main">
       <div className="tabs" role="tablist">
@@ -59,6 +60,11 @@ export function MainPane(props: MainPaneProps) {
         >
           Settings
         </button>
+        {activeSession && activeSession.totalTokens > 0 ? (
+          <span className="tabs-usage" title="Total tokens used in this session">
+            {activeSession.totalInputTokens.toLocaleString()} in / {activeSession.totalOutputTokens.toLocaleString()} out
+          </span>
+        ) : null}
       </div>
       {view.kind === 'session' ? (
         <Conversation

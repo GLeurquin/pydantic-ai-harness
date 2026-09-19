@@ -18,7 +18,7 @@ function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
     approvalMode: 'always_ask',
     worktree: null,
     cwd: '/repo',
-    sessions: [{ id: 'main', acpSessionId: null, label: 'Main', isMain: true }],
+    sessions: [{ id: 'main', acpSessionId: null, label: 'Main', isMain: true, totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0 }],
     pendingApprovals: 0,
     forkedFrom: null,
     modelProfileId: null,
@@ -73,7 +73,11 @@ describe('Conversation', () => {
         toolCall: { toolCallId: 'tc1', title: 'Read file', kind: 'read', status: 'completed', content: [], locations: [] },
       },
       { type: 'plan', entries: [{ content: 'write tests', priority: 'high', status: 'in_progress' }] },
-      { type: 'turnEnded', stopReason: 'end_turn' },
+      {
+        type: 'turnEnded',
+        stopReason: 'end_turn',
+        usage: { inputTokens: 12, outputTokens: 8, totalTokens: 20, cachedReadTokens: 0, cachedWriteTokens: 0 },
+      },
       { type: 'error', message: 'agent crashed' },
     ];
     const { container } = renderConversation({ items });
@@ -85,6 +89,7 @@ describe('Conversation', () => {
     expect(plan?.querySelector('.plan-status')).toHaveTextContent('[in_progress]');
     expect(plan).toHaveTextContent('write tests');
     expect(container.querySelector('.block-turn-end')).toHaveTextContent('turn finished');
+    expect(container.querySelector('.turn-usage')).toHaveTextContent('12 in / 8 out');
     expect(container.querySelector('.block-error')).toHaveTextContent('agent crashed');
   });
 
@@ -97,8 +102,15 @@ describe('Conversation', () => {
   ];
 
   it.each(STOP_CASES)('labels the %s stop reason', (stopReason, label) => {
-    const { container } = renderConversation({ items: [{ type: 'turnEnded', stopReason }] });
+    const { container } = renderConversation({ items: [{ type: 'turnEnded', stopReason, usage: null }] });
     expect(container.querySelector('.block-turn-end')).toHaveTextContent(label);
+  });
+
+  it('omits the usage readout when the turn reported none', () => {
+    const { container } = renderConversation({
+      items: [{ type: 'turnEnded', stopReason: 'end_turn', usage: null }],
+    });
+    expect(container.querySelector('.turn-usage')).toBeNull();
   });
 
   it('sends the typed prompt and clears the draft', async () => {

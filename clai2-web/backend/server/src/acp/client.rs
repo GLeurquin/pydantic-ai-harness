@@ -10,7 +10,7 @@ use tokio::sync::{mpsc, Mutex};
 
 use super::transport::{Inbound, RpcError, Transport};
 use super::updates::{parse_tool_call, parse_update, SessionUpdate};
-use crate::model::{PermissionOption, PermissionOptionKind, StopReason};
+use crate::model::{PermissionOption, PermissionOptionKind, StopReason, TurnUsage};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SpawnError {
@@ -88,6 +88,22 @@ fn parse_stop_reason(result: &Value) -> StopReason {
         Some("cancelled") => StopReason::Cancelled,
         _ => StopReason::EndTurn,
     }
+}
+
+/// Parse `PromptResponse.usage` (an UNSTABLE field of the ACP `Usage` schema:
+/// `totalTokens`/`inputTokens`/`outputTokens` required, `cachedReadTokens`/
+/// `cachedWriteTokens` optional -- see `acp.schema.Usage`). Absent entirely
+/// when the turn ended without a usable usage report (e.g. a usage-limit
+/// error mid-turn); harness's ACP adapter documents this in its README.
+fn parse_usage(result: &Value) -> Option<TurnUsage> {
+    let usage = result.get("usage")?;
+    Some(TurnUsage {
+        input_tokens: usage.get("inputTokens").and_then(Value::as_u64).unwrap_or(0),
+        output_tokens: usage.get("outputTokens").and_then(Value::as_u64).unwrap_or(0),
+        total_tokens: usage.get("totalTokens").and_then(Value::as_u64).unwrap_or(0),
+        cached_read_tokens: usage.get("cachedReadTokens").and_then(Value::as_u64).unwrap_or(0),
+        cached_write_tokens: usage.get("cachedWriteTokens").and_then(Value::as_u64).unwrap_or(0),
+    })
 }
 
 async fn dispatch_loop(
@@ -230,8 +246,9 @@ impl AcpClient {
             .to_owned())
     }
 
-    /// Send a prompt turn and wait for it to end.
-    pub async fn prompt(&self, acp_session_id: &str, text: &str) -> Result<StopReason, RpcError> {
+    /// Send a prompt turn and wait for it to end, returning the stop reason
+    /// and the turn's token usage when the agent reported one.
+    pub async fn prompt(&self, acp_session_id: &str, text: &str) -> Result<(StopReason, Option<TurnUsage>), RpcError> {
         let result = self
             .transport
             .request(
@@ -242,7 +259,7 @@ impl AcpClient {
                 }),
             )
             .await?;
-        Ok(parse_stop_reason(&result))
+        Ok((parse_stop_reason(&result), parse_usage(&result)))
     }
 
     /// Ask the agent to cancel the in-flight turn (fire-and-forget).
@@ -323,6 +340,50 @@ mod tests {
             assert_eq!(parse_stop_reason(&json!({"stopReason": name})), reason);
         }
         assert_eq!(parse_stop_reason(&json!({})), StopReason::EndTurn);
+    }
+
+    #[test]
+    fn parse_usage_reads_the_acp_usage_shape() {
+        let result = json!({
+            "stopReason": "end_turn",
+            "usage": {
+                "totalTokens": 150,
+                "inputTokens": 100,
+                "outputTokens": 50,
+                "cachedReadTokens": 20,
+                "cachedWriteTokens": 5,
+            },
+        });
+        assert_eq!(
+            parse_usage(&result),
+            Some(TurnUsage {
+                input_tokens: 100,
+                output_tokens: 50,
+                total_tokens: 150,
+                cached_read_tokens: 20,
+                cached_write_tokens: 5,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_usage_tolerates_missing_optional_fields() {
+        let result = json!({"usage": {"totalTokens": 10, "inputTokens": 7, "outputTokens": 3}});
+        assert_eq!(
+            parse_usage(&result),
+            Some(TurnUsage {
+                input_tokens: 7,
+                output_tokens: 3,
+                total_tokens: 10,
+                cached_read_tokens: 0,
+                cached_write_tokens: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_usage_is_none_when_the_turn_reported_none() {
+        assert_eq!(parse_usage(&json!({"stopReason": "max_tokens"})), None);
     }
 
     #[test]

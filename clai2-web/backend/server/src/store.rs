@@ -308,6 +308,7 @@ mod tests {
                 "s1",
                 &TranscriptItem::TurnEnded {
                     stop_reason: StopReason::EndTurn,
+                    usage: None,
                 },
             )
             .await

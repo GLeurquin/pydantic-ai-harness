@@ -248,6 +248,14 @@
   border-bottom-color: var(--accent);
 }
 
+.tabs-usage {
+  margin-left: auto;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
 /* Conversation */
 .conversation {
   display: flex;

@@ -450,6 +450,9 @@ impl AgentManager {
                 acp_session_id: None,
                 label: "Conversation".to_owned(),
                 is_main: true,
+                total_input_tokens: 0,
+                total_output_tokens: 0,
+                total_tokens: 0,
             }],
             pending_approvals: 0,
             forked_from: None,
@@ -713,24 +716,33 @@ impl AgentManager {
         let session_id = session_id.to_owned();
         tokio::spawn(async move {
             let result = client.prompt(&acp_session_id, &wire_text).await;
+            let usage = result.as_ref().ok().and_then(|(_, usage)| *usage);
             {
                 let mut agents = manager.agents.lock().await;
                 if let Some(entry) = agents.iter_mut().find(|entry| entry.summary.id == agent_id) {
                     entry.active_turns = entry.active_turns.saturating_sub(1);
                     entry.recompute_status();
+                    if let Some(usage) = usage {
+                        if let Some(session) = entry.summary.sessions.iter_mut().find(|s| s.id == session_id) {
+                            session.total_input_tokens += usage.input_tokens;
+                            session.total_output_tokens += usage.output_tokens;
+                            session.total_tokens += usage.total_tokens;
+                        }
+                    }
                 }
             }
             match result {
-                Ok(stop_reason) => {
+                Ok((stop_reason, usage)) => {
                     manager
                         .record(
                             &agent_id,
                             &session_id,
-                            TranscriptItem::TurnEnded { stop_reason },
+                            TranscriptItem::TurnEnded { stop_reason, usage },
                             Event::TurnEnded {
                                 agent_id: agent_id.clone(),
                                 session_id: session_id.clone(),
                                 stop_reason,
+                                usage,
                             },
                         )
                         .await;
@@ -749,6 +761,7 @@ impl AgentManager {
                                 agent_id: agent_id.clone(),
                                 session_id: session_id.clone(),
                                 stop_reason: StopReason::Cancelled,
+                                usage: None,
                             },
                         )
                         .await;
@@ -834,6 +847,9 @@ impl AgentManager {
                 acp_session_id: None,
                 label,
                 is_main: false,
+                total_input_tokens: 0,
+                total_output_tokens: 0,
+                total_tokens: 0,
             });
             session_id
         };
@@ -895,6 +911,9 @@ impl AgentManager {
                 acp_session_id: None,
                 label: "Conversation".to_owned(),
                 is_main: true,
+                total_input_tokens: 0,
+                total_output_tokens: 0,
+                total_tokens: 0,
             }],
             pending_approvals: 0,
             forked_from: Some(parent_id.to_owned()),
@@ -1630,6 +1649,7 @@ mod tests {
             TranscriptItem::MessageChunk { text: "lo".to_owned() },
             TranscriptItem::TurnEnded {
                 stop_reason: StopReason::EndTurn,
+                usage: None,
             },
             TranscriptItem::UserMessage {
                 text: "again".to_owned(),
@@ -1649,6 +1669,7 @@ mod tests {
         assert_eq!(history_preamble(&[]), "");
         let items = vec![TranscriptItem::TurnEnded {
             stop_reason: StopReason::EndTurn,
+            usage: None,
         }];
         assert_eq!(history_preamble(&items), "");
     }

@@ -75,7 +75,11 @@ describe('buildBlocks', () => {
       { type: 'thoughtChunk', text: 'hmm' },
       { type: 'toolCall', toolCall: tc },
       { type: 'plan', entries },
-      { type: 'turnEnded', stopReason: 'end_turn' },
+      {
+        type: 'turnEnded',
+        stopReason: 'end_turn',
+        usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7, cachedReadTokens: 0, cachedWriteTokens: 0 },
+      },
       { type: 'error', message: 'boom' },
     ];
     expect(buildBlocks(items)).toEqual([
@@ -84,7 +88,11 @@ describe('buildBlocks', () => {
       { kind: 'thought', text: 'hmm' },
       { kind: 'tool', toolCall: tc },
       { kind: 'plan', entries },
-      { kind: 'turnEnd', stopReason: 'end_turn' },
+      {
+        kind: 'turnEnd',
+        stopReason: 'end_turn',
+        usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7, cachedReadTokens: 0, cachedWriteTokens: 0 },
+      },
       { kind: 'error', message: 'boom' },
     ]);
   });

@@ -55,6 +55,28 @@ pub struct SessionSummary {
     pub acp_session_id: Option<String>,
     pub label: String,
     pub is_main: bool,
+    /// Token totals across every turn in this session. Absent (all-zero) for
+    /// sessions persisted before usage tracking existed.
+    #[serde(default)]
+    pub total_input_tokens: u64,
+    #[serde(default)]
+    pub total_output_tokens: u64,
+    #[serde(default)]
+    pub total_tokens: u64,
+}
+
+/// Token usage reported for one completed turn, straight from the model
+/// provider via ACP's `PromptResponse.usage`. No dollar cost: the ACP
+/// protocol's `Usage` type doesn't carry one (see `docs/` note in
+/// `clai_agent.py`'s launcher, or `agent_docs` for the harness ACP adapter).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TurnUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub cached_read_tokens: u64,
+    pub cached_write_tokens: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -194,13 +216,28 @@ pub enum StopReason {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "type")]
 pub enum TranscriptItem {
-    UserMessage { text: String },
-    MessageChunk { text: String },
-    ThoughtChunk { text: String },
-    ToolCall { tool_call: ToolCallView },
-    Plan { entries: Vec<PlanEntry> },
-    TurnEnded { stop_reason: StopReason },
-    Error { message: String },
+    UserMessage {
+        text: String,
+    },
+    MessageChunk {
+        text: String,
+    },
+    ThoughtChunk {
+        text: String,
+    },
+    ToolCall {
+        tool_call: ToolCallView,
+    },
+    Plan {
+        entries: Vec<PlanEntry>,
+    },
+    TurnEnded {
+        stop_reason: StopReason,
+        usage: Option<TurnUsage>,
+    },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

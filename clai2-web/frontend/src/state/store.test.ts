@@ -162,7 +162,21 @@ describe('reduceEvent', () => {
       { type: 'plan', agentId: 'a1', sessionId: 's1', entries: [{ content: 'c', priority: 'p', status: 's' }] },
       { type: 'plan', entries: [{ content: 'c', priority: 'p', status: 's' }] },
     ],
-    ['turnEnded', { type: 'turnEnded', agentId: 'a1', sessionId: 's1', stopReason: 'end_turn' }, { type: 'turnEnded', stopReason: 'end_turn' }],
+    [
+      'turnEnded',
+      {
+        type: 'turnEnded',
+        agentId: 'a1',
+        sessionId: 's1',
+        stopReason: 'end_turn',
+        usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7, cachedReadTokens: 0, cachedWriteTokens: 0 },
+      },
+      {
+        type: 'turnEnded',
+        stopReason: 'end_turn',
+        usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7, cachedReadTokens: 0, cachedWriteTokens: 0 },
+      },
+    ],
   ];
 
   it.each(transcriptCases)('%s appends its item under agentId/sessionId', (_name, event, item) => {

@@ -1,6 +1,6 @@
 /** Pure transcript operations: append, tool-call upsert, display blocks. */
 
-import type { PlanEntry, StopReason, ToolCallView, TranscriptItem } from '../api/types';
+import type { PlanEntry, StopReason, ToolCallView, TranscriptItem, TurnUsage } from '../api/types';
 
 /** Append an item; a toolCall item replaces the latest entry for its id. */
 export function appendItem(items: readonly TranscriptItem[], item: TranscriptItem): TranscriptItem[] {
@@ -24,7 +24,7 @@ export type TranscriptBlock =
   | { kind: 'thought'; text: string }
   | { kind: 'tool'; toolCall: ToolCallView }
   | { kind: 'plan'; entries: PlanEntry[] }
-  | { kind: 'turnEnd'; stopReason: StopReason }
+  | { kind: 'turnEnd'; stopReason: StopReason; usage: TurnUsage | null }
   | { kind: 'error'; message: string };
 
 /** Coalesce consecutive chunks of the same role into single blocks. */
@@ -57,7 +57,7 @@ export function buildBlocks(items: readonly TranscriptItem[]): TranscriptBlock[]
         blocks.push({ kind: 'plan', entries: item.entries });
         break;
       case 'turnEnded':
-        blocks.push({ kind: 'turnEnd', stopReason: item.stopReason });
+        blocks.push({ kind: 'turnEnd', stopReason: item.stopReason, usage: item.usage });
         break;
       case 'error':
         blocks.push({ kind: 'error', message: item.message });

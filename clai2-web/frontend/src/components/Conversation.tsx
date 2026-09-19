@@ -98,6 +98,12 @@ export function Conversation({
               return (
                 <div key={index} className="block-turn-end">
                   {STOP_LABELS[block.stopReason]}
+                  {block.usage ? (
+                    <span className="turn-usage">
+                      {' '}
+                      &middot; {block.usage.inputTokens.toLocaleString()} in / {block.usage.outputTokens.toLocaleString()} out
+                    </span>
+                  ) : null}
                 </div>
               );
             case 'error':

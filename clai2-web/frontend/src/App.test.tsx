@@ -62,7 +62,7 @@ function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
     approvalMode: 'always_ask',
     worktree: null,
     cwd: '/repo',
-    sessions: [{ id: 'main', acpSessionId: null, label: 'Main', isMain: true }],
+    sessions: [{ id: 'main', acpSessionId: null, label: 'Main', isMain: true, totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0 }],
     pendingApprovals: 0,
     forkedFrom: null,
     modelProfileId: null,
@@ -285,8 +285,8 @@ describe('App', () => {
     const user = userEvent.setup();
     const updated = makeAgent({
       sessions: [
-        { id: 'main', acpSessionId: null, label: 'Main', isMain: true },
-        { id: 's2', acpSessionId: null, label: 'Approach chat', isMain: false },
+        { id: 'main', acpSessionId: null, label: 'Main', isMain: true, totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0 },
+        { id: 's2', acpSessionId: null, label: 'Approach chat', isMain: false, totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0 },
       ],
     });
     apiMock.openSideSession.mockResolvedValue(updated);

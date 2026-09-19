@@ -38,6 +38,9 @@ export function makeSession(overrides: Partial<SessionSummary> = {}): SessionSum
     acpSessionId: 'acp-0001',
     label: 'Main',
     isMain: true,
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+    totalTokens: 0,
     ...overrides,
   };
 }
@@ -166,7 +169,11 @@ export function richTranscript(): TranscriptItem[] {
         { content: 'Add regression test', priority: 'medium', status: 'in_progress' },
       ],
     },
-    { type: 'turnEnded', stopReason: 'end_turn' },
+    {
+      type: 'turnEnded',
+      stopReason: 'end_turn',
+      usage: { inputTokens: 4200, outputTokens: 860, totalTokens: 5060, cachedReadTokens: 0, cachedWriteTokens: 0 },
+    },
   ];
 }
 
