@@ -129,6 +129,49 @@ async def test_stream_plugins_settings_retries_and_coding_tools(
     assert not (tmp_path / 'sessions.db').exists()
 
 
+async def test_browser_runs_share_one_execution_slot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = SettingsStore(tmp_path / 'config.db')
+    first_started, second_submitted, release = (anyio.Event() for _ in range(3))
+    entered: list[int] = []
+    responses: list[httpx2.Response] = []
+
+    def activate(host: PluginHost[None]) -> None:
+        async def echo() -> str:
+            entered.append(len(entered) + 1)
+            if len(entered) == 1:
+                first_started.set()
+                await release.wait()
+            return 'done'
+
+        host.add(Capability(tools=[echo]))
+
+    install_plugin(monkeypatch, store, activate)
+    with anyio.fail_after(20):
+        async with web_app(
+            settings=Settings(model='test'), store=store, project=ProjectSettings(), builtin_plugins=()
+        ) as app:
+            async with httpx2.AsyncClient(
+                transport=httpx2.ASGITransport(app=app), base_url='http://127.0.0.1'
+            ) as client:
+
+                async def request(second: bool) -> None:
+                    if second:
+                        second_submitted.set()
+                    responses.append(await client.post('/api/chat', json=CHAT))
+
+                async with anyio.create_task_group() as tasks:
+                    tasks.start_soon(request, False)
+                    await first_started.wait()
+                    tasks.start_soon(request, True)
+                    await second_submitted.wait()
+                    await anyio.wait_all_tasks_blocked()
+                    assert entered == [1]
+                    release.set()
+    assert entered == [1, 2]
+    assert len(responses) == 2
+    assert all(response.status_code == 200 and 'data: [DONE]' in response.text for response in responses)
+
+
 async def test_security_and_model_allowlist(tmp_path: Path) -> None:
     async with web_app(
         settings=Settings(model='test'),

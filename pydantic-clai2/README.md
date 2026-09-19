@@ -178,7 +178,9 @@ uv run clai2 --web
 With pip, install `pydantic-clai2[web]` and run `clai2 --web`.
 From this source checkout, use `uv run --project pydantic-clai2 --extra web clai2 --web`.
 Open <http://127.0.0.1:7932>. Use `--port 8765` for another local port;
-Ctrl-C stops the server after active requests finish.
+Ctrl-C stops the server after active requests finish. Agent runs share one
+execution slot per server, so browser tabs do not run coding tools concurrently.
+The ASGI lifespan closes plugins and model resources before signal handling exits.
 
 This serves Pydantic AI's existing [`Agent.to_web()` UI](https://pydantic.dev/docs/ai/web/),
 not a second agent runtime. It streams responses and tool calls using your enabled
@@ -197,6 +199,9 @@ SQLite conversation saving and `--resume`. Browser chat history is not a CLAI
 saved session. Core hooks and capability tools work; a plugin registering
 `turn_start` or `turn_end` prevents startup rather than losing its guards.
 See [browser plugin compatibility](PLUGINS.md#browser-mode-compatibility).
+MCP keeps the [upstream outer-cancellation limitation](#mcp-servers); request
+cancellation can encounter it, so do not assume disconnected requests clean up
+stdio MCP processes until the core issue is resolved.
 
 Core's web adapter uses its default limit of 50 model requests per run. Explicit
 `--request-limit`, saved `run.request_limit`, and project `request_limit` overrides

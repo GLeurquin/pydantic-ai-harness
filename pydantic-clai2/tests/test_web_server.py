@@ -1,7 +1,9 @@
 """Exercise socket streaming and server teardown without a model provider."""
 
 import asyncio
+import signal
 import socket
+import sys
 from pathlib import Path
 from typing import Self
 
@@ -10,6 +12,7 @@ import httpx2
 import pytest
 import uvicorn
 from anyio.lowlevel import checkpoint
+from anyio.streams.buffered import BufferedByteReceiveStream
 from pydantic_ai.capabilities import Capability
 from pydantic_ai.models.test import TestModel
 from test_web import CHAT, install_plugin
@@ -116,6 +119,50 @@ async def test_server_drains_stream_before_closing_plugins_and_model(
     assert events.count('model enter') == events.count('model exit')
     assert not server.server_state.tasks
     assert all(not listener.is_serving() for listener in server.servers)
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX SIGINT delivery to a child process')
+async def test_ctrl_c_closes_plugins_before_uvicorn_reraises_sigint(tmp_path: Path) -> None:
+    store = SettingsStore(tmp_path / 'config.db')
+    store.save_plugin(PluginSettings(id='coder', factory='unused', enabled=False))
+    marker = tmp_path / 'lifecycle.txt'
+    store.plugins_dir.mkdir()
+    (store.plugins_dir / 'lifecycle.py').write_text(
+        'from pathlib import Path\n'
+        'from anyio.lowlevel import checkpoint\n'
+        'def activate(host):\n'
+        "    @host.on('session_start')\n"
+        '    async def start(event):\n'
+        f"        Path({str(marker)!r}).write_text('start')\n"
+        "    @host.on('session_end')\n"
+        '    async def end(event):\n'
+        '        await checkpoint()\n'
+        f"        Path({str(marker)!r}).write_text('end')\n"
+    )
+    with socket.socket() as available:
+        available.bind(('127.0.0.1', 0))
+        port = available.getsockname()[1]
+    with anyio.fail_after(30):
+        async with await anyio.open_process(
+            [
+                sys.executable,
+                '-m',
+                'pydantic_clai2',
+                '--database',
+                str(store.path),
+                '--web',
+                '--model',
+                'test',
+                '--port',
+                str(port),
+            ]
+        ) as process:
+            assert process.stderr is not None
+            await BufferedByteReceiveStream(process.stderr).receive_until(b'Uvicorn running on ', 65536)
+            assert marker.read_text() == 'start'
+            process.send_signal(signal.SIGINT)
+            assert await process.wait() == 0
+    assert marker.read_text() == 'end'
 
 
 async def test_bind_failure_closes_plugins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

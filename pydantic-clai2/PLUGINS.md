@@ -426,7 +426,7 @@ and start `clai2 --web` to serve core's `Agent.to_web()` UI on
 | Plugin surface | Browser behavior |
 | --- | --- |
 | `host.add(...)`, core hooks, typed core events | Contribute to core agent runs, including per-run capability factories. |
-| `session_start`, `session_end` | Run once per server lifetime, not once per browser chat. Plugins close after requests drain, before the agent closes. |
+| `session_start`, `session_end` | Run once per ASGI lifespan, not once per browser chat. Plugins close after requests drain, before the agent closes and signal handling exits. |
 | `turn_start`, `turn_end` | Registration raises and prevents startup. Use core run hooks for cross-interface guards. |
 | `host.full_screen()` | Raises when called; terminal widgets have no browser equivalent. |
 | Slash commands and `host.render(...)` | May register, but the browser does not dispatch or display them. Core renders its own stream. |
@@ -439,6 +439,11 @@ next terminal launch still uses them. Omission matches the shipped module,
 not just the plugin ID: replacing one with a custom plugin does not bypass
 compatibility checks. There is no browser answerer for `ask_user` or CLAI SQLite
 saving and resume.
+
+Agent runs share one execution slot per server so browser tabs do not execute
+coding tools concurrently. MCP retains its [outer-cancellation limitation](#mcp-explicitly-approved-mcp-servers),
+which can affect cancelled web requests; disconnected requests must not be assumed
+to clean up stdio MCP processes until the core issue is resolved.
 
 Other enabled plugin import or activation failures abort startup. Project
 plugins still require approval, and store overrides retain their precedence.

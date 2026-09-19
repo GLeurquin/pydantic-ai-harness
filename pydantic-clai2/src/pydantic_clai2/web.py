@@ -67,6 +67,7 @@ async def web_app(
         deps_type=type(None),
         model_settings=model_settings_from_json(store.model_settings(settings.model)).to_model_settings(),
         retries={'tools': settings.tool_retries},
+        max_concurrency=1,
         capabilities=[capabilities],
     )
     loader: PluginLoader[None] = PluginLoader(
@@ -107,6 +108,17 @@ async def web_app(
 
 async def serve_web(*, settings: Settings, store: SettingsStore, project: ProjectSettings, port: int) -> None:
     """Bind only to IPv4 loopback; Uvicorn and plugin cleanup share the caller's loop."""
-    async with web_app(settings=settings, store=store, project=project) as app:
-        server = uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', port=port))
-        await server.serve()
+
+    @asynccontextmanager
+    async def lifespan(app: Starlette) -> AsyncGenerator[None]:
+        async with web_app(settings=settings, store=store, project=project) as chat:
+            app.mount('/', chat)
+            async with chat.router.lifespan_context(chat):
+                yield
+                # Uvicorn requests normal lifespan shutdown after a socket bind failure.
+                if not server.started:
+                    raise RuntimeError('Web server stopped before binding its socket.')
+
+    app = Starlette(lifespan=lifespan)
+    server = uvicorn.Server(uvicorn.Config(app, host='127.0.0.1', port=port))
+    await server.serve()
