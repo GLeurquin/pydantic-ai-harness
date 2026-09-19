@@ -1,10 +1,14 @@
 import '../src/theme.css';
 import '../src/app.css';
 
-import type { GlobalProvider as GlobalProviderType } from '@ladle/react';
+import type { GlobalProvider } from '@ladle/react';
 
-/** Wrap every story in the app's dark background so components render on-brand. */
-export const GlobalProvider: GlobalProviderType = ({ children }) => (
+/** Wrap every story in the app's dark background so components render on-brand.
+ * Ladle's convention loader requires this export to be named `Provider`
+ * specifically (see `@ladle/react`'s `get-components-import.js`); naming it
+ * anything else, e.g. `GlobalProvider` like its type, is silently ignored in
+ * favor of a no-op default. */
+export const Provider: GlobalProvider = ({ children }) => (
   <div
     style={{
       padding: 24,
