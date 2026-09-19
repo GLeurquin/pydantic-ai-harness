@@ -194,12 +194,15 @@ is focused, without requesting a sound.
 
 macOS uses `/usr/bin/osascript`; the sender may appear as Script Editor. Allow
 notifications for that sender in System Settings if needed. Focus mode and OS
-notification settings can hide them. Linux uses an installed `notify-send` and
-requires a desktop notification service. Other platforms do nothing. Remote
+notification settings can hide them. Linux uses `/usr/bin/notify-send` when
+installed and requires a desktop notification service. Other platforms do nothing. Remote
 sessions notify the machine running CLAI, not your local client.
 
 Delivery awaits an async subprocess with a two-second timeout, no shell
-interpolation, and terminal input/output disconnected. Missing utilities, nonzero
+interpolation, and terminal input/output disconnected. Both utilities use
+absolute system paths rather than `PATH` lookup. The child receives only
+`DISPLAY`, `WAYLAND_DISPLAY`, `DBUS_SESSION_BUS_ADDRESS`, `XDG_RUNTIME_DIR`, and
+`XAUTHORITY` when set; provider credentials and dynamic-loader settings are not inherited. Missing utilities, nonzero
 exits, and timeouts are ignored rather than failing the turn or question. A stalled
 utility can delay the next prompt or question menu by up to two seconds. Timeout or
 cancellation kills and reaps the child. There are no background workers to survive

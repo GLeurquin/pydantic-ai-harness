@@ -32,15 +32,17 @@ SECRET = 'private "text"; $(touch /tmp/clai-notification-injection)\nwith tool o
 class Processes:
     def __init__(self) -> None:
         self.commands: list[list[str]] = []
+        self.environments: list[dict[str, str]] = []
         self.exit_code = 0
         self.error: OSError | None = None
 
     async def __call__(
-        self, command: list[str], *, stdin: int, stdout: int, stderr: int, check: bool
+        self, command: list[str], *, stdin: int, stdout: int, stderr: int, env: dict[str, str], check: bool
     ) -> CompletedProcess[bytes]:
         assert stdin == stdout == stderr == DEVNULL
         assert check is False
         self.commands.append(command)
+        self.environments.append(env)
         if self.error is not None:
             raise self.error
         return await anyio.run_process(
@@ -49,6 +51,7 @@ class Processes:
             stdout=stdout,
             stderr=stderr,
             check=check,
+            env=env,
         )
 
 
@@ -98,9 +101,40 @@ async def test_default_delivery_is_private_and_platform_native(
     ]
     monkeypatch.setattr(notifications, 'platform', 'linux')
     await loader.fire(TurnEnd(text=SECRET, outcome='completed'))
-    assert processes.commands[-1] == ['notify-send', '--app-name=CLAI2', '--', 'CLAI2', 'Turn completed.']
+    assert processes.commands[-1] == ['/usr/bin/notify-send', '--app-name=CLAI2', '--', 'CLAI2', 'Turn completed.']
     await loader.close('exit')
     assert len(processes.commands) == 3
+
+
+@pytest.mark.parametrize('platform', ['darwin', 'linux'])
+async def test_delivery_ignores_path_and_does_not_inherit_credentials(
+    platform: str,
+    loader_factory: Callable[[], PluginLoader[None]],
+    processes: Processes,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(notifications, 'platform', platform)
+    monkeypatch.setenv('PATH', '/untrusted/workspace/bin')
+    monkeypatch.setenv('OPENAI_API_KEY', 'fake-provider-secret')
+    monkeypatch.setenv('LD_PRELOAD', '/untrusted/workspace/payload.so')
+    monkeypatch.setenv('DISPLAY', ':42')
+    monkeypatch.setenv('DBUS_SESSION_BUS_ADDRESS', 'unix:path=/tmp/test-session-bus')
+    loader = loader_factory()
+    await loader.load_all()
+    await loader.fire(TurnEnd(text=SECRET, outcome='completed'))
+    assert processes.commands[0][0] == ('/usr/bin/osascript' if platform == 'darwin' else '/usr/bin/notify-send')
+    environment = processes.environments[0]
+    assert environment['DISPLAY'] == ':42'
+    assert environment['DBUS_SESSION_BUS_ADDRESS'] == 'unix:path=/tmp/test-session-bus'
+    assert environment.keys() <= {
+        'DISPLAY',
+        'WAYLAND_DISPLAY',
+        'DBUS_SESSION_BUS_ADDRESS',
+        'XDG_RUNTIME_DIR',
+        'XAUTHORITY',
+    }
+    assert not {'PATH', 'OPENAI_API_KEY', 'LD_PRELOAD'} & environment.keys()
+    await loader.close('exit')
 
 
 async def test_disable_enable_reload_and_remove_use_the_loader(
@@ -201,7 +235,7 @@ async def test_async_delivery_reaps_the_child_on_timeout_or_cancellation(
     pid: int | None = None
 
     async def run_process(
-        command: list[str], *, stdin: int, stdout: int, stderr: int, check: bool
+        command: list[str], *, stdin: int, stdout: int, stderr: int, env: dict[str, str], check: bool
     ) -> CompletedProcess[bytes]:
         return await anyio.run_process(
             [
@@ -257,7 +291,7 @@ async def test_native_cancellation_reaps_child_and_stays_cancelled(
     read_fd, write_fd = os.pipe()
 
     async def run_process(
-        command: list[str], *, stdin: int, stdout: int, stderr: int, check: bool
+        command: list[str], *, stdin: int, stdout: int, stderr: int, env: dict[str, str], check: bool
     ) -> CompletedProcess[bytes]:
         return await anyio.run_process(
             [

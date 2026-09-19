@@ -698,12 +698,14 @@ They are sent even when the terminal is focused, without requesting a sound.
 
 macOS uses `/usr/bin/osascript`; notifications may appear under Script Editor.
 Allow notifications for that sender in System Settings if needed. Focus mode
-and OS notification settings can hide them. Linux uses `notify-send` when it is
-installed and a desktop notification service is available. Other platforms do
+and OS notification settings can hide them. Linux uses `/usr/bin/notify-send`
+when installed and a desktop notification service is available. Other platforms do
 nothing. Remote sessions notify the machine running CLAI, not your local client.
 
 Delivery uses an async subprocess with a two-second timeout and no shell
-interpolation. Its input and output do not touch the terminal. Missing utilities,
+interpolation. Both platforms use absolute system paths, not `PATH` lookup.
+Only display/session variables are passed to the child, not provider credentials
+or dynamic-loader settings. Its input and output do not touch the terminal. Missing utilities,
 nonzero exits, and timeouts are ignored so they do not fail a turn or a question.
 A stalled utility can delay the next prompt or question menu by up to two seconds;
 timeout or cancellation kills and reaps the child. No background workers or

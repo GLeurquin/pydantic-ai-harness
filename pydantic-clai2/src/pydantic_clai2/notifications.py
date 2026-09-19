@@ -1,5 +1,6 @@
 """Best-effort native desktop notifications without conversation content."""
 
+import os
 from subprocess import DEVNULL
 from sys import platform
 
@@ -34,13 +35,19 @@ async def _notify(message: str) -> None:
             message,
         ]
     elif platform == 'linux':
-        command = ['notify-send', '--app-name=CLAI2', '--', 'CLAI2', message]
+        command = ['/usr/bin/notify-send', '--app-name=CLAI2', '--', 'CLAI2', message]
     else:
         return
 
+    environment = {
+        name: os.environ[name]
+        for name in ('DISPLAY', 'WAYLAND_DISPLAY', 'DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR', 'XAUTHORITY')
+        if name in os.environ
+    }
+
     async def deliver() -> None:
         try:
-            await run_process(command, stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL, check=False)
+            await run_process(command, stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL, env=environment, check=False)
         except OSError:
             pass
 
