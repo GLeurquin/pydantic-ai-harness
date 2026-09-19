@@ -143,6 +143,8 @@ The judge then also receives a `<conversation>` block: user messages, assistant 
 
 Turning it on widens the judge's own prompt-injection surface, because that transcript includes third-party content. The judge instructions label both blocks as untrusted data, and both are escaped before they are embedded. That reduces the risk rather than removing it: content-derived instructions are exactly what a model is least able to discount, which is why the judge is one filter among the controls a sensitive tool needs.
 
+Either way, what the judge is shown leaves the process. The whole validated argument dict goes to the judging model's provider before the verdict comes back, so a call is disclosed even when it is then blocked. Where a tool's arguments can carry credentials or customer data, scope `tools` away from it, or route the judge to a provider you already trust with that data.
+
 ## Risk tiers
 
 `ToolCallJudge` asks one question and takes one answer. It has no severity scale and no per-tool thresholds, deliberately: a threshold is only useful when the numbers on either side of it mean something, and a model's self-reported severity for "delete a file" is not calibrated against another model's, another prompt's, or yesterday's.
