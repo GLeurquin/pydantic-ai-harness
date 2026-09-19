@@ -246,12 +246,17 @@ Run from the repository root. CLAI shares the root `uv.lock`, `.venv`, and
 Pyright configuration with Harness.
 
 ```bash
-uv sync --locked --all-packages --group lint
+uv sync --locked --all-packages --group lint --group clai-test
 uv run --no-sync ruff format --check .
 uv run --no-sync ruff check .
 PYRIGHT_PYTHON_IGNORE_WARNINGS=1 uv run --no-sync pyright pydantic-clai2/src pydantic-clai2/tests
 uv run --no-sync pytest -p no:cacheprovider -c pydantic-clai2/pyproject.toml pydantic-clai2/tests
 ```
+
+The `clai-test` group installs Cassetter for recorded `httpx2` traffic. CLAI's
+pytest config disables `pytest-recording`; Harness uses the opposite selection.
+Keep recording mode `none` in CI so missing interactions fail instead of using
+the network.
 
 ## Docs parity
 

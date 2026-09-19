@@ -139,9 +139,9 @@ dev = [
     "pytest-recording>=0.13.4",
     "mongomock-motor>=0.0.36",
     "redis>=6.0.0",
-    # CLAI update-check cassettes use httpx2 (issue #966).
-    "cassetter>=0.11.0",
 ]
+# Keep CLAI's recording plugin out of default Harness test environments (issue #966).
+clai-test = ["cassetter>=0.11.0"]
 lint = [
     'ruff>=0.14',
     # Match CLAI's version for its decorator-based plugin API (issue #875).
