@@ -140,9 +140,13 @@ in `activate`. Failed imports or shell rebuilds restore previous module bindings
 and report the error; correct the source and retry. Import-time side effects
 cannot be undone.
 
-Reload ordering follows existing imports. Restart for changes to import
-dependencies, startup code, or agent construction. Third-party dependencies are
-not recursively reloaded. Use `/plugins reload NAME` to reload only one plugin.
+Reload ordering follows module-scope imports in the current source, including
+newly added dependencies between CLAI modules and new local modules. Function-local
+imports and `TYPE_CHECKING` guards do not create eager dependencies. New modules
+are imported only if reached by the updated code; invalid source or a detected
+import cycle fails before reloads begin. Restart for changes to startup code,
+agent construction, or dynamically loaded dependencies. Third-party dependencies
+are not recursively reloaded. Use `/plugins reload NAME` to reload only one plugin.
 
 ## Hooks, tools and settings
 
