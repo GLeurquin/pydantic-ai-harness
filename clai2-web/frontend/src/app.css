@@ -122,11 +122,28 @@
 }
 
 .sidebar-group-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--text-muted);
   padding: 10px 12px 4px;
+  background: none;
+  border: none;
+  border-radius: 0;
+  text-align: left;
+}
+
+.sidebar-group-title:hover {
+  color: var(--text);
+  border-color: transparent;
+}
+
+.sidebar-group-arrow {
+  font-size: 9px;
 }
 
 .agent-row {

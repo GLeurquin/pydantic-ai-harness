@@ -40,6 +40,10 @@ const baseProps = {
   onNewAgent: vi.fn(),
 };
 
+beforeEach(() => {
+  localStorage.clear();
+});
+
 describe('Sidebar', () => {
   it('renders the groups in order with only non-empty groups', () => {
     const agents = [
@@ -52,7 +56,7 @@ describe('Sidebar', () => {
     ];
     const { container } = render(<Sidebar {...baseProps} agents={agents} selectedAgentId={null} />);
     const titles = Array.from(container.querySelectorAll('.sidebar-group-title')).map((node) => node.textContent);
-    expect(titles).toEqual(['Needs attention', 'Working', 'Idle', 'Archived']);
+    expect(titles).toEqual(['▾Needs attention', '▾Working', '▾Idle', '▾Archived']);
     const attention = screen.getByRole('region', { name: 'Needs attention' });
     expect(Array.from(attention.querySelectorAll('.agent-row-name')).map((node) => node.textContent)).toEqual([
       'Waiter',
@@ -70,7 +74,48 @@ describe('Sidebar', () => {
       <Sidebar {...baseProps} agents={[makeAgent('a1', 'Idler', 'idle')]} selectedAgentId={null} />,
     );
     const titles = Array.from(container.querySelectorAll('.sidebar-group-title')).map((node) => node.textContent);
-    expect(titles).toEqual(['Idle']);
+    expect(titles).toEqual(['▾Idle']);
+  });
+
+  it('collapses and expands a group from its title, persisting across remounts', async () => {
+    const user = userEvent.setup();
+    const agents = [makeAgent('a1', 'Alpha', 'idle'), makeAgent('a2', 'Beta', 'working')];
+    const { unmount } = render(<Sidebar {...baseProps} agents={agents} selectedAgentId={null} />);
+    const idleToggle = screen.getByRole('button', { name: '▾ Idle' });
+    expect(idleToggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('Alpha')).toBeInTheDocument();
+
+    await user.click(idleToggle);
+    expect(screen.getByRole('button', { name: '▸ Idle' })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('Alpha')).toBeNull();
+    expect(screen.getByText('Beta')).toBeInTheDocument();
+
+    unmount();
+    render(<Sidebar {...baseProps} agents={agents} selectedAgentId={null} />);
+    expect(screen.getByRole('button', { name: '▸ Idle' })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('Alpha')).toBeNull();
+  });
+
+  it('falls back to expanded groups when localStorage is unavailable', () => {
+    const getItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    const agents = [makeAgent('a1', 'Alpha', 'idle')];
+    render(<Sidebar {...baseProps} agents={agents} selectedAgentId={null} />);
+    expect(screen.getByText('Alpha')).toBeInTheDocument();
+    getItem.mockRestore();
+  });
+
+  it('does not crash when localStorage.setItem throws', async () => {
+    const user = userEvent.setup();
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    const agents = [makeAgent('a1', 'Alpha', 'idle')];
+    render(<Sidebar {...baseProps} agents={agents} selectedAgentId={null} />);
+    await user.click(screen.getByRole('button', { name: '▾ Idle' }));
+    expect(screen.queryByText('Alpha')).toBeNull();
+    setItem.mockRestore();
   });
 
   it('narrows agents through the filter input', async () => {

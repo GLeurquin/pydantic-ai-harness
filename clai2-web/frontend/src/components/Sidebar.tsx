@@ -25,6 +25,27 @@ const GROUP_TITLES = [
   ['archived', 'Archived'],
 ] as const;
 
+const COLLAPSED_GROUPS_KEY = 'clai2:sidebar-collapsed-groups';
+
+/** Which sidebar groups are collapsed is a per-viewer preference, not app
+ * data -- kept in localStorage rather than passed down from App.tsx. */
+function loadCollapsedGroups(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(COLLAPSED_GROUPS_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, boolean>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveCollapsedGroups(collapsed: Record<string, boolean>): void {
+  try {
+    localStorage.setItem(COLLAPSED_GROUPS_KEY, JSON.stringify(collapsed));
+  } catch {
+    // Best-effort; losing this preference isn't worth failing the UI over.
+  }
+}
+
 export function Sidebar({
   agents,
   projects,
@@ -37,9 +58,18 @@ export function Sidebar({
   onNewAgent,
 }: SidebarProps) {
   const [filter, setFilter] = useState('');
+  const [collapsedGroups, setCollapsedGroups] = useState(loadCollapsedGroups);
   const groups = groupAgents(filterByProject(agents, selectedProjectId), filter);
   const live = liveCount(agents);
   const atCapacity = live >= maxAgents;
+
+  const toggleGroup = (key: string) => {
+    setCollapsedGroups((current) => {
+      const next = { ...current, [key]: !current[key] };
+      saveCollapsedGroups(next);
+      return next;
+    });
+  };
   return (
     <nav className={open ? 'sidebar open' : 'sidebar'} aria-label="Agents">
       <div className="sidebar-tools">
@@ -70,16 +100,30 @@ export function Sidebar({
           />
         </div>
       </div>
-      {GROUP_TITLES.map(([key, title]) =>
-        groups[key].length > 0 ? (
+      {GROUP_TITLES.map(([key, title]) => {
+        if (groups[key].length === 0) {
+          return null;
+        }
+        const collapsed = collapsedGroups[key] ?? false;
+        return (
           <section key={key} aria-label={title}>
-            <div className="sidebar-group-title">{title}</div>
-            {groups[key].map((agent) => (
-              <AgentRow key={agent.id} agent={agent} selected={agent.id === selectedAgentId} onSelect={onSelect} />
-            ))}
+            <button
+              type="button"
+              className="sidebar-group-title"
+              onClick={() => toggleGroup(key)}
+              aria-expanded={!collapsed}
+            >
+              <span className="sidebar-group-arrow">{collapsed ? '▸' : '▾'}</span>
+              {title}
+            </button>
+            {collapsed
+              ? null
+              : groups[key].map((agent) => (
+                  <AgentRow key={agent.id} agent={agent} selected={agent.id === selectedAgentId} onSelect={onSelect} />
+                ))}
           </section>
-        ) : null,
-      )}
+        );
+      })}
       <div className="capacity">
         {live}/{maxAgents} agents
       </div>
