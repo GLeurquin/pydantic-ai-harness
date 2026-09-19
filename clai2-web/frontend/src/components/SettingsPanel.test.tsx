@@ -144,9 +144,16 @@ describe('SettingsPanel', () => {
     });
     expect(screen.queryByRole('button', { name: 'Track a PR' })).toBeNull();
     expect(screen.getByText('pydantic/pydantic-ai#123')).toBeInTheDocument();
-    expect(screen.getByText('Checks failing')).toBeInTheDocument();
+    expect(screen.getByText('Checks failing')).toHaveClass('ci-state-failing');
     await user.click(screen.getByRole('button', { name: 'Stop tracking' }));
     expect(props.onClearCiTracking).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows a non-failing CI state with the plain hint style', () => {
+    renderSettings({
+      agent: makeAgent({ ciTracking: { prRef: 'o/r#1', lastState: 'success' } }),
+    });
+    expect(screen.getByText('Checks passing')).toHaveClass('hint');
   });
 
   it('falls back to the raw state for an unrecognized CI state', () => {

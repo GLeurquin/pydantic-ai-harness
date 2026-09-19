@@ -152,7 +152,9 @@ export function SettingsPanel({
         {agent.ciTracking ? (
           <>
             <p>{agent.ciTracking.prRef}</p>
-            <p className="hint">{CI_STATE_LABELS[agent.ciTracking.lastState] ?? agent.ciTracking.lastState}</p>
+            <p className={agent.ciTracking.lastState === 'failure' ? 'ci-state-failing' : 'hint'}>
+              {CI_STATE_LABELS[agent.ciTracking.lastState] ?? agent.ciTracking.lastState}
+            </p>
             <div className="settings-row">
               <button className="danger" onClick={onClearCiTracking}>
                 Stop tracking
