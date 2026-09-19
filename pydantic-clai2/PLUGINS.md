@@ -441,9 +441,10 @@ compatibility checks. There is no browser answerer for `ask_user` or CLAI SQLite
 saving and resume.
 
 Agent runs share one execution slot per server so browser tabs do not execute
-coding tools concurrently. MCP retains its [outer-cancellation limitation](#mcp-explicitly-approved-mcp-servers),
-which can affect cancelled web requests; disconnected requests must not be assumed
-to clean up stdio MCP processes until the core issue is resolved.
+coding tools concurrently. A real HTTP/stdio regression covers browser
+disconnection during an MCP call: core's streaming runner closes the process.
+The separate [outer-cancellation limitation](#mcp-explicitly-approved-mcp-servers)
+affects direct `Agent.run()` embeddings.
 
 Other enabled plugin import or activation failures abort startup. Project
 plugins still require approval, and store overrides retain their precedence.

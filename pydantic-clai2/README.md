@@ -199,9 +199,9 @@ SQLite conversation saving and `--resume`. Browser chat history is not a CLAI
 saved session. Core hooks and capability tools work; a plugin registering
 `turn_start` or `turn_end` prevents startup rather than losing its guards.
 See [browser plugin compatibility](PLUGINS.md#browser-mode-compatibility).
-MCP keeps the [upstream outer-cancellation limitation](#mcp-servers); request
-cancellation can encounter it, so do not assume disconnected requests clean up
-stdio MCP processes until the core issue is resolved.
+Browser disconnection during an MCP tool call is covered by a real HTTP and
+stdio cleanup test. It uses core's streaming runner, unlike the direct
+`Agent.run()` embedding path affected by the [outer-cancellation limitation](#mcp-servers).
 
 Core's web adapter uses its default limit of 50 model requests per run. Explicit
 `--request-limit`, saved `run.request_limit`, and project `request_limit` overrides
