@@ -30,8 +30,11 @@ default. Plugin-provided rendering, including interactive questions, is unchange
 
 ## Interrupting a turn
 
-Press Ctrl-C once to cancel the active agent turn without discarding your draft.
-Tool cleanup finishes before the next queued message starts. Press Ctrl-C again within
+Press Esc or Ctrl-C to cancel the active agent turn without discarding your draft.
+Tool cleanup finishes before the next queued message starts. Esc does not request
+exit, even when pressed repeatedly. Arrow keys and Alt-key shortcuts keep their
+editing behavior. Inside a full-screen menu, Esc closes or declines the menu
+rather than cancelling the agent turn. Press Ctrl-C again within
 two seconds to exit, including across the transition back to input. At the prompt,
 the first press clears input and the second exits. Ctrl-D on an empty input and
 `/exit` also quit after earlier queued messages finish.
