@@ -11,6 +11,7 @@ import pytest
 from prompt_toolkit import PromptSession
 from prompt_toolkit.application import Application, create_app_session
 from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.filters import Always
 from prompt_toolkit.input import PipeInput, create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from rich.console import Console
@@ -234,7 +235,7 @@ async def test_queue_preview_is_bounded_and_does_not_modify_messages() -> None:
 
 
 @pytest.mark.parametrize('outcome', ['completed', 'cancelled', 'failed'])
-async def test_working_animation_is_inside_editor_without_changing_draft(outcome: str) -> None:
+async def test_working_animation_is_on_top_border_without_changing_draft(outcome: str) -> None:
     now = 0.0
     started = anyio.Event()
     finish = anyio.Event()
@@ -243,6 +244,9 @@ async def test_working_animation_is_inside_editor_without_changing_draft(outcome
     idle = anyio.Event()
 
     async with editor(clock=lambda: now) as (live, pipe, _):
+        live.prompt.layout.current_window.height = 1
+        live.prompt.layout.current_window.dont_extend_height = Always()
+        painted: list[str] = []
 
         def rendered(app: Application[str]) -> None:
             screen = app.renderer.last_rendered_screen
@@ -254,13 +258,13 @@ async def test_working_animation_is_inside_editor_without_changing_draft(outcome
                 return
             for index, spinner in enumerate(('⠋', '⠙')):
                 if f'Working {spinner}' in text:
-                    assert text.index('┌') < text.index('Working') < text.index('> draft') < text.index('└')
+                    painted[:] = rows
                     frames[index].set()
             if finished.is_set() and 'Working' not in text:
                 idle.set()
 
         live.prompt.app.after_render += rendered
-        assert ''.join(fragment[1] for fragment in live.prompt_text()) == '> '
+        assert live.working_title() == []
 
         async def operation() -> None:
             started.set()
@@ -282,6 +286,11 @@ async def test_working_animation_is_inside_editor_without_changing_draft(outcome
             await started.wait()
             pipe.send_text('draft')
             await frames[0].wait()
+            top = next(index for index, row in enumerate(painted) if '┌' in row)
+            bottom = next(index for index, row in enumerate(painted) if '└' in row)
+            assert '┌─ Working ⠋' in painted[top]
+            assert bottom - top == 2
+            assert '> draft' in painted[top + 1]
             now = 0.1
             live.prompt.app.invalidate()
             await frames[1].wait()
@@ -291,5 +300,5 @@ async def test_working_animation_is_inside_editor_without_changing_draft(outcome
             else:
                 finish.set()
             await idle.wait()
-        assert ''.join(fragment[1] for fragment in live.prompt_text()) == '> '
+        assert live.working_title() == []
         assert live.prompt.default_buffer.text == 'draft'

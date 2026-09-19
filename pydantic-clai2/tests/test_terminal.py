@@ -320,7 +320,8 @@ async def test_prompt_frame_stays_visible_during_tools(tmp_path: Path, height: i
             assert follow_up < command < editor_top
             indicator = next(row for row, line in enumerate(frame) if 'Working ' in line)
             draft = next(row for row, line in enumerate(frame) if '> retained draft' in line)
-            assert editor_top < indicator < draft
+            assert editor_top == indicator
+            assert draft == editor_top + 1
             assert calls == 1
             assert store.load().thinking
             finish.set()
