@@ -19,6 +19,7 @@ function agent(id: string, name: string, status: AgentStatus, projectId = 'proje
     modelLabel: null,
     lastError: null,
     goal: null,
+    ciTracking: null,
   };
 }
 

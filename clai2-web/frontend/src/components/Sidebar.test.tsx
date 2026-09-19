@@ -21,6 +21,7 @@ function makeAgent(id: string, name: string, status: AgentStatus, projectId = 'p
     modelLabel: null,
     lastError: null,
     goal: null,
+    ciTracking: null,
   };
 }
 

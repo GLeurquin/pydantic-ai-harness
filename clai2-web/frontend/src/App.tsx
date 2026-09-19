@@ -3,6 +3,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from './api/client';
 import type { CreateAgentRequest } from './api/types';
 import { errorMessage } from './errors';
+import { CiTrackingDialog } from './components/CiTrackingDialog';
+import { GithubSettingsDialog } from './components/GithubSettingsDialog';
 import { GoalDialog } from './components/GoalDialog';
 import { Header } from './components/Header';
 import { MainPane } from './components/MainPane';
@@ -15,7 +17,7 @@ import { transcriptKey } from './state/transcript';
 import { useAppStore } from './state/store';
 import { connectWs, wsUrl } from './ws';
 
-type Dialog = 'none' | 'new-agent' | 'fork' | 'side-session' | 'models' | 'goal';
+type Dialog = 'none' | 'new-agent' | 'fork' | 'side-session' | 'models' | 'goal' | 'github' | 'ci-tracking';
 
 /** Fire a write action; a rejection surfaces as a notification instead of
  * vanishing. The rest of the UI does not wait on it. */
@@ -84,11 +86,6 @@ export function App() {
     return project;
   };
 
-  const setGithubToken = async (token: string) => {
-    const settings = await api.setGithubToken(token);
-    useAppStore.getState().setGithubSettings(settings);
-  };
-
   return (
     <div className="app">
       <NotificationTray notifications={store.notifications} onDismiss={store.dismissNotification} />
@@ -98,6 +95,7 @@ export function App() {
         agents={store.agents}
         onResolveApproval={resolveApproval}
         onManageModels={() => setDialog('models')}
+        onManageGithub={() => setDialog('github')}
         onToggleSidebar={() => setSidebarOpen((current) => !current)}
       />
       <div className={sidebarOpen ? 'sidebar-backdrop open' : 'sidebar-backdrop'} onClick={() => setSidebarOpen(false)} />
@@ -136,6 +134,8 @@ export function App() {
           onRename={(name) => runAction(api.rename(selected.id, name))}
           onSetGoal={() => setDialog('goal')}
           onClearGoal={() => runAction(api.clearGoal(selected.id))}
+          onSetCiTracking={() => setDialog('ci-tracking')}
+          onClearCiTracking={() => runAction(api.clearCiTracking(selected.id))}
         />
       ) : (
         <main className="main">
@@ -151,13 +151,19 @@ export function App() {
           onCreate={createAgent}
           onCreateProject={createProject}
           onFetchGithubIssue={api.fetchGithubIssue}
-          onSetGithubToken={setGithubToken}
           onClose={() => setDialog('none')}
           onManageModels={() => setDialog('models')}
+          onManageGithub={() => setDialog('github')}
         />
       ) : null}
       {dialog === 'models' ? (
         <ModelsDialog onClose={() => setDialog('none')} onChanged={useAppStore.getState().setModels} />
+      ) : null}
+      {dialog === 'github' ? (
+        <GithubSettingsDialog
+          onClose={() => setDialog('none')}
+          onChanged={useAppStore.getState().setGithubSettings}
+        />
       ) : null}
       {dialog === 'fork' && selected ? (
         <NameDialog
@@ -181,6 +187,15 @@ export function App() {
           // after that would clobber the real, newer state back to active.
           // The WS stream alone is both sufficient and race-free here.
           onSubmit={(goal, maxTurns) => api.setGoal(selected.id, goal, maxTurns).then(() => undefined)}
+          onClose={() => setDialog('none')}
+        />
+      ) : null}
+      {dialog === 'ci-tracking' && selected ? (
+        <CiTrackingDialog
+          agentName={selected.name}
+          // Same WS-only race avoidance as the goal dialog above: don't
+          // manually apply the response, rely on the broadcast update.
+          onSubmit={(prRef) => api.setCiTracking(selected.id, prRef).then(() => undefined)}
           onClose={() => setDialog('none')}
         />
       ) : null}

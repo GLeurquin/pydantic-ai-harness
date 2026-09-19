@@ -130,12 +130,27 @@ export const api = {
   clearGoal: (agentId: string) =>
     request<AgentSummary>(`/api/agents/${agentId}/goal`, { method: 'DELETE' }),
 
+  setCiTracking: (agentId: string, prRef: string) =>
+    request<AgentSummary>(`/api/agents/${agentId}/ci-tracking`, {
+      method: 'POST',
+      body: JSON.stringify({ prRef }),
+    }),
+
+  clearCiTracking: (agentId: string) =>
+    request<AgentSummary>(`/api/agents/${agentId}/ci-tracking`, { method: 'DELETE' }),
+
   githubSettings: () => request<RedactedGithubSettings>('/api/github'),
 
   setGithubToken: (token: string) =>
     request<RedactedGithubSettings>('/api/github', { method: 'PATCH', body: JSON.stringify({ token }) }),
 
   clearGithubToken: () => request<RedactedGithubSettings>('/api/github', { method: 'DELETE' }),
+
+  setGithubPollInterval: (pollIntervalSecs: number) =>
+    request<RedactedGithubSettings>('/api/github/poll-interval', {
+      method: 'PATCH',
+      body: JSON.stringify({ pollIntervalSecs }),
+    }),
 
   fetchGithubIssue: (issueRef: string) =>
     request<FetchedIssue>('/api/github/issue', { method: 'POST', body: JSON.stringify({ issueRef }) }),

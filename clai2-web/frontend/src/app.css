@@ -319,6 +319,16 @@
   white-space: nowrap;
 }
 
+.tabs-ci {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.tabs-ci.failing {
+  color: var(--error);
+}
+
 /* Conversation */
 .conversation {
   display: flex;

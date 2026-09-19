@@ -39,13 +39,13 @@ function renderDialog(props: Partial<Parameters<typeof NewAgentDialog>[0]> = {})
   const defaults = {
     models,
     projects,
-    githubSettings: { hasToken: false },
+    githubSettings: { hasToken: false, pollIntervalSecs: 300 },
     onCreate: vi.fn<(request: CreateAgentRequest) => Promise<void>>().mockResolvedValue(undefined),
     onCreateProject: vi.fn<(name: string, path: string) => Promise<ProjectSummary>>(),
     onFetchGithubIssue: vi.fn<(issueRef: string) => Promise<FetchedIssue>>(),
-    onSetGithubToken: vi.fn<(token: string) => Promise<void>>().mockResolvedValue(undefined),
     onClose: vi.fn(),
     onManageModels: vi.fn(),
+    onManageGithub: vi.fn(),
   };
   const merged = { ...defaults, ...props };
   return { ...render(<NewAgentDialog {...merged} />), props: merged };
@@ -272,65 +272,20 @@ describe('NewAgentDialog', () => {
       expect(screen.queryByLabelText('GitHub personal access token')).toBeNull();
     });
 
-    it('shows a token field when no token is configured', async () => {
+    it('offers to configure GitHub when no token is set, and fires onManageGithub', async () => {
       const user = userEvent.setup();
-      renderDialog({ githubSettings: { hasToken: false } });
+      const onManageGithub = vi.fn();
+      renderDialog({ githubSettings: { hasToken: false, pollIntervalSecs: 300 }, onManageGithub });
       await user.click(screen.getByLabelText('Import from a GitHub issue'));
-      expect(screen.getByLabelText('GitHub personal access token')).toBeInTheDocument();
+      expect(screen.getByText('No GitHub token is configured yet.')).toBeInTheDocument();
       expect(screen.queryByLabelText('Issue')).toBeNull();
-    });
-
-    it('disables Save token until a token is typed', async () => {
-      const user = userEvent.setup();
-      renderDialog({ githubSettings: { hasToken: false } });
-      await user.click(screen.getByLabelText('Import from a GitHub issue'));
-      expect(screen.getByRole('button', { name: 'Save token' })).toBeDisabled();
-      await user.type(screen.getByLabelText('GitHub personal access token'), 'ghp_secret');
-      expect(screen.getByRole('button', { name: 'Save token' })).toBeEnabled();
-    });
-
-    it('saves a trimmed token and clears the draft', async () => {
-      const user = userEvent.setup();
-      const onSetGithubToken = vi.fn<(token: string) => Promise<void>>().mockResolvedValue(undefined);
-      renderDialog({ githubSettings: { hasToken: false }, onSetGithubToken });
-      await user.click(screen.getByLabelText('Import from a GitHub issue'));
-      await user.type(screen.getByLabelText('GitHub personal access token'), '  ghp_secret  ');
-      await user.click(screen.getByRole('button', { name: 'Save token' }));
-      expect(onSetGithubToken).toHaveBeenCalledWith('ghp_secret');
-      await waitFor(() => expect(screen.getByLabelText('GitHub personal access token')).toHaveValue(''));
-    });
-
-    it('shows the busy label while saving a token', async () => {
-      const user = userEvent.setup();
-      const gate = deferred<void>();
-      renderDialog({
-        githubSettings: { hasToken: false },
-        onSetGithubToken: vi.fn<(token: string) => Promise<void>>(() => gate.promise),
-      });
-      await user.click(screen.getByLabelText('Import from a GitHub issue'));
-      await user.type(screen.getByLabelText('GitHub personal access token'), 'ghp_secret');
-      await user.click(screen.getByRole('button', { name: 'Save token' }));
-      expect(screen.getByRole('button', { name: 'Saving...' })).toBeDisabled();
-      gate.resolve();
-      await waitFor(() => expect(screen.getByRole('button', { name: 'Save token' })).toBeInTheDocument());
-    });
-
-    it('shows an error and keeps the draft when saving a token fails', async () => {
-      const user = userEvent.setup();
-      renderDialog({
-        githubSettings: { hasToken: false },
-        onSetGithubToken: vi.fn<(token: string) => Promise<void>>().mockRejectedValue(new Error('bad token')),
-      });
-      await user.click(screen.getByLabelText('Import from a GitHub issue'));
-      await user.type(screen.getByLabelText('GitHub personal access token'), 'ghp_bad');
-      await user.click(screen.getByRole('button', { name: 'Save token' }));
-      expect(await screen.findByText('bad token')).toHaveClass('form-error');
-      expect(screen.getByLabelText('GitHub personal access token')).toHaveValue('ghp_bad');
+      await user.click(screen.getByRole('button', { name: 'Configure GitHub' }));
+      expect(onManageGithub).toHaveBeenCalledTimes(1);
     });
 
     it('shows the issue field directly when a token is already configured', async () => {
       const user = userEvent.setup();
-      renderDialog({ githubSettings: { hasToken: true } });
+      renderDialog({ githubSettings: { hasToken: true, pollIntervalSecs: 300 } });
       await user.click(screen.getByLabelText('Import from a GitHub issue'));
       expect(screen.getByLabelText('Issue')).toBeInTheDocument();
       expect(screen.queryByLabelText('GitHub personal access token')).toBeNull();
@@ -340,7 +295,7 @@ describe('NewAgentDialog', () => {
     it('fetches an issue, shows a preview, and prefills a blank name', async () => {
       const user = userEvent.setup();
       const onFetchGithubIssue = vi.fn<(issueRef: string) => Promise<FetchedIssue>>().mockResolvedValue(makeIssue());
-      renderDialog({ githubSettings: { hasToken: true }, onFetchGithubIssue });
+      renderDialog({ githubSettings: { hasToken: true, pollIntervalSecs: 300 }, onFetchGithubIssue });
       await user.click(screen.getByLabelText('Import from a GitHub issue'));
       await user.type(screen.getByLabelText('Issue'), '  o/r#42  ');
       await user.click(screen.getByRole('button', { name: 'Fetch issue' }));
@@ -354,7 +309,7 @@ describe('NewAgentDialog', () => {
     it('does not overwrite an existing name when fetching an issue', async () => {
       const user = userEvent.setup();
       const onFetchGithubIssue = vi.fn<(issueRef: string) => Promise<FetchedIssue>>().mockResolvedValue(makeIssue());
-      renderDialog({ githubSettings: { hasToken: true }, onFetchGithubIssue });
+      renderDialog({ githubSettings: { hasToken: true, pollIntervalSecs: 300 }, onFetchGithubIssue });
       await user.type(screen.getByPlaceholderText('fix-auth-bug'), 'my custom name');
       await user.click(screen.getByLabelText('Import from a GitHub issue'));
       await user.type(screen.getByLabelText('Issue'), 'o/r#42');
@@ -367,7 +322,7 @@ describe('NewAgentDialog', () => {
       const user = userEvent.setup();
       const longBody = 'x'.repeat(300);
       renderDialog({
-        githubSettings: { hasToken: true },
+        githubSettings: { hasToken: true, pollIntervalSecs: 300 },
         onFetchGithubIssue: vi.fn<(issueRef: string) => Promise<FetchedIssue>>().mockResolvedValue(makeIssue({ body: longBody })),
       });
       await user.click(screen.getByLabelText('Import from a GitHub issue'));
@@ -379,7 +334,7 @@ describe('NewAgentDialog', () => {
     it('shows a short issue body in full', async () => {
       const user = userEvent.setup();
       renderDialog({
-        githubSettings: { hasToken: true },
+        githubSettings: { hasToken: true, pollIntervalSecs: 300 },
         onFetchGithubIssue: vi
           .fn<(issueRef: string) => Promise<FetchedIssue>>()
           .mockResolvedValue(makeIssue({ body: 'short body' })),
@@ -394,7 +349,7 @@ describe('NewAgentDialog', () => {
       const user = userEvent.setup();
       const gate = deferred<FetchedIssue>();
       renderDialog({
-        githubSettings: { hasToken: true },
+        githubSettings: { hasToken: true, pollIntervalSecs: 300 },
         onFetchGithubIssue: vi.fn<(issueRef: string) => Promise<FetchedIssue>>(() => gate.promise),
       });
       await user.click(screen.getByLabelText('Import from a GitHub issue'));
@@ -408,7 +363,7 @@ describe('NewAgentDialog', () => {
     it('shows an error and no preview when fetching an issue fails', async () => {
       const user = userEvent.setup();
       renderDialog({
-        githubSettings: { hasToken: true },
+        githubSettings: { hasToken: true, pollIntervalSecs: 300 },
         onFetchGithubIssue: vi.fn<(issueRef: string) => Promise<FetchedIssue>>().mockRejectedValue(new Error('not found')),
       });
       await user.click(screen.getByLabelText('Import from a GitHub issue'));
@@ -421,7 +376,7 @@ describe('NewAgentDialog', () => {
     it('clears a fetched preview when the issue reference is edited', async () => {
       const user = userEvent.setup();
       renderDialog({
-        githubSettings: { hasToken: true },
+        githubSettings: { hasToken: true, pollIntervalSecs: 300 },
         onFetchGithubIssue: vi.fn<(issueRef: string) => Promise<FetchedIssue>>().mockResolvedValue(makeIssue()),
       });
       await user.click(screen.getByLabelText('Import from a GitHub issue'));
@@ -436,7 +391,7 @@ describe('NewAgentDialog', () => {
     it('clears the fetched preview and any error when the checkbox is toggled off', async () => {
       const user = userEvent.setup();
       renderDialog({
-        githubSettings: { hasToken: true },
+        githubSettings: { hasToken: true, pollIntervalSecs: 300 },
         onFetchGithubIssue: vi.fn<(issueRef: string) => Promise<FetchedIssue>>().mockResolvedValue(makeIssue()),
       });
       await user.click(screen.getByLabelText('Import from a GitHub issue'));
@@ -451,7 +406,7 @@ describe('NewAgentDialog', () => {
 
     it('blocks submission until an issue is fetched', async () => {
       const user = userEvent.setup();
-      const { props } = renderDialog({ githubSettings: { hasToken: true } });
+      const { props } = renderDialog({ githubSettings: { hasToken: true, pollIntervalSecs: 300 } });
       await user.type(screen.getByPlaceholderText('fix-auth-bug'), 'agent');
       await user.click(screen.getByLabelText('Import from a GitHub issue'));
       await user.click(screen.getByRole('button', { name: 'Start agent' }));
@@ -464,7 +419,7 @@ describe('NewAgentDialog', () => {
       const onCreate = vi.fn<(request: CreateAgentRequest) => Promise<void>>().mockResolvedValue(undefined);
       const issue = makeIssue();
       renderDialog({
-        githubSettings: { hasToken: true },
+        githubSettings: { hasToken: true, pollIntervalSecs: 300 },
         onCreate,
         onFetchGithubIssue: vi.fn<(issueRef: string) => Promise<FetchedIssue>>().mockResolvedValue(issue),
       });

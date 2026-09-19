@@ -20,9 +20,9 @@ export interface NewAgentDialogProps {
   onCreate: (request: CreateAgentRequest) => Promise<void>;
   onCreateProject: (name: string, path: string) => Promise<ProjectSummary>;
   onFetchGithubIssue: (issueRef: string) => Promise<FetchedIssue>;
-  onSetGithubToken: (token: string) => Promise<void>;
   onClose: () => void;
   onManageModels: () => void;
+  onManageGithub: () => void;
 }
 
 export function NewAgentDialog({
@@ -33,9 +33,9 @@ export function NewAgentDialog({
   onCreate,
   onCreateProject,
   onFetchGithubIssue,
-  onSetGithubToken,
   onClose,
   onManageModels,
+  onManageGithub,
 }: NewAgentDialogProps) {
   const [name, setName] = useState('');
   const [newProject, setNewProject] = useState<ProjectSummary | null>(null);
@@ -55,9 +55,6 @@ export function NewAgentDialog({
   const [issue, setIssue] = useState<FetchedIssue | null>(null);
   const [issueBusy, setIssueBusy] = useState(false);
   const [issueError, setIssueError] = useState<string | null>(null);
-  const [tokenDraft, setTokenDraft] = useState('');
-  const [tokenBusy, setTokenBusy] = useState(false);
-  const [tokenError, setTokenError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -79,19 +76,6 @@ export function NewAgentDialog({
       setProjectError(errorMessage(failure));
     } finally {
       setProjectBusy(false);
-    }
-  };
-
-  const saveToken = async () => {
-    setTokenBusy(true);
-    setTokenError(null);
-    try {
-      await onSetGithubToken(tokenDraft.trim());
-      setTokenDraft('');
-    } catch (failure) {
-      setTokenError(errorMessage(failure));
-    } finally {
-      setTokenBusy(false);
     }
   };
 
@@ -241,20 +225,9 @@ export function NewAgentDialog({
                   </>
                 ) : (
                   <>
-                    <label>
-                      GitHub personal access token
-                      <input
-                        type="password"
-                        value={tokenDraft}
-                        onChange={(change) => setTokenDraft(change.target.value)}
-                        placeholder="ghp_..."
-                      />
-                    </label>
-                    {tokenError ? <div className="form-error">{tokenError}</div> : null}
+                    <p className="hint">No GitHub token is configured yet.</p>
                     <div className="dialog-row">
-                      <button onClick={() => void saveToken()} disabled={tokenBusy || !tokenDraft.trim()}>
-                        {tokenBusy ? 'Saving...' : 'Save token'}
-                      </button>
+                      <button onClick={onManageGithub}>Configure GitHub</button>
                     </div>
                   </>
                 )}

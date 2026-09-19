@@ -9,10 +9,19 @@ export interface HeaderProps {
   agents: AgentSummary[];
   onResolveApproval: (approvalId: string, optionId: string) => void;
   onManageModels: () => void;
+  onManageGithub: () => void;
   onToggleSidebar: () => void;
 }
 
-export function Header({ connected, approvals, agents, onResolveApproval, onManageModels, onToggleSidebar }: HeaderProps) {
+export function Header({
+  connected,
+  approvals,
+  agents,
+  onResolveApproval,
+  onManageModels,
+  onManageGithub,
+  onToggleSidebar,
+}: HeaderProps) {
   const [open, setOpen] = useState(false);
   const agentName = (agentId: string) => agents.find((agent) => agent.id === agentId)?.name ?? agentId;
   return (
@@ -29,6 +38,9 @@ export function Header({ connected, approvals, agents, onResolveApproval, onMana
       </span>
       <button onClick={onManageModels} aria-label="Model profiles">
         Models
+      </button>
+      <button onClick={onManageGithub} aria-label="GitHub settings">
+        GitHub
       </button>
       <div className="inbox">
         <button onClick={() => setOpen(!open)} aria-expanded={open} aria-label="Approval inbox">

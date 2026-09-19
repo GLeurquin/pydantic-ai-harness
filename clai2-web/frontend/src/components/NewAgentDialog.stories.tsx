@@ -7,7 +7,6 @@ import { NewAgentDialog } from './NewAgentDialog';
 const noop = () => undefined;
 const resolveCreate = () => Promise.resolve();
 const resolveCreateProject = (): Promise<ProjectSummary> => Promise.resolve(makeProject());
-const resolveVoid = () => Promise.resolve();
 const resolveIssue = (): Promise<FetchedIssue> =>
   Promise.resolve({
     title: 'Auth tokens expire mid-session',
@@ -21,12 +20,12 @@ export const Open: Story = () => (
   <NewAgentDialog
     models={sampleProfiles}
     projects={projects}
-    githubSettings={{ hasToken: false }}
+    githubSettings={{ hasToken: false, pollIntervalSecs: 300 }}
     onCreate={resolveCreate}
     onCreateProject={resolveCreateProject}
     onFetchGithubIssue={resolveIssue}
-    onSetGithubToken={resolveVoid}
     onClose={noop}
     onManageModels={noop}
+    onManageGithub={noop}
   />
 );

@@ -29,6 +29,7 @@ function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
     modelLabel: null,
     lastError: null,
     goal: null,
+    ciTracking: null,
     ...overrides,
   };
 }
@@ -56,6 +57,8 @@ function renderPane(overrides: Partial<Parameters<typeof MainPane>[0]> = {}) {
     onRename: vi.fn(),
     onSetGoal: vi.fn(),
     onClearGoal: vi.fn(),
+    onSetCiTracking: vi.fn(),
+    onClearCiTracking: vi.fn(),
     ...overrides,
   };
   return { ...render(<MainPane {...props} />), props };
@@ -179,6 +182,27 @@ describe('MainPane', () => {
   it('hides the goal readout when no goal is active', () => {
     renderPane({ view: { kind: 'session', sessionId: 'main' } });
     expect(screen.queryByText(/^Goal:/)).toBeNull();
+  });
+
+  it('shows a failing CI badge in the tabs row while tracking a failing PR', () => {
+    const agent = makeAgent({ ciTracking: { prRef: 'o/r#1', lastState: 'failure' } });
+    renderPane({ agent, view: { kind: 'session', sessionId: 'main' } });
+    const badge = screen.getByText('CI: failure');
+    expect(badge).toHaveAttribute('title', 'o/r#1');
+    expect(badge).toHaveClass('tabs-ci', 'failing');
+  });
+
+  it('shows a non-failing CI badge without the failing class', () => {
+    const agent = makeAgent({ ciTracking: { prRef: 'o/r#1', lastState: 'success' } });
+    renderPane({ agent, view: { kind: 'session', sessionId: 'main' } });
+    const badge = screen.getByText('CI: success');
+    expect(badge).toHaveClass('tabs-ci');
+    expect(badge).not.toHaveClass('failing');
+  });
+
+  it('hides the CI readout when no PR is tracked', () => {
+    renderPane({ view: { kind: 'session', sessionId: 'main' } });
+    expect(screen.queryByText(/^CI:/)).toBeNull();
   });
 
   it('hides the usage readout outside the session view', () => {

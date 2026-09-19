@@ -48,6 +48,8 @@ function Frame({ agent, initialView }: { agent: AgentSummary; initialView: MainV
         onRename={noop}
         onSetGoal={noop}
         onClearGoal={noop}
+        onSetCiTracking={noop}
+        onClearCiTracking={noop}
       />
     </div>
   );

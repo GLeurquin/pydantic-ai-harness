@@ -164,7 +164,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   agents: [],
   approvals: [],
   models: [],
-  githubSettings: { hasToken: false },
+  githubSettings: { hasToken: false, pollIntervalSecs: 300 },
   projects: [],
   selectedProjectId: 'all',
   maxAgents: 100,

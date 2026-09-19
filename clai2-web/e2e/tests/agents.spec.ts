@@ -131,6 +131,24 @@ test('a goal runs on its own and stops once the agent marks it complete', async 
   await expect(page.getByText(/^Turn \d/)).not.toBeVisible();
 });
 
+test('tracking and stopping a PR round-trips through the settings tab', async ({ page }) => {
+  await createAgent(page, { worktree: false });
+  await page.getByRole('tab', { name: 'Settings' }).click();
+  await page.getByRole('button', { name: 'Track a PR' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Track a PR' });
+  await dialog.getByLabel('Pull request').fill('pydantic/pydantic-ai#1');
+  await dialog.getByRole('button', { name: 'Start tracking' }).click();
+  await expect(dialog).not.toBeVisible();
+
+  await expect(page.getByText('pydantic/pydantic-ai#1')).toBeVisible();
+  await expect(page.getByText('Not checked yet')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Track a PR' })).not.toBeVisible();
+
+  await page.getByRole('button', { name: 'Stop tracking' }).click();
+  await expect(page.getByRole('button', { name: 'Track a PR' })).toBeVisible();
+  await expect(page.getByText('pydantic/pydantic-ai#1')).not.toBeVisible();
+});
+
 test('forking carries the conversation into a new worktree agent', async ({ page }) => {
   const name = await createAgent(page, { worktree: true });
   await send(page, 'remember: the sky is teal');
@@ -240,27 +258,37 @@ test('registering a project lets an agent run in another repository', async ({ p
   await page.getByLabel('Filter by project').selectOption({ label: 'All projects' });
 });
 
-test('saving a GitHub token reveals the issue import field', async ({ page, request }) => {
+test('configuring a GitHub token from the new-agent dialog reveals the issue import field', async ({ page, request }) => {
   // A token is server-side, persistent state outside this test's page/context;
   // start from a known-clean slate regardless of what ran before it.
   await request.delete('/api/github');
   await page.goto('/');
   await expect(page.getByText('connected')).toBeVisible();
 
-  await page.getByRole('button', { name: 'New', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: 'New agent' });
-  await dialog.getByLabel('Import from a GitHub issue').check();
-  await expect(dialog.getByLabel('GitHub personal access token')).toBeVisible();
-  await expect(dialog.getByLabel('Issue', { exact: true })).toHaveCount(0);
-
   try {
-    await dialog.getByLabel('GitHub personal access token').fill('ghp_e2e_test_token');
-    await dialog.getByRole('button', { name: 'Save token' }).click();
-    await expect(dialog.getByLabel('Issue', { exact: true })).toBeVisible();
-    await expect(dialog.getByLabel('GitHub personal access token')).toHaveCount(0);
+    await page.getByRole('button', { name: 'New', exact: true }).click();
+    const newAgentDialog = page.getByRole('dialog', { name: 'New agent' });
+    await newAgentDialog.getByLabel('Import from a GitHub issue').check();
+    await expect(newAgentDialog.getByText('No GitHub token is configured yet.')).toBeVisible();
+    await expect(newAgentDialog.getByLabel('Issue', { exact: true })).toHaveCount(0);
 
-    await dialog.getByRole('button', { name: 'Cancel' }).click();
-    await expect(dialog).not.toBeVisible();
+    await newAgentDialog.getByRole('button', { name: 'Configure GitHub' }).click();
+    const githubDialog = page.getByRole('dialog', { name: 'GitHub settings' });
+    await expect(githubDialog).toBeVisible();
+    await expect(newAgentDialog).not.toBeVisible();
+    await githubDialog.getByLabel('Personal access token').fill('ghp_e2e_test_token');
+    await githubDialog.getByRole('button', { name: 'Save token' }).click();
+    await expect(githubDialog.getByRole('button', { name: 'Clear token' })).toBeVisible();
+    await githubDialog.getByRole('button', { name: 'Close' }).click();
+    await expect(githubDialog).not.toBeVisible();
+
+    await page.getByRole('button', { name: 'New', exact: true }).click();
+    const reopened = page.getByRole('dialog', { name: 'New agent' });
+    await reopened.getByLabel('Import from a GitHub issue').check();
+    await expect(reopened.getByLabel('Issue', { exact: true })).toBeVisible();
+    await expect(reopened.getByText('No GitHub token is configured yet.')).toHaveCount(0);
+    await reopened.getByRole('button', { name: 'Cancel' }).click();
+    await expect(reopened).not.toBeVisible();
   } finally {
     // The token is stored server-side and would otherwise leak into every
     // test that runs afterward in this shared-backend suite.

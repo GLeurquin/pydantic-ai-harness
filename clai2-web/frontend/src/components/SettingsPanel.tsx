@@ -12,7 +12,16 @@ export interface SettingsPanelProps {
   onRename: (name: string) => void;
   onSetGoal: () => void;
   onClearGoal: () => void;
+  onSetCiTracking: () => void;
+  onClearCiTracking: () => void;
 }
+
+const CI_STATE_LABELS: Record<string, string> = {
+  unknown: 'Not checked yet',
+  pending: 'Checks running',
+  success: 'Checks passing',
+  failure: 'Checks failing',
+};
 
 export const MODE_LABELS: Record<ApprovalMode, string> = {
   always_ask: 'Always ask',
@@ -56,6 +65,8 @@ export function SettingsPanel({
   onRename,
   onSetGoal,
   onClearGoal,
+  onSetCiTracking,
+  onClearCiTracking,
 }: SettingsPanelProps) {
   const archived = agent.status === 'archived';
   const busy = agent.status === 'working' || agent.status === 'waiting_approval';
@@ -130,6 +141,30 @@ export function SettingsPanel({
             <div className="settings-row">
               <button onClick={onSetGoal} disabled={archived}>
                 Set a goal
+              </button>
+            </div>
+          </>
+        )}
+      </section>
+
+      <section>
+        <h3>CI tracking</h3>
+        {agent.ciTracking ? (
+          <>
+            <p>{agent.ciTracking.prRef}</p>
+            <p className="hint">{CI_STATE_LABELS[agent.ciTracking.lastState] ?? agent.ciTracking.lastState}</p>
+            <div className="settings-row">
+              <button className="danger" onClick={onClearCiTracking}>
+                Stop tracking
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="hint">Poll a GitHub pull request's CI checks and get notified here the moment they fail.</p>
+            <div className="settings-row">
+              <button onClick={onSetCiTracking} disabled={archived}>
+                Track a PR
               </button>
             </div>
           </>

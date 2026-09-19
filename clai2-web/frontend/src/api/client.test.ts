@@ -268,6 +268,27 @@ describe('api', () => {
     });
   });
 
+  it('setCiTracking POSTs the PR reference', async () => {
+    const payload = { id: 'a1', ciTracking: { prRef: 'o/r#1', lastState: 'unknown' } };
+    fetchMock.mockResolvedValue(okResponse(payload));
+    await expect(api.setCiTracking('a1', 'o/r#1')).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith('/api/agents/a1/ci-tracking', {
+      ...JSON_HEADERS,
+      method: 'POST',
+      body: JSON.stringify({ prRef: 'o/r#1' }),
+    });
+  });
+
+  it('clearCiTracking DELETEs the tracking', async () => {
+    const payload = { id: 'a1', ciTracking: null };
+    fetchMock.mockResolvedValue(okResponse(payload));
+    await expect(api.clearCiTracking('a1')).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith('/api/agents/a1/ci-tracking', {
+      ...JSON_HEADERS,
+      method: 'DELETE',
+    });
+  });
+
   it('githubSettings GETs /api/github', async () => {
     const payload = { hasToken: false };
     fetchMock.mockResolvedValue(okResponse(payload));
@@ -291,6 +312,17 @@ describe('api', () => {
     fetchMock.mockResolvedValue(okResponse(payload));
     await expect(api.clearGithubToken()).resolves.toEqual(payload);
     expect(fetchMock).toHaveBeenCalledWith('/api/github', { ...JSON_HEADERS, method: 'DELETE' });
+  });
+
+  it('setGithubPollInterval PATCHes the interval', async () => {
+    const payload = { hasToken: true, pollIntervalSecs: 120 };
+    fetchMock.mockResolvedValue(okResponse(payload));
+    await expect(api.setGithubPollInterval(120)).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith('/api/github/poll-interval', {
+      ...JSON_HEADERS,
+      method: 'PATCH',
+      body: JSON.stringify({ pollIntervalSecs: 120 }),
+    });
   });
 
   it('fetchGithubIssue POSTs the issue reference', async () => {

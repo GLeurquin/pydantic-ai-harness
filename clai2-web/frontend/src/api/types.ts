@@ -52,6 +52,7 @@ export interface AgentSummary {
   modelLabel: string | null;
   lastError: string | null;
   goal: GoalConfig | null;
+  ciTracking: CiTracking | null;
 }
 
 /** An autonomous goal an agent works toward turn-over-turn on its own. */
@@ -61,10 +62,22 @@ export interface GoalConfig {
   turnsUsed: number;
 }
 
-/** Whether a GitHub personal access token is configured; the token itself
- * never round-trips to the client. */
+/** The aggregate CI state of a tracked pull request's head commit. */
+export type CiCheckState = 'unknown' | 'pending' | 'success' | 'failure';
+
+/** A GitHub pull request an agent's CI status is polled for in the
+ * background, and the last state observed for it. */
+export interface CiTracking {
+  prRef: string;
+  lastState: CiCheckState;
+}
+
+/** Whether a GitHub personal access token is configured (the token itself
+ * never round-trips to the client), and the base interval CI-status polling
+ * checks a tracked PR at. */
 export interface RedactedGithubSettings {
   hasToken: boolean;
+  pollIntervalSecs: number;
 }
 
 /** A GitHub issue fetched for the "import from issue" preview, plus the

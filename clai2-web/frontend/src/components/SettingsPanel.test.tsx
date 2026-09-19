@@ -21,6 +21,7 @@ function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
     modelLabel: null,
     lastError: null,
     goal: null,
+    ciTracking: null,
     ...overrides,
   };
 }
@@ -63,6 +64,8 @@ function renderSettings(props: Partial<Parameters<typeof SettingsPanel>[0]> = {}
     onRename: vi.fn(),
     onSetGoal: vi.fn(),
     onClearGoal: vi.fn(),
+    onSetCiTracking: vi.fn(),
+    onClearCiTracking: vi.fn(),
   };
   const merged = { ...defaults, ...props };
   return { ...render(<SettingsPanel {...merged} />), props: merged };
@@ -119,6 +122,38 @@ describe('SettingsPanel', () => {
     expect(screen.getByText('Turn 3 of 8')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Stop' }));
     expect(props.onClearGoal).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers to track a PR when none is active', async () => {
+    const user = userEvent.setup();
+    const { props } = renderSettings();
+    expect(screen.queryByText(/^Checks/)).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Track a PR' }));
+    expect(props.onSetCiTracking).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables Track a PR for an archived agent', () => {
+    renderSettings({ agent: makeAgent({ status: 'archived' }) });
+    expect(screen.getByRole('button', { name: 'Track a PR' })).toBeDisabled();
+  });
+
+  it('shows the tracked PR, its state, and fires onClearCiTracking from Stop tracking', async () => {
+    const user = userEvent.setup();
+    const { props } = renderSettings({
+      agent: makeAgent({ ciTracking: { prRef: 'pydantic/pydantic-ai#123', lastState: 'failure' } }),
+    });
+    expect(screen.queryByRole('button', { name: 'Track a PR' })).toBeNull();
+    expect(screen.getByText('pydantic/pydantic-ai#123')).toBeInTheDocument();
+    expect(screen.getByText('Checks failing')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Stop tracking' }));
+    expect(props.onClearCiTracking).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the raw state for an unrecognized CI state', () => {
+    renderSettings({
+      agent: makeAgent({ ciTracking: { prRef: 'o/r#1', lastState: 'weird' as never } }),
+    });
+    expect(screen.getByText('weird')).toBeInTheDocument();
   });
 
   it('renders only the directory when optional workspace fields are absent', () => {

@@ -19,6 +19,7 @@ function agent(id: string, name = id): AgentSummary {
     modelLabel: null,
     lastError: null,
     goal: null,
+    ciTracking: null,
   };
 }
 
@@ -56,7 +57,7 @@ function resetStore(partial: Partial<AppState> = {}): void {
     agents: [],
     approvals: [],
     models: [],
-    githubSettings: { hasToken: false },
+    githubSettings: { hasToken: false, pollIntervalSecs: 300 },
     projects: [],
     selectedProjectId: 'all',
     maxAgents: 100,
@@ -249,9 +250,9 @@ describe('useAppStore actions', () => {
   });
 
   it('setGithubSettings replaces the GitHub settings', () => {
-    resetStore({ githubSettings: { hasToken: false } });
-    state().setGithubSettings({ hasToken: true });
-    expect(state().githubSettings).toEqual({ hasToken: true });
+    resetStore({ githubSettings: { hasToken: false, pollIntervalSecs: 300 } });
+    state().setGithubSettings({ hasToken: true, pollIntervalSecs: 120 });
+    expect(state().githubSettings).toEqual({ hasToken: true, pollIntervalSecs: 120 });
   });
 
   it('applySnapshot keeps a selection that still exists', () => {

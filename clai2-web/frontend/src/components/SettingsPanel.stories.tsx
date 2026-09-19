@@ -16,6 +16,8 @@ export const AlwaysAskWithWorktree: Story = () => (
     onRename={noop}
     onSetGoal={noop}
     onClearGoal={noop}
+    onSetCiTracking={noop}
+    onClearCiTracking={noop}
   />
 );
 
@@ -30,6 +32,8 @@ export const AutoModeWarning: Story = () => (
     onRename={noop}
     onSetGoal={noop}
     onClearGoal={noop}
+    onSetCiTracking={noop}
+    onClearCiTracking={noop}
   />
 );
 
@@ -44,6 +48,24 @@ export const WithActiveGoal: Story = () => (
     onRename={noop}
     onSetGoal={noop}
     onClearGoal={noop}
+    onSetCiTracking={noop}
+    onClearCiTracking={noop}
+  />
+);
+
+export const WithFailingCi: Story = () => (
+  <SettingsPanel
+    agent={makeAgent({ ciTracking: { prRef: 'pydantic/pydantic-ai#123', lastState: 'failure' } })}
+    models={sampleProfiles}
+    onSetApprovalMode={noop}
+    onSetModel={noop}
+    onManageModels={noop}
+    onArchive={noop}
+    onRename={noop}
+    onSetGoal={noop}
+    onClearGoal={noop}
+    onSetCiTracking={noop}
+    onClearCiTracking={noop}
   />
 );
 
@@ -62,5 +84,7 @@ export const ArchivedAgent: Story = () => (
     onRename={noop}
     onSetGoal={noop}
     onClearGoal={noop}
+    onSetCiTracking={noop}
+    onClearCiTracking={noop}
   />
 );

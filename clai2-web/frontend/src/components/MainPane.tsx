@@ -25,6 +25,8 @@ export interface MainPaneProps {
   onRename: SettingsPanelProps['onRename'];
   onSetGoal: SettingsPanelProps['onSetGoal'];
   onClearGoal: SettingsPanelProps['onClearGoal'];
+  onSetCiTracking: SettingsPanelProps['onSetCiTracking'];
+  onClearCiTracking: SettingsPanelProps['onClearCiTracking'];
 }
 
 export function MainPane(props: MainPaneProps) {
@@ -62,11 +64,19 @@ export function MainPane(props: MainPaneProps) {
         >
           Settings
         </button>
-        {agent.goal || (activeSession && activeSession.totalTokens > 0) ? (
+        {agent.goal || agent.ciTracking || (activeSession && activeSession.totalTokens > 0) ? (
           <div className="tabs-meta">
             {agent.goal ? (
               <span className="tabs-goal" title={agent.goal.goal}>
                 Goal: turn {agent.goal.turnsUsed}/{agent.goal.maxTurns}
+              </span>
+            ) : null}
+            {agent.ciTracking ? (
+              <span
+                className={agent.ciTracking.lastState === 'failure' ? 'tabs-ci failing' : 'tabs-ci'}
+                title={agent.ciTracking.prRef}
+              >
+                CI: {agent.ciTracking.lastState}
               </span>
             ) : null}
             {activeSession && activeSession.totalTokens > 0 ? (
@@ -103,6 +113,8 @@ export function MainPane(props: MainPaneProps) {
           onRename={props.onRename}
           onSetGoal={props.onSetGoal}
           onClearGoal={props.onClearGoal}
+          onSetCiTracking={props.onSetCiTracking}
+          onClearCiTracking={props.onClearCiTracking}
         />
       ) : null}
     </main>

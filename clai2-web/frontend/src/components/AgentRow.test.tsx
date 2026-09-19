@@ -21,6 +21,7 @@ function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
     modelLabel: null,
     lastError: null,
     goal: null,
+    ciTracking: null,
     ...overrides,
   };
 }
