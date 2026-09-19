@@ -43,10 +43,10 @@ _IMPORT_VALUES: dict[str, _GuardValue] = {
 class _Imports(ast.NodeVisitor):
     """Collect module-scope imports without treating lazy or type-only imports as eager dependencies."""
 
-    def __init__(self, package: str) -> None:
+    def __init__(self, *, package: str, name: str) -> None:
         self.package = package
         self.names: set[str] = set()
-        self.values: dict[str, _GuardValue] = {}
+        self.values: dict[str, _GuardValue] = {'__name__': name, '__package__': package}
 
     def visit_Import(self, node: ast.Import) -> None:
         self.names.update(alias.name for alias in node.names)
@@ -151,7 +151,7 @@ def _reload_plan(names: Iterable[str]) -> tuple[tuple[str, Path], ...]:
             continue
         path = sources[name]
         package = name if path.name == '__init__.py' else name.rpartition('.')[0]
-        imports = _Imports(package)
+        imports = _Imports(package=package, name=name)
         with tokenize.open(path) as source:
             imports.visit(ast.parse(source.read(), filename=str(path)))
         targets = {target for target in imports.names if target in sources and target != name}

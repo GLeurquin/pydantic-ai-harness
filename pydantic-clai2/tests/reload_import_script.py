@@ -23,6 +23,9 @@ def conditional_source(mode: str) -> str:
         'version_le': ('import sys', 'sys.version_info <= (100,)', True),
         'version_gt': ('import sys', 'sys.version_info > (1,)', True),
         'constant': ('', 'True', True),
+        'main': ('', '__name__ == "__main__"', False),
+        'module_name': ('', '__name__ == "pydantic_clai2.reload_consumer"', True),
+        'package_name': ('', '__package__ == "pydantic_clai2"', True),
         'false': ('', 'False', False),
         'not': ('from typing import TYPE_CHECKING as checking', 'not checking', True),
     }

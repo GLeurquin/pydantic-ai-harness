@@ -46,6 +46,9 @@ def run_script(tmp_path: Path, script: str, mode: str) -> None:
                 'version_le',
                 'version_gt',
                 'constant',
+                'main',
+                'module_name',
+                'package_name',
                 'false',
                 'not',
             )
