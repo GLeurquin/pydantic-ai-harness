@@ -25,6 +25,7 @@ function runAction(promise: Promise<unknown>): void {
 export function App() {
   const store = useAppStore();
   const [dialog, setDialog] = useState<Dialog>('none');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const selected = store.agents.find((agent) => agent.id === store.selectedAgentId) ?? null;
 
   useEffect(() => {
@@ -90,14 +91,20 @@ export function App() {
         agents={store.agents}
         onResolveApproval={resolveApproval}
         onManageModels={() => setDialog('models')}
+        onToggleSidebar={() => setSidebarOpen((current) => !current)}
       />
+      <div className={sidebarOpen ? 'sidebar-backdrop open' : 'sidebar-backdrop'} onClick={() => setSidebarOpen(false)} />
       <Sidebar
         agents={store.agents}
         projects={store.projects}
         selectedProjectId={store.selectedProjectId}
         selectedAgentId={store.selectedAgentId}
         maxAgents={store.maxAgents}
-        onSelect={store.selectAgent}
+        open={sidebarOpen}
+        onSelect={(agentId) => {
+          store.selectAgent(agentId);
+          setSidebarOpen(false);
+        }}
         onSelectProject={store.selectProjectFilter}
         onNewAgent={() => setDialog('new-agent')}
       />

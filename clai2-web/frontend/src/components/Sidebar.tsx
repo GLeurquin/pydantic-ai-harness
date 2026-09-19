@@ -11,6 +11,8 @@ export interface SidebarProps {
   selectedProjectId: ProjectFilter;
   selectedAgentId: string | null;
   maxAgents: number;
+  /** Whether the off-canvas drawer is open. No effect above the mobile breakpoint. */
+  open: boolean;
   onSelect: (agentId: string) => void;
   onSelectProject: (projectId: ProjectFilter) => void;
   onNewAgent: () => void;
@@ -29,6 +31,7 @@ export function Sidebar({
   selectedProjectId,
   selectedAgentId,
   maxAgents,
+  open,
   onSelect,
   onSelectProject,
   onNewAgent,
@@ -38,7 +41,7 @@ export function Sidebar({
   const live = liveCount(agents);
   const atCapacity = live >= maxAgents;
   return (
-    <nav className="sidebar" aria-label="Agents">
+    <nav className={open ? 'sidebar open' : 'sidebar'} aria-label="Agents">
       <div className="sidebar-tools">
         <div className="sidebar-tools-row">
           <select

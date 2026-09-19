@@ -169,6 +169,30 @@ describe('App', () => {
     expect(screen.getByLabelText('Prompt')).toHaveAttribute('placeholder', 'Message Alpha');
   });
 
+  it('toggles the sidebar drawer from the header hamburger and via the backdrop', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<App />);
+    await snapshot([makeAgent()]);
+    const sidebar = screen.getByRole('navigation', { name: 'Agents' });
+    expect(sidebar).not.toHaveClass('open');
+    await user.click(screen.getByRole('button', { name: 'Toggle agent list' }));
+    expect(sidebar).toHaveClass('open');
+    expect(container.querySelector('.sidebar-backdrop')).toHaveClass('open');
+    await user.click(container.querySelector('.sidebar-backdrop') as HTMLElement);
+    expect(sidebar).not.toHaveClass('open');
+  });
+
+  it('closes the sidebar drawer when an agent is selected', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await snapshot([makeAgent(), makeAgent({ id: 'a2', name: 'Beta' })]);
+    const sidebar = screen.getByRole('navigation', { name: 'Agents' });
+    await user.click(screen.getByRole('button', { name: 'Toggle agent list' }));
+    expect(sidebar).toHaveClass('open');
+    await user.click(within(sidebar).getByText('Beta'));
+    expect(sidebar).not.toHaveClass('open');
+  });
+
   it('fetches the persisted transcript for the selected session and renders it', async () => {
     apiMock.transcript.mockResolvedValue([{ type: 'userMessage', text: 'stored message' }] as TranscriptItem[]);
     render(<App />);

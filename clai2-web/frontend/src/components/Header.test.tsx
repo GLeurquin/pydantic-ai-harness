@@ -42,35 +42,52 @@ function makeApproval(id: string, agentId: string): ApprovalView {
 
 describe('Header', () => {
   it('shows the brand text', () => {
-    const { container } = render(<Header connected={true} approvals={[]} agents={[]} onResolveApproval={vi.fn()} onManageModels={vi.fn()} />);
+    const { container } = render(<Header connected={true} approvals={[]} agents={[]} onResolveApproval={vi.fn()} onManageModels={vi.fn()} onToggleSidebar={vi.fn()} />);
     expect(container.querySelector('.brand')).toHaveTextContent('CLAI Web');
+  });
+
+  it('fires onToggleSidebar from the hamburger button', async () => {
+    const user = userEvent.setup();
+    const onToggleSidebar = vi.fn();
+    render(
+      <Header
+        connected={true}
+        approvals={[]}
+        agents={[]}
+        onResolveApproval={vi.fn()}
+        onManageModels={vi.fn()}
+        onToggleSidebar={onToggleSidebar}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Toggle agent list' }));
+    expect(onToggleSidebar).toHaveBeenCalledTimes(1);
   });
 
   it('fires onManageModels from the Models button', async () => {
     const user = userEvent.setup();
     const onManageModels = vi.fn();
     render(
-      <Header connected={true} approvals={[]} agents={[]} onResolveApproval={vi.fn()} onManageModels={onManageModels} />,
+      <Header connected={true} approvals={[]} agents={[]} onResolveApproval={vi.fn()} onManageModels={onManageModels} onToggleSidebar={vi.fn()} />,
     );
     await user.click(screen.getByRole('button', { name: 'Model profiles' }));
     expect(onManageModels).toHaveBeenCalledTimes(1);
   });
 
   it('shows connected state with the online class', () => {
-    render(<Header connected={true} approvals={[]} agents={[]} onResolveApproval={vi.fn()} onManageModels={vi.fn()} />);
+    render(<Header connected={true} approvals={[]} agents={[]} onResolveApproval={vi.fn()} onManageModels={vi.fn()} onToggleSidebar={vi.fn()} />);
     const connection = screen.getByText('connected');
     expect(connection.className).toBe('connection online');
   });
 
   it('shows reconnecting state with the offline class', () => {
-    render(<Header connected={false} approvals={[]} agents={[]} onResolveApproval={vi.fn()} onManageModels={vi.fn()} />);
+    render(<Header connected={false} approvals={[]} agents={[]} onResolveApproval={vi.fn()} onManageModels={vi.fn()} onToggleSidebar={vi.fn()} />);
     const connection = screen.getByText('reconnecting...');
     expect(connection.className).toBe('connection offline');
   });
 
   it('shows the badge only when approvals are pending', () => {
     const { container, rerender } = render(
-      <Header connected={true} approvals={[]} agents={[]} onResolveApproval={vi.fn()} onManageModels={vi.fn()} />,
+      <Header connected={true} approvals={[]} agents={[]} onResolveApproval={vi.fn()} onManageModels={vi.fn()} onToggleSidebar={vi.fn()} />,
     );
     expect(container.querySelector('.inbox-badge')).toBeNull();
     rerender(
@@ -79,7 +96,7 @@ describe('Header', () => {
         approvals={[makeApproval('ap1', 'a1'), makeApproval('ap2', 'a2')]}
         agents={[]}
         onResolveApproval={vi.fn()}
-        onManageModels={vi.fn()}
+        onManageModels={vi.fn()} onToggleSidebar={vi.fn()}
       />,
     );
     expect(container.querySelector('.inbox-badge')).toHaveTextContent('2');
@@ -87,7 +104,7 @@ describe('Header', () => {
 
   it('toggles the inbox panel from the Approvals button', async () => {
     const user = userEvent.setup();
-    render(<Header connected={true} approvals={[]} agents={[]} onResolveApproval={vi.fn()} onManageModels={vi.fn()} />);
+    render(<Header connected={true} approvals={[]} agents={[]} onResolveApproval={vi.fn()} onManageModels={vi.fn()} onToggleSidebar={vi.fn()} />);
     const toggle = screen.getByRole('button', { name: 'Approval inbox' });
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByRole('dialog', { name: 'Pending approvals' })).toBeNull();
@@ -100,7 +117,7 @@ describe('Header', () => {
 
   it('shows the empty state when nothing is pending', async () => {
     const user = userEvent.setup();
-    render(<Header connected={true} approvals={[]} agents={[]} onResolveApproval={vi.fn()} onManageModels={vi.fn()} />);
+    render(<Header connected={true} approvals={[]} agents={[]} onResolveApproval={vi.fn()} onManageModels={vi.fn()} onToggleSidebar={vi.fn()} />);
     await user.click(screen.getByRole('button', { name: 'Approval inbox' }));
     expect(screen.getByText('Nothing waiting for you.')).toBeInTheDocument();
   });
@@ -114,7 +131,7 @@ describe('Header', () => {
         approvals={[makeApproval('ap1', 'a1'), makeApproval('ap2', 'ghost')]}
         agents={[makeAgent('a1', 'Alpha')]}
         onResolveApproval={onResolveApproval}
-        onManageModels={vi.fn()}
+        onManageModels={vi.fn()} onToggleSidebar={vi.fn()}
       />,
     );
     await user.click(screen.getByRole('button', { name: 'Approval inbox' }));

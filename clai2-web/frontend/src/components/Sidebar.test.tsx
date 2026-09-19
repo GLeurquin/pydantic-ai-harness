@@ -32,6 +32,7 @@ const baseProps = {
   projects,
   selectedProjectId: 'all' as const,
   maxAgents: 50,
+  open: false,
   onSelect: vi.fn(),
   onSelectProject: vi.fn(),
   onNewAgent: vi.fn(),
@@ -145,6 +146,14 @@ describe('Sidebar', () => {
     );
     expect(screen.getByText('Beta').closest('button')).toHaveClass('selected');
     expect(screen.getByText('Alpha').closest('button')).not.toHaveClass('selected');
+  });
+
+  it('applies the open class only when the drawer is open', () => {
+    const { container, rerender } = render(<Sidebar {...baseProps} agents={[]} selectedAgentId={null} />);
+    expect(container.querySelector('nav')).toHaveClass('sidebar');
+    expect(container.querySelector('nav')).not.toHaveClass('open');
+    rerender(<Sidebar {...baseProps} agents={[]} selectedAgentId={null} open={true} />);
+    expect(container.querySelector('nav')).toHaveClass('sidebar', 'open');
   });
 
   it('lists every project plus an All projects option', () => {

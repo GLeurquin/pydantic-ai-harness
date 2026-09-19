@@ -9,13 +9,17 @@ export interface HeaderProps {
   agents: AgentSummary[];
   onResolveApproval: (approvalId: string, optionId: string) => void;
   onManageModels: () => void;
+  onToggleSidebar: () => void;
 }
 
-export function Header({ connected, approvals, agents, onResolveApproval, onManageModels }: HeaderProps) {
+export function Header({ connected, approvals, agents, onResolveApproval, onManageModels, onToggleSidebar }: HeaderProps) {
   const [open, setOpen] = useState(false);
   const agentName = (agentId: string) => agents.find((agent) => agent.id === agentId)?.name ?? agentId;
   return (
     <header className="header">
+      <button className="sidebar-toggle" onClick={onToggleSidebar} aria-label="Toggle agent list">
+        &#9776;
+      </button>
       <span className="brand">
         CLAI <span className="accent">Web</span>
       </span>

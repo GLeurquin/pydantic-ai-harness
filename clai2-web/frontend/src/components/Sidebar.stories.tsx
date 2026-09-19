@@ -38,6 +38,7 @@ export const AllGroups: Story = () => (
       selectedProjectId="all"
       selectedAgentId="a3"
       maxAgents={50}
+      open={false}
       onSelect={noop}
       onSelectProject={noop}
       onNewAgent={noop}
@@ -53,6 +54,7 @@ export const AtCapacity: Story = () => (
       selectedProjectId="all"
       selectedAgentId="a1"
       maxAgents={6}
+      open={false}
       onSelect={noop}
       onSelectProject={noop}
       onNewAgent={noop}
