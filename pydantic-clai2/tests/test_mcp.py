@@ -128,6 +128,55 @@ class TestMCPPlugin:
         await harness.loader.remove('mcp')
         assert 'not loaded' in await harness.commands.execute_async('/mcp status')
 
+    async def test_stdio_logs_do_not_write_over_the_editor(
+        self, harness: Harness, tmp_path: Path, capfd: pytest.CaptureFixture[str]
+    ) -> None:
+        write_config(tmp_path)
+        loaded = await harness.commands.execute_async('/mcp load --approve')
+        logs = Path(loaded.partition('Stdio logs: ')[2])
+        assert logs.is_dir()
+        await Agent(TestModel(call_tools=['local_context']), deps_type=type(None)).run(
+            'Log from the server', capabilities=harness.loader.capabilities()
+        )
+        assert 'MCP stderr sentinel' in (logs / 'server-1.log').read_text()
+        assert 'MCP stderr sentinel' not in capfd.readouterr().err
+        assert str(logs) in await harness.commands.execute_async('/mcp status')
+        assert_stopped(tmp_path)
+        if os.name == 'posix':
+            assert logs.stat().st_mode & 0o777 == 0o700
+            assert (logs / 'server-1.log').stat().st_mode & 0o777 == 0o600
+
+    async def test_servers_with_the_same_tool_name_have_separate_tools_and_logs(
+        self, harness: Harness, tmp_path: Path
+    ) -> None:
+        (tmp_path / '.mcp.json').write_text(
+            json.dumps(
+                {
+                    'mcpServers': {
+                        name: {
+                            'command': sys.executable,
+                            'args': [str(Path(__file__).with_name('mcp_server.py'))],
+                            'env': {
+                                'CLAI_MCP_TOKEN': name,
+                                'CLAI_MCP_PID_FILE': str(tmp_path / f'{name}.pid'),
+                            },
+                        }
+                        for name in ('first', 'second')
+                    }
+                }
+            )
+        )
+        loaded = await harness.commands.execute_async('/mcp load --approve')
+        logs = Path(loaded.partition('Stdio logs: ')[2])
+        result = await Agent(TestModel(call_tools=['first_context', 'second_context']), deps_type=type(None)).run(
+            'Use both servers', capabilities=harness.loader.capabilities()
+        )
+        assert 'first_context' in result.output and 'second_context' in result.output
+        for index, name in enumerate(('first', 'second'), start=1):
+            assert 'MCP stderr sentinel' in (logs / f'server-{index}.log').read_text()
+            with pytest.raises(ProcessLookupError):
+                os.kill(int((tmp_path / f'{name}.pid').read_text()), 0)
+
     async def test_http_configs_load_without_connecting(self, harness: Harness, tmp_path: Path) -> None:
         (tmp_path / '.mcp.json').write_text(
             json.dumps(

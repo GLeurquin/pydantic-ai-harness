@@ -1,6 +1,7 @@
 """The built-in MCP plugin: explicit config approval, with core owning connections per turn."""
 
 from pathlib import Path
+from tempfile import mkdtemp
 
 from fastmcp.client.transports import StdioTransport
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -34,25 +35,33 @@ def activate(host: PluginHost[DepsT]) -> None:
     capability = Capability[DepsT]()
     host.add(capability)
     loaded = False
+    log_directory: Path | None = None
 
     def load() -> str:
-        nonlocal loaded
+        nonlocal loaded, log_directory
         try:
             toolsets = load_mcp_toolsets(config_path)
+            logs: Path | None = None
+            for index, toolset in enumerate(toolsets, start=1):
+                assert isinstance(toolset, PrefixedToolset)
+                assert isinstance(toolset.wrapped, MCPToolset)
+                transport = toolset.wrapped.client.transport
+                if isinstance(transport, StdioTransport):
+                    transport.keep_alive = False  # Otherwise FastMCP keeps subprocesses alive after a turn.
+                    if logs is None:
+                        logs = Path(mkdtemp(prefix='clai-mcp-'))
+                    transport.log_file = logs / f'server-{index}.log'
+                    transport.log_file.touch(mode=0o600)
         except (OSError, ValueError):
             return (
                 'Cannot load MCP config. Check file access, JSON, mcpServers entries, and environment references. '
                 'Config values are hidden; previously loaded servers are unchanged.'
             )
-        for toolset in toolsets:
-            assert isinstance(toolset, PrefixedToolset)
-            assert isinstance(toolset.wrapped, MCPToolset)
-            transport = toolset.wrapped.client.transport
-            if isinstance(transport, StdioTransport):
-                transport.keep_alive = False  # Otherwise FastMCP keeps subprocesses alive after a turn.
         capability.toolsets = tuple(toolsets)
         loaded = True
-        return f'Loaded {len(toolsets)} MCP server(s) from {config_path}. Connections open only during agent turns.'
+        log_directory = logs
+        notice = f'\nStdio logs: {logs}' if logs is not None else ''
+        return f'Loaded {len(toolsets)} MCP server(s) from {config_path}. Connections open only during agent turns.{notice}'
 
     @host.on('session_start')
     async def start(event: SessionStart) -> None:
@@ -62,9 +71,10 @@ def activate(host: PluginHost[DepsT]) -> None:
     def command(args: list[str]) -> str:
         if not args or args == ['status']:
             state = f'{len(capability.toolsets)} server(s) loaded' if loaded else 'not loaded'
+            logs = f'\nStdio logs: {log_directory}' if log_directory is not None else ''
             return (
                 f'MCP: {state}. Config: {config_path}\n'
-                'Connections are scoped to agent turns. Use /mcp load to review approval instructions.'
+                f'Connections are scoped to agent turns. Use /mcp load to review approval instructions.{logs}'
             )
         if args == ['load']:
             return (

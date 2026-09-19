@@ -472,6 +472,12 @@ its transport. Core owns connections during agent turns. Stdio keep-alive is
 disabled; normal completion, model failure, and CLAI's Esc/Ctrl-C `Task.cancel()`
 path close the subprocesses.
 
+Stdio server stderr goes to owner-only files in a private temporary directory,
+not over the editor. `/mcp load --approve` and `/mcp status` show its path.
+Files are named `server-N.log` by configuration order and append across turns.
+Each load gets a new directory. Logs can contain sensitive server output; they
+remain after exit for diagnosis, so remove them when no longer needed.
+
 !!! warning "Outer cancellation limitation"
     In Pydantic AI 2.44.0 and 2.46.0, cancelling an outer AnyIO scope during an MCP
     tool call can leave the stdio subprocess alive after the run unwinds. Reloading

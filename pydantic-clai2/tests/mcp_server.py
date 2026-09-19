@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 from pathlib import Path
 
 import anyio
@@ -12,6 +13,8 @@ server = FastMCP('clai-test')
 
 @server.tool()
 def context() -> str:
+    sys.stderr.write('MCP stderr sentinel\n')
+    sys.stderr.flush()
     return json.dumps({'cwd': str(Path.cwd()), 'token': os.environ.get('CLAI_MCP_TOKEN'), 'pid': os.getpid()})
 
 

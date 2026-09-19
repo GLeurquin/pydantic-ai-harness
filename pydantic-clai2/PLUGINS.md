@@ -296,6 +296,12 @@ and CLAI's Esc/Ctrl-C `Task.cancel()` path close subprocesses. Unloading uses th
 ordinary `PluginLoader` lifecycle to discard the host, commands, and capabilities.
 No extra telemetry is emitted because core already instruments the tool calls.
 
+Stdio server stderr goes to owner-only files in a private temporary directory,
+not over the editor. `/mcp load --approve` and `/mcp status` show its path.
+Files are named `server-N.log` by configuration order and append across turns.
+Each load gets a new directory. Logs can contain sensitive server output; they
+remain after exit for diagnosis, so remove them when no longer needed.
+
 > **Outer cancellation limitation.** In Pydantic AI 2.44.0 and 2.46.0, cancelling
 > an outer AnyIO scope during an MCP tool call can leave the stdio subprocess alive
 > after the run unwinds. Reloading or disabling this plugin does not recover
