@@ -95,6 +95,16 @@ describe('Conversation', () => {
     expect(container.querySelector('.block-error')).toHaveTextContent('agent crashed');
   });
 
+  it('renders assistant and thought text as markdown, not raw strings', () => {
+    const items: TranscriptItem[] = [
+      { type: 'thoughtChunk', text: 'checking the **failing** test' },
+      { type: 'messageChunk', text: 'found it: `refresh()` skips verification' },
+    ];
+    const { container } = renderConversation({ items });
+    expect(container.querySelector('.block-thought strong')).toHaveTextContent('failing');
+    expect(container.querySelector('.block-assistant code')).toHaveTextContent('refresh()');
+  });
+
   const STOP_CASES: [StopReason, string][] = [
     ['end_turn', 'turn finished'],
     ['max_tokens', 'stopped: token limit'],

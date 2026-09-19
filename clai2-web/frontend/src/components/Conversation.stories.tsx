@@ -1,7 +1,7 @@
 import type { Story } from '@ladle/react';
 import type { ReactNode } from 'react';
 
-import { makeAgent, makeApproval, richTranscript, streamingTranscript } from '../../.ladle/data';
+import { makeAgent, makeApproval, markdownTranscript, richTranscript, streamingTranscript } from '../../.ladle/data';
 import { Conversation } from './Conversation';
 
 const noop = () => undefined;
@@ -36,6 +36,22 @@ export const WorkingMidStream: Story = () => (
       agent={makeAgent({ status: 'working' })}
       sessionId="session-main"
       items={streamingTranscript()}
+      approvals={[]}
+      onPrompt={noop}
+      onCancel={noop}
+      onResolveApproval={noop}
+      onFork={noop}
+      onSideSession={noop}
+    />
+  </Frame>
+);
+
+export const MarkdownAndCode: Story = () => (
+  <Frame>
+    <Conversation
+      agent={makeAgent({ status: 'idle' })}
+      sessionId="session-main"
+      items={markdownTranscript()}
       approvals={[]}
       onPrompt={noop}
       onCancel={noop}

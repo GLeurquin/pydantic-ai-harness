@@ -198,6 +198,34 @@ export function streamingTranscript(): TranscriptItem[] {
   ];
 }
 
+/** A transcript exercising markdown rendering: a fenced code block, a table, a task list, and a link. */
+export function markdownTranscript(): TranscriptItem[] {
+  return [
+    { type: 'userMessage', text: 'Summarize the fix and show me the patch.' },
+    {
+      type: 'messageChunk',
+      text:
+        "Here's the fix:\n\n" +
+        '```python\n' +
+        'def decode(token: str) -> Claims:\n' +
+        '    return jwt.decode(token, KEY, algorithms=["HS256"], options={"verify_exp": True})\n' +
+        '```\n\n' +
+        '| Check | Status |\n' +
+        '| --- | --- |\n' +
+        '| Expiry verified | done |\n' +
+        '| Regression test | done |\n\n' +
+        '- [x] Fix `decode()`\n' +
+        '- [ ] Backport to the 1.x branch\n\n' +
+        'See the [JWT spec](https://www.rfc-editor.org/rfc/rfc7519) for background.',
+    },
+    {
+      type: 'turnEnded',
+      stopReason: 'end_turn',
+      usage: { inputTokens: 1200, outputTokens: 340, totalTokens: 1540, cachedReadTokens: 0, cachedWriteTokens: 0 },
+    },
+  ];
+}
+
 export const sampleDiff: WorktreeDiff = {
   status: ' M src/auth/session.py\n M tests/auth/test_session.py\n?? tests/auth/test_refresh.py',
   diff: [

@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { AgentSummary, ApprovalView, TranscriptItem } from '../api/types';
 import { buildBlocks } from '../state/transcript';
 import { ApprovalBanner } from './ApprovalBanner';
+import { Markdown } from './Markdown';
 import { ToolCallCard } from './ToolCallCard';
 
 export interface ConversationProps {
@@ -72,13 +73,13 @@ export function Conversation({
             case 'assistant':
               return (
                 <div key={index} className="block-assistant">
-                  {block.text}
+                  <Markdown text={block.text} />
                 </div>
               );
             case 'thought':
               return (
                 <div key={index} className="block-thought">
-                  {block.text}
+                  <Markdown text={block.text} />
                 </div>
               );
             case 'tool':

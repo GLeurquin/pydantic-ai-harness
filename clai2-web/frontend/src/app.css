@@ -358,16 +358,157 @@
 
 .block-assistant {
   max-width: 85%;
-  white-space: pre-wrap;
 }
 
 .block-thought {
   max-width: 85%;
   color: var(--thinking);
   font-style: italic;
-  white-space: pre-wrap;
   border-left: 2px solid var(--thinking);
   padding-left: 10px;
+}
+
+/* Rendered markdown (assistant and thought messages only -- see Markdown.tsx) */
+.markdown > :first-child {
+  margin-top: 0;
+}
+
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown p {
+  margin: 0 0 8px;
+  white-space: pre-wrap;
+}
+
+.markdown ul,
+.markdown ol {
+  margin: 0 0 8px;
+  padding-left: 22px;
+}
+
+.markdown li {
+  margin: 2px 0;
+}
+
+.markdown blockquote {
+  margin: 0 0 8px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+  color: var(--text-muted);
+}
+
+.markdown table {
+  border-collapse: collapse;
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.markdown th,
+.markdown td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.markdown th {
+  background: var(--bg-raised);
+}
+
+.markdown code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  background: var(--bg-sunken);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.code-block {
+  margin: 0 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.code-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 10px;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.code-block-lang {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.code-block-header button {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+.code-block pre {
+  margin: 0;
+  padding: 10px;
+  overflow-x: auto;
+  background: var(--bg-sunken);
+}
+
+.code-block code {
+  background: none;
+  padding: 0;
+  font-size: 13px;
+}
+
+/* highlight.js tokens, hand-mapped to the app's own palette rather than an
+ * imported theme stylesheet -- see Markdown.tsx for the registered language
+ * set this covers. */
+.hljs-keyword,
+.hljs-built_in,
+.hljs-type {
+  color: var(--accent);
+}
+
+.hljs-string,
+.hljs-attr,
+.hljs-symbol {
+  color: var(--warning);
+}
+
+.hljs-comment,
+.hljs-quote {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.hljs-number,
+.hljs-literal {
+  color: var(--thinking);
+}
+
+.hljs-title,
+.hljs-title.function_ {
+  color: var(--link);
+}
+
+.hljs-title.class_ {
+  color: var(--info);
+}
+
+.hljs-addition {
+  display: inline-block;
+  width: 100%;
+  background: var(--diff-addition);
+}
+
+.hljs-deletion {
+  display: inline-block;
+  width: 100%;
+  background: var(--diff-deletion);
 }
 
 .block-turn-end {
