@@ -487,7 +487,7 @@ def _report_project_plugins(loader: PluginLoader[DepsT], console: Console) -> No
 
 def _report_interrupt(completed: bool, console: Console) -> None:
     if not completed:
-        console.print('Turn cancelled. Press Ctrl-C again within 2 seconds to exit.', style=theme.MUTED)
+        console.print('Turn cancelled. Use /exit to quit.', style=theme.MUTED, highlight=False)
         console.print()
 
 
