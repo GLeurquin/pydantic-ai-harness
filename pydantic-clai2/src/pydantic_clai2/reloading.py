@@ -72,6 +72,14 @@ class _Imports(ast.NodeVisitor):
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         pass
 
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        # Class bodies execute eagerly, but their bindings do not escape the class scope.
+        before = self.values.copy()
+        for statement in node.body:
+            self.visit(statement)
+        self.values = before
+        self._forget(node.name)
+
     def _forget(self, name: str) -> None:
         self.values = {
             key: value for key, value in self.values.items() if key != name and not key.startswith(name + '.')

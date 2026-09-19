@@ -48,7 +48,12 @@ def main(root: Path, mode: str) -> None:
     provider = importlib.import_module('pydantic_clai2.reload_provider')
     original_consumer = vars(consumer).copy()
     original_provider = vars(provider).copy()
-    provider_path.write_text("NEW = 'new'\n")
+    provider_sources = {
+        'invalid_guard': 'if 1 < "invalid":\n    pass\n',
+        'cycle': 'from .reload_consumer import VALUE\nNEW = VALUE\n',
+        'syntax': 'invalid syntax!\n',
+    }
+    provider_path.write_text(provider_sources.get(mode, "NEW = 'new'\n"))
     consumer_sources = {
         'absolute': 'from pydantic_clai2.reload_provider import NEW\nVALUE = NEW\n',
         'module': 'import pydantic_clai2.reload_provider as dependency\nVALUE = dependency.NEW\n',
@@ -69,6 +74,13 @@ def main(root: Path, mode: str) -> None:
             f'else:\n    from {module} import {attr} as runtime_platform\n'
             f'if runtime_platform == {sys.platform!r}:\n    from .reload_provider import NEW\nVALUE = NEW\n'
         )
+    elif mode == 'class_scope':
+        provider_path.write_text(
+            'import typing\n'
+            'class Local:\n    typing = object()\n'
+            'if typing.TYPE_CHECKING:\n    from .reload_consumer import VALUE\n'
+            "NEW = 'new'\n"
+        )
     elif mode == 'unknown_guards':
         provider_path.write_text(
             'import sys\n'
@@ -81,8 +93,6 @@ def main(root: Path, mode: str) -> None:
             'if 1 is not None:\n    from . import reload_leaf\n'
             "NEW = 'new'\n"
         )
-    elif mode == 'invalid_guard':
-        provider_path.write_text('if 1 < "invalid":\n    pass\n')
     elif mode == 'reverse':
         consumer_path.write_text('from . import reload_provider\nVALUE = reload_provider.VALUE\n')
         importlib.reload(consumer)
@@ -114,10 +124,6 @@ def main(root: Path, mode: str) -> None:
         assert bridge_path.stat().st_size == timestamp.st_size
         os.utime(bridge_path, ns=(timestamp.st_atime_ns, timestamp.st_mtime_ns))
         new_consumer = 'from .reload_bridge.bridge import VALUE\n'
-    elif mode == 'cycle':
-        provider_path.write_text('from .reload_consumer import VALUE\nNEW = VALUE\n')
-    elif mode == 'syntax':
-        provider_path.write_text('invalid syntax!\n')
 
     consumer_path.write_text(new_consumer)
     if mode == 'import_error':

@@ -57,6 +57,7 @@ def run_script(tmp_path: Path, script: str, mode: str) -> None:
         'module',
         'relative_module',
         'class',
+        'class_scope',
         'reverse',
         'lazy',
         'inactive',
