@@ -270,6 +270,7 @@ mod tests {
                 model_label: None,
                 last_error: None,
                 goal: None,
+                ci_tracking: None,
             },
             command: vec!["stub-agent".to_owned()],
         }
@@ -506,6 +507,7 @@ mod tests {
         let store = Store::new(dir.path().to_owned());
         let settings = GithubSettings {
             token: Some("ghp_secret".to_owned()),
+            poll_interval_secs: 120,
         };
         store.save_github_settings(&settings).await.unwrap();
         assert_eq!(store.load_github_settings().await.unwrap(), settings);
@@ -541,6 +543,7 @@ mod tests {
         store
             .save_github_settings(&GithubSettings {
                 token: Some("ghp_secret".to_owned()),
+                poll_interval_secs: 300,
             })
             .await
             .unwrap();

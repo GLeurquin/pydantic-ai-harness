@@ -127,6 +127,18 @@ struct FetchIssueBody {
     issue_ref: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetCiTrackingBody {
+    pr_ref: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetPollIntervalBody {
+    poll_interval_secs: u64,
+}
+
 async fn health() -> Json<serde_json::Value> {
     Json(json!({"ok": true}))
 }
@@ -256,6 +268,21 @@ async fn clear_goal(
     Ok(Json(json!(manager.clear_goal(&agent_id).await?)))
 }
 
+async fn set_ci_tracking(
+    State(manager): State<AppState>,
+    Path(agent_id): Path<String>,
+    Json(body): Json<SetCiTrackingBody>,
+) -> Result<Json<serde_json::Value>, ManagerError> {
+    Ok(Json(json!(manager.set_ci_tracking(&agent_id, body.pr_ref).await?)))
+}
+
+async fn clear_ci_tracking(
+    State(manager): State<AppState>,
+    Path(agent_id): Path<String>,
+) -> Result<Json<serde_json::Value>, ManagerError> {
+    Ok(Json(json!(manager.clear_ci_tracking(&agent_id).await?)))
+}
+
 async fn agent_approvals(
     State(manager): State<AppState>,
     Path(agent_id): Path<String>,
@@ -330,6 +357,15 @@ async fn set_github_token(
 
 async fn clear_github_token(State(manager): State<AppState>) -> Result<Json<serde_json::Value>, ManagerError> {
     Ok(Json(json!(manager.clear_github_token().await?)))
+}
+
+async fn set_github_poll_interval(
+    State(manager): State<AppState>,
+    Json(body): Json<SetPollIntervalBody>,
+) -> Result<Json<serde_json::Value>, ManagerError> {
+    Ok(Json(json!(
+        manager.set_github_poll_interval(body.poll_interval_secs).await?
+    )))
 }
 
 async fn fetch_github_issue(
@@ -411,6 +447,10 @@ pub fn build_router(manager: AppState) -> Router {
         .route("/api/agents/{agent_id}/approval-mode", patch(set_approval_mode))
         .route("/api/agents/{agent_id}/name", patch(rename_agent))
         .route("/api/agents/{agent_id}/goal", post(set_goal).delete(clear_goal))
+        .route(
+            "/api/agents/{agent_id}/ci-tracking",
+            post(set_ci_tracking).delete(clear_ci_tracking),
+        )
         .route("/api/agents/{agent_id}/approvals", get(agent_approvals))
         .route("/api/agents/{agent_id}/diff", get(diff))
         .route("/api/agents/{agent_id}/model", patch(set_agent_model))
@@ -423,6 +463,7 @@ pub fn build_router(manager: AppState) -> Router {
             get(github_settings).patch(set_github_token).delete(clear_github_token),
         )
         .route("/api/github/issue", post(fetch_github_issue))
+        .route("/api/github/poll-interval", patch(set_github_poll_interval))
         .route("/api/projects", get(list_projects).post(create_project))
         .route("/api/projects/{project_id}", delete(delete_project))
         .route("/api/ws", get(ws_upgrade))

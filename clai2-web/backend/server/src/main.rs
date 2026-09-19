@@ -92,6 +92,7 @@ fn parse_args(argv: &[String]) -> Result<Args, String> {
             data_dir,
             agent_command,
             max_agents,
+            github_api_base_url: "https://api.github.com".to_owned(),
         },
         port,
         static_dir,
@@ -118,6 +119,7 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    manager.spawn_ci_poller();
     let mut router = build_router(manager);
     if let Some(static_dir) = args.static_dir {
         router = router.fallback_service(ServeDir::new(static_dir));

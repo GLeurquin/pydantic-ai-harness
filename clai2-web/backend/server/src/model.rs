@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::github::CiCheckState;
 use crate::worktrees::WorktreeInfo;
 
 /// A repository agents can be created in. `--repo` bootstraps one at startup;
@@ -111,6 +112,13 @@ pub struct AgentSummary {
     /// drives it cannot be resumed either.
     #[serde(default)]
     pub goal: Option<GoalConfig>,
+    /// A GitHub pull request whose CI checks are polled in the background,
+    /// if one was set. Unlike `goal`, this *does* survive a backend restart
+    /// (see [`crate::manager::AgentManager::poll_ci_once`]): the polling
+    /// loop has no per-agent in-flight task to lose, just a schedule it
+    /// picks back up on its next tick.
+    #[serde(default)]
+    pub ci_tracking: Option<CiTracking>,
 }
 
 /// A goal an agent works toward turn-over-turn without a human re-prompting
@@ -123,6 +131,15 @@ pub struct GoalConfig {
     pub goal: String,
     pub max_turns: u32,
     pub turns_used: u32,
+}
+
+/// A GitHub pull request an agent's manager polls for CI status, and the
+/// last state observed for it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CiTracking {
+    pub pr_ref: String,
+    pub last_state: CiCheckState,
 }
 
 /// One entry of a permission request's option list, as offered by the agent.

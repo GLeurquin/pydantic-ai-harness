@@ -21,7 +21,6 @@ struct World {
     repo: PathBuf,
     /// The project bootstrapped from `repo` on manager startup.
     project_id: String,
-    #[allow(dead_code)]
     manager: Arc<AgentManager>,
     _dir: tempfile::TempDir,
 }
@@ -52,6 +51,13 @@ async fn init_repo(repo: &Path) {
 }
 
 async fn world_with(max_agents: usize, agent_command: Vec<String>) -> World {
+    world_with_github(max_agents, agent_command, "https://api.github.com".to_owned()).await
+}
+
+/// Like [`world_with`], but pointing GitHub REST calls at a caller-supplied
+/// base URL -- a local mock server for tests that exercise the GitHub-issue
+/// or CI-polling integration without ever depending on the real network.
+async fn world_with_github(max_agents: usize, agent_command: Vec<String>, github_api_base_url: String) -> World {
     let dir = tempfile::tempdir().unwrap();
     let repo = dir.path().join("repo");
     init_repo(&repo).await;
@@ -61,6 +67,7 @@ async fn world_with(max_agents: usize, agent_command: Vec<String>) -> World {
         data_dir: dir.path().join("data"),
         agent_command,
         max_agents,
+        github_api_base_url,
     };
     let manager = AgentManager::new(config).await.unwrap();
     let project_id = manager.list_projects().await[0].id.clone();
@@ -553,6 +560,7 @@ async fn github_settings_default_to_no_token_and_round_trip_through_set_and_clea
     let (status, settings) = world.get("/api/github").await;
     assert_eq!(status, 200);
     assert_eq!(settings["hasToken"], false);
+    assert_eq!(settings["pollIntervalSecs"], 300);
 
     let (status, settings) = world.patch("/api/github", json!({"token": "ghp_secret"})).await;
     assert_eq!(status, 200);
@@ -607,6 +615,350 @@ async fn fetching_an_issue_with_a_malformed_reference_is_400() {
     assert!(
         body["error"].as_str().unwrap().contains("could not parse"),
         "error: {body}"
+    );
+}
+
+#[tokio::test]
+async fn fetching_an_issue_returns_title_body_url_and_a_ready_made_prompt() {
+    let app = axum::Router::new().route(
+        "/repos/o/r/issues/1",
+        axum::routing::get(|| async {
+            axum::Json(json!({
+                "title": "Bug: things break",
+                "body": "Steps to reproduce...",
+                "html_url": "https://github.com/o/r/issues/1",
+            }))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let world = world_with_github(50, vec![STUB_AGENT.to_owned()], format!("http://{addr}")).await;
+    world.patch("/api/github", json!({"token": "ghp_secret"})).await;
+
+    let (status, issue) = world.post("/api/github/issue", json!({"issueRef": "o/r#1"})).await;
+    assert_eq!(status, 200, "{issue}");
+    assert_eq!(issue["title"], "Bug: things break");
+    assert_eq!(issue["body"], "Steps to reproduce...");
+    assert_eq!(issue["url"], "https://github.com/o/r/issues/1");
+    let prompt = issue["prompt"].as_str().unwrap();
+    assert!(prompt.contains("Bug: things break"));
+    assert!(prompt.contains("Steps to reproduce..."));
+    assert!(prompt.contains("https://github.com/o/r/issues/1"));
+}
+
+#[tokio::test]
+async fn setting_the_github_poll_interval_persists_it() {
+    let world = world().await;
+    let (status, settings) = world
+        .patch("/api/github/poll-interval", json!({"pollIntervalSecs": 120}))
+        .await;
+    assert_eq!(status, 200, "{settings}");
+    assert_eq!(settings["pollIntervalSecs"], 120);
+
+    let (_, settings) = world.get("/api/github").await;
+    assert_eq!(settings["pollIntervalSecs"], 120);
+}
+
+#[tokio::test]
+async fn setting_the_github_poll_interval_below_the_floor_is_400() {
+    let world = world().await;
+    let (status, body) = world
+        .patch("/api/github/poll-interval", json!({"pollIntervalSecs": 10}))
+        .await;
+    assert_eq!(status, 400);
+    assert!(body["error"].as_str().unwrap().contains("30 seconds"));
+    let (_, settings) = world.get("/api/github").await;
+    assert_eq!(settings["pollIntervalSecs"], 300);
+}
+
+#[tokio::test]
+async fn setting_and_clearing_ci_tracking_round_trips() {
+    let world = world().await;
+    let agent = world.create_agent("ci-agent", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+
+    let (status, updated) = world
+        .post(
+            &format!("/api/agents/{agent_id}/ci-tracking"),
+            json!({"prRef": "o/r#1"}),
+        )
+        .await;
+    assert_eq!(status, 200, "{updated}");
+    assert_eq!(updated["ciTracking"]["prRef"], "o/r#1");
+    assert_eq!(updated["ciTracking"]["lastState"], "unknown");
+
+    let status = world.delete(&format!("/api/agents/{agent_id}/ci-tracking")).await;
+    assert_eq!(status, 200);
+    let (_, fetched) = world.get(&format!("/api/agents/{agent_id}")).await;
+    assert!(fetched["ciTracking"].is_null());
+}
+
+#[tokio::test]
+async fn setting_ci_tracking_with_a_malformed_reference_is_400() {
+    let world = world().await;
+    let agent = world.create_agent("ci-agent-bad-ref", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let (status, body) = world
+        .post(
+            &format!("/api/agents/{agent_id}/ci-tracking"),
+            json!({"prRef": "not-a-pr"}),
+        )
+        .await;
+    assert_eq!(status, 400);
+    assert!(
+        body["error"].as_str().unwrap().contains("could not parse"),
+        "error: {body}"
+    );
+}
+
+#[tokio::test]
+async fn setting_ci_tracking_on_an_unknown_agent_is_404() {
+    let world = world().await;
+    let (status, _) = world
+        .post("/api/agents/ghost/ci-tracking", json!({"prRef": "o/r#1"}))
+        .await;
+    assert_eq!(status, 404);
+}
+
+#[tokio::test]
+async fn setting_ci_tracking_on_an_archived_agent_is_400() {
+    let world = world().await;
+    let agent = world.create_agent("ci-agent-archived", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    world.delete(&format!("/api/agents/{agent_id}")).await;
+    let (status, _) = world
+        .post(
+            &format!("/api/agents/{agent_id}/ci-tracking"),
+            json!({"prRef": "o/r#1"}),
+        )
+        .await;
+    assert_eq!(status, 400);
+}
+
+#[tokio::test]
+async fn clearing_ci_tracking_on_an_unset_agent_is_a_no_op() {
+    let world = world().await;
+    let agent = world.create_agent("ci-agent-clear", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let status = world.delete(&format!("/api/agents/{agent_id}/ci-tracking")).await;
+    assert_eq!(status, 200);
+    let (_, fetched) = world.get(&format!("/api/agents/{agent_id}")).await;
+    assert!(fetched["ciTracking"].is_null());
+}
+
+/// A local mock GitHub server: PR #1 in `o/r` with head sha `abc123`, and a
+/// controllable check-runs response. Returns its base URL plus a counter of
+/// how many times the check-runs endpoint was hit, so a test can prove a
+/// poll was (or wasn't) skipped.
+async fn mock_github_ci(check_runs: Value) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hits_for_route = Arc::clone(&hits);
+    let app = axum::Router::new()
+        .route(
+            "/repos/o/r/pulls/1",
+            axum::routing::get(|| async {
+                axum::Json(json!({"head": {"sha": "abc123"}, "html_url": "https://github.com/o/r/pull/1"}))
+            }),
+        )
+        .route(
+            "/repos/o/r/commits/abc123/check-runs",
+            axum::routing::get(move || {
+                let hits = Arc::clone(&hits_for_route);
+                let check_runs = check_runs.clone();
+                async move {
+                    hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    axum::Json(json!({"check_runs": check_runs}))
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), hits)
+}
+
+#[tokio::test]
+async fn poll_ci_once_prompts_the_agent_when_ci_turns_failing() {
+    let (github_base, _hits) = mock_github_ci(json!([
+        {"name": "test", "status": "completed", "conclusion": "failure"},
+    ]))
+    .await;
+    let world = world_with_github(50, vec![STUB_AGENT.to_owned()], github_base).await;
+    world.patch("/api/github", json!({"token": "ghp_secret"})).await;
+    let agent = world.create_agent("ci-poll-agent", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    world
+        .post(
+            &format!("/api/agents/{agent_id}/ci-tracking"),
+            json!({"prRef": "o/r#1"}),
+        )
+        .await;
+
+    world.manager.poll_ci_once().await;
+
+    let (_, fetched) = world.get(&format!("/api/agents/{agent_id}")).await;
+    assert_eq!(fetched["ciTracking"]["lastState"], "failure");
+
+    let (_, transcript) = world
+        .get(&format!("/api/agents/{agent_id}/sessions/main/transcript"))
+        .await;
+    let items = transcript.as_array().unwrap();
+    let prompt = items
+        .iter()
+        .find(|item| item["type"] == "userMessage")
+        .unwrap_or_else(|| panic!("no auto-prompt in transcript: {items:?}"));
+    assert!(prompt["text"].as_str().unwrap().contains("CI is failing"));
+    assert!(prompt["text"].as_str().unwrap().contains("test"));
+}
+
+#[tokio::test]
+async fn poll_ci_once_skips_a_check_that_is_not_yet_due() {
+    let (github_base, hits) = mock_github_ci(json!([
+        {"name": "test", "status": "completed", "conclusion": "success"},
+    ]))
+    .await;
+    let world = world_with_github(50, vec![STUB_AGENT.to_owned()], github_base).await;
+    world.patch("/api/github", json!({"token": "ghp_secret"})).await;
+    let agent = world.create_agent("ci-poll-due-agent", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    world
+        .post(
+            &format!("/api/agents/{agent_id}/ci-tracking"),
+            json!({"prRef": "o/r#1"}),
+        )
+        .await;
+
+    world.manager.poll_ci_once().await;
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    world.manager.poll_ci_once().await;
+    assert_eq!(
+        hits.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the default 5-minute interval hasn't elapsed, so the second poll should be skipped"
+    );
+}
+
+#[tokio::test]
+async fn poll_ci_once_does_not_prompt_a_busy_agent() {
+    let (github_base, _hits) = mock_github_ci(json!([
+        {"name": "test", "status": "completed", "conclusion": "failure"},
+    ]))
+    .await;
+    let world = world_with_github(50, vec![STUB_AGENT.to_owned()], github_base).await;
+    world.patch("/api/github", json!({"token": "ghp_secret"})).await;
+    let agent = world.create_agent("ci-poll-busy-agent", false, "always_ask").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    world
+        .post(
+            &format!("/api/agents/{agent_id}/ci-tracking"),
+            json!({"prRef": "o/r#1"}),
+        )
+        .await;
+
+    let mut ws = world.ws().await;
+    world.prompt(agent_id, "main", "slow").await;
+    ws.collect_until(|event| event["type"] == "messageChunk").await;
+
+    world.manager.poll_ci_once().await;
+
+    let (_, fetched) = world.get(&format!("/api/agents/{agent_id}")).await;
+    assert_eq!(
+        fetched["ciTracking"]["lastState"], "unknown",
+        "a failure observed while busy must not be recorded, so the next poll retries"
+    );
+    let (_, transcript) = world
+        .get(&format!("/api/agents/{agent_id}/sessions/main/transcript"))
+        .await;
+    let items = transcript.as_array().unwrap();
+    assert!(
+        items
+            .iter()
+            .filter(|item| item["type"] == "userMessage")
+            .all(|item| item["text"] == "slow"),
+        "no CI auto-prompt should have been sent while the agent was busy: {items:?}"
+    );
+
+    let (status, _) = world.post(&format!("/api/agents/{agent_id}/cancel"), json!({})).await;
+    assert_eq!(status, 200);
+    ws.close().await;
+}
+
+#[tokio::test]
+async fn poll_ci_once_skips_archived_agents() {
+    let (github_base, hits) = mock_github_ci(json!([])).await;
+    let world = world_with_github(50, vec![STUB_AGENT.to_owned()], github_base).await;
+    world.patch("/api/github", json!({"token": "ghp_secret"})).await;
+    let agent = world.create_agent("ci-poll-archived-agent", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    world
+        .post(
+            &format!("/api/agents/{agent_id}/ci-tracking"),
+            json!({"prRef": "o/r#1"}),
+        )
+        .await;
+    world.delete(&format!("/api/agents/{agent_id}")).await;
+
+    world.manager.poll_ci_once().await;
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn poll_ci_once_does_nothing_without_a_github_token() {
+    let (github_base, hits) = mock_github_ci(json!([])).await;
+    let world = world_with_github(50, vec![STUB_AGENT.to_owned()], github_base).await;
+    let agent = world.create_agent("ci-poll-no-token-agent", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    world
+        .post(
+            &format!("/api/agents/{agent_id}/ci-tracking"),
+            json!({"prRef": "o/r#1"}),
+        )
+        .await;
+
+    world.manager.poll_ci_once().await;
+    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+    let (_, fetched) = world.get(&format!("/api/agents/{agent_id}")).await;
+    assert_eq!(fetched["ciTracking"]["lastState"], "unknown");
+}
+
+#[tokio::test]
+async fn poll_ci_once_tolerates_a_github_error_and_leaves_state_unchanged() {
+    let app = axum::Router::new().route(
+        "/repos/o/r/pulls/1",
+        axum::routing::get(|| async {
+            (
+                axum::http::StatusCode::NOT_FOUND,
+                axum::Json(json!({"message": "Not Found"})),
+            )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let world = world_with_github(50, vec![STUB_AGENT.to_owned()], format!("http://{addr}")).await;
+    world.patch("/api/github", json!({"token": "ghp_secret"})).await;
+    let agent = world.create_agent("ci-poll-error-agent", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    world
+        .post(
+            &format!("/api/agents/{agent_id}/ci-tracking"),
+            json!({"prRef": "o/r#1"}),
+        )
+        .await;
+
+    world.manager.poll_ci_once().await;
+
+    let (_, fetched) = world.get(&format!("/api/agents/{agent_id}")).await;
+    assert_eq!(
+        fetched["ciTracking"]["lastState"], "unknown",
+        "a failed check must not be mistaken for an observed state"
     );
 }
 
@@ -1098,6 +1450,7 @@ async fn roster_survives_backend_restart_with_history_replay() {
         data_dir: dir.path().join("data"),
         agent_command: vec![STUB_AGENT.to_owned()],
         max_agents: 50,
+        github_api_base_url: "https://api.github.com".to_owned(),
     };
 
     let agent_id = {
@@ -2185,6 +2538,7 @@ async fn agent_referencing_a_deleted_model_starts_with_an_empty_overlay() {
         data_dir: dir.path().join("data"),
         agent_command: vec![STUB_AGENT.to_owned()],
         max_agents: 50,
+        github_api_base_url: "https://api.github.com".to_owned(),
     };
 
     let agent_id = {

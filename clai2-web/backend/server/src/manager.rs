@@ -16,10 +16,10 @@ use crate::acp::transport::RpcError;
 use crate::acp::{AcpClient, AcpEvent, PermissionRequest, SessionUpdate};
 use crate::approvals::{decide, ApprovalLedger, ApprovalOutcome, PolicyDecision};
 use crate::events::{Event, EventHub};
-use crate::github::{FetchIssueError, FetchedIssue, GithubSettings, RedactedGithubSettings};
+use crate::github::{CiCheckState, FetchIssueError, FetchedIssue, GithubSettings, IssueRef, RedactedGithubSettings};
 use crate::model::{
-    AgentStatus, AgentSummary, ApprovalMode, ApprovalView, GoalConfig, ProjectSummary, SessionSummary, StopReason,
-    ToolCallView, TranscriptItem,
+    AgentStatus, AgentSummary, ApprovalMode, ApprovalView, CiTracking, GoalConfig, ProjectSummary, SessionSummary,
+    StopReason, ToolCallView, TranscriptItem,
 };
 use crate::models::{ModelProfile, ProfileEdit, RedactedProfile};
 use crate::store::{PersistedAgent, Store, StoreError};
@@ -73,6 +73,9 @@ pub struct ManagerConfig {
     /// argv used to spawn agent processes.
     pub agent_command: Vec<String>,
     pub max_agents: usize,
+    /// Base URL for the GitHub REST API: `https://api.github.com` in
+    /// production, a local mock server in tests.
+    pub github_api_base_url: String,
 }
 
 #[derive(Debug, Clone)]
@@ -108,6 +111,18 @@ struct AgentEntry {
     /// single-consumer ordering guarantees happens only after every tool
     /// call the turn announced has already been processed.
     goal_complete_signal: bool,
+    /// CI-poll backoff bookkeeping, ephemeral by design (see
+    /// [`AgentSummary::ci_tracking`](crate::model::AgentSummary)): lost on
+    /// restart, which just means the next poll happens promptly instead of
+    /// wherever the backoff had reached.
+    ci_poll: Option<CiPollState>,
+}
+
+/// Backoff bookkeeping for one agent's CI polling.
+#[derive(Debug, Clone, Copy)]
+struct CiPollState {
+    last_checked_at: std::time::Instant,
+    consecutive_unchanged: u32,
 }
 
 impl AgentEntry {
@@ -214,6 +229,19 @@ fn default_project_name(repo_root: &std::path::Path) -> String {
         .unwrap_or_else(|| repo_root.to_string_lossy().into_owned())
 }
 
+/// Whether a tracked PR's next CI check is due: no previous check, or the
+/// backed-off interval (see [`crate::github::ci_poll_interval`]) has elapsed
+/// since the last one.
+fn ci_check_is_due(ci_poll: Option<CiPollState>, base_interval: std::time::Duration) -> bool {
+    match ci_poll {
+        None => true,
+        Some(state) => {
+            state.last_checked_at.elapsed()
+                >= crate::github::ci_poll_interval(base_interval, state.consecutive_unchanged)
+        }
+    }
+}
+
 impl AgentManager {
     pub async fn new(config: ManagerConfig) -> Result<Arc<Self>, ManagerError> {
         let store = Store::new(config.data_dir.clone());
@@ -265,6 +293,7 @@ impl AgentManager {
                     tool_calls: HashMap::new(),
                     needs_replay,
                     goal_complete_signal: false,
+                    ci_poll: None,
                 }
             })
             .collect();
@@ -495,6 +524,7 @@ impl AgentManager {
             model_label,
             last_error: None,
             goal: None,
+            ci_tracking: None,
         };
         let agent = self.finish_creation(summary, None).await?;
         // Best-effort: the agent already exists either way, so a failure to
@@ -566,6 +596,7 @@ impl AgentManager {
                 tool_calls: HashMap::new(),
                 needs_replay: needs_replay.unwrap_or_default(),
                 goal_complete_signal: false,
+                ci_poll: None,
             });
         }
         self.hub.publish(Event::AgentAdded { agent: summary });
@@ -1035,6 +1066,7 @@ impl AgentManager {
             model_label: parent_summary.model_label.clone(),
             last_error: None,
             goal: None,
+            ci_tracking: None,
         };
         let mut needs_replay = HashSet::new();
         needs_replay.insert("main".to_owned());
@@ -1140,10 +1172,151 @@ impl AgentManager {
         Ok(settings.redacted())
     }
 
+    /// Set the base interval CI-status polling checks a tracked PR at,
+    /// before backoff. Floored at 30s so polling can't be configured to
+    /// hammer GitHub's API.
+    pub async fn set_github_poll_interval(&self, secs: u64) -> Result<RedactedGithubSettings, ManagerError> {
+        if secs < 30 {
+            return Err(ManagerError::Invalid(
+                "poll interval must be at least 30 seconds".to_owned(),
+            ));
+        }
+        let settings = {
+            let mut github = self.github.lock().await;
+            github.poll_interval_secs = secs;
+            github.clone()
+        };
+        self.store.save_github_settings(&settings).await?;
+        Ok(settings.redacted())
+    }
+
     /// Fetch one GitHub issue for the "import from issue" preview.
     pub async fn fetch_github_issue(&self, issue_ref: &str) -> Result<FetchedIssue, ManagerError> {
         let token = self.github.lock().await.token.clone().ok_or(FetchIssueError::NoToken)?;
-        Ok(crate::github::fetch_issue(&self.http, "https://api.github.com", &token, issue_ref).await?)
+        Ok(crate::github::fetch_issue(&self.http, &self.config.github_api_base_url, &token, issue_ref).await?)
+    }
+
+    /// Spawn the background CI-status polling loop: wakes every 30 seconds
+    /// (an internal scheduler resolution, not the user-facing per-PR
+    /// interval) and checks whatever tracked PRs are due. Call once, after
+    /// construction -- not from [`Self::new`] itself, so the many tests that
+    /// build a manager and don't care about CI polling never spawn it.
+    pub fn spawn_ci_poller(self: &Arc<Self>) {
+        let manager = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                ticker.tick().await;
+                manager.poll_ci_once().await;
+            }
+        });
+    }
+
+    /// One scheduler pass: check every non-archived agent with active CI
+    /// tracking whose next poll is due, and act on what's observed. Exposed
+    /// directly (not just via the spawned loop above) so tests can call it
+    /// without waiting on a real timer.
+    pub async fn poll_ci_once(self: &Arc<Self>) {
+        let base_interval = std::time::Duration::from_secs(self.github.lock().await.poll_interval_secs);
+        let due: Vec<(String, String, CiCheckState, AgentStatus)> = {
+            let agents = self.agents.lock().await;
+            agents
+                .iter()
+                .filter(|entry| !matches!(entry.summary.status, AgentStatus::Archived))
+                .filter_map(|entry| {
+                    let tracking = entry.summary.ci_tracking.as_ref()?;
+                    ci_check_is_due(entry.ci_poll, base_interval).then(|| {
+                        (
+                            entry.summary.id.clone(),
+                            tracking.pr_ref.clone(),
+                            tracking.last_state,
+                            entry.summary.status,
+                        )
+                    })
+                })
+                .collect()
+        };
+        if due.is_empty() {
+            return;
+        }
+        let Some(token) = self.github.lock().await.token.clone() else {
+            tracing::warn!(
+                count = due.len(),
+                "CI tracking is set but no GitHub token is configured; skipping poll"
+            );
+            return;
+        };
+        for (agent_id, pr_ref, last_state, agent_status) in due {
+            let fetched =
+                crate::github::fetch_pr_ci_status(&self.http, &self.config.github_api_base_url, &token, &pr_ref).await;
+            match fetched {
+                Ok(pr_status) => {
+                    self.apply_ci_observation(&agent_id, &pr_ref, last_state, agent_status, pr_status)
+                        .await;
+                }
+                Err(err) => tracing::warn!(agent_id, pr_ref, error = %err, "CI status check failed"),
+            }
+        }
+    }
+
+    /// Apply one CI-status observation to an agent's tracking and backoff
+    /// state, firing an auto-prompt exactly when the state has newly turned
+    /// failing and the agent is idle enough to receive it.
+    async fn apply_ci_observation(
+        self: &Arc<Self>,
+        agent_id: &str,
+        pr_ref: &str,
+        last_state: CiCheckState,
+        agent_status: AgentStatus,
+        pr_status: crate::github::PrCiStatus,
+    ) {
+        let unchanged = pr_status.state == last_state;
+        let should_prompt = !unchanged && pr_status.state == CiCheckState::Failure && agent_status == AgentStatus::Idle;
+        // A failure observed while the agent isn't idle is deliberately not
+        // recorded as the new last_state, so the next check still sees it
+        // as "changed" and retries once the agent is idle again.
+        let record_new_state = unchanged || pr_status.state != CiCheckState::Failure || should_prompt;
+
+        let summary_changed = {
+            let mut agents = self.agents.lock().await;
+            let Some(entry) = agents.iter_mut().find(|entry| entry.summary.id == agent_id) else {
+                return;
+            };
+            let consecutive_unchanged = if unchanged {
+                entry.ci_poll.map_or(1, |state| state.consecutive_unchanged + 1)
+            } else {
+                0
+            };
+            entry.ci_poll = Some(CiPollState {
+                last_checked_at: std::time::Instant::now(),
+                consecutive_unchanged,
+            });
+            if record_new_state {
+                if let Some(tracking) = entry.summary.ci_tracking.as_mut() {
+                    tracking.last_state = pr_status.state;
+                }
+                true
+            } else {
+                false
+            }
+        };
+        if summary_changed {
+            self.publish_agent(agent_id).await;
+            let _ = self.persist_roster().await;
+        }
+
+        if should_prompt {
+            let checks = if pr_status.failing_checks.is_empty() {
+                "unspecified checks".to_owned()
+            } else {
+                pr_status.failing_checks.join(", ")
+            };
+            let text = format!(
+                "CI is failing on {pr_ref} ({}). Failing checks: {checks}. Investigate and fix.",
+                pr_status.html_url
+            );
+            let _ = self.prompt(agent_id, "main", text).await;
+        }
     }
 
     /// Switch an idle agent's model profile. The change restarts the agent
@@ -1255,6 +1428,50 @@ impl AgentManager {
                 .find(|entry| entry.summary.id == agent_id)
                 .ok_or(ManagerError::AgentNotFound)?;
             entry.summary.goal = None;
+        }
+        self.publish_agent(agent_id).await;
+        self.persist_roster().await?;
+        self.agent(agent_id).await
+    }
+
+    /// Start polling a pull request's CI status in the background for this
+    /// agent; a transition into a failing state auto-prompts it. No prompt
+    /// fires here -- the next scheduler tick always checks a freshly tracked
+    /// PR immediately, so an already-failing PR is caught without special
+    /// casing the initial set.
+    pub async fn set_ci_tracking(&self, agent_id: &str, pr_ref: String) -> Result<AgentSummary, ManagerError> {
+        let pr_ref = pr_ref.trim().to_owned();
+        IssueRef::parse(&pr_ref).map_err(FetchIssueError::InvalidRef)?;
+        {
+            let mut agents = self.agents.lock().await;
+            let entry = agents
+                .iter_mut()
+                .find(|entry| entry.summary.id == agent_id)
+                .ok_or(ManagerError::AgentNotFound)?;
+            if matches!(entry.summary.status, AgentStatus::Archived) {
+                return Err(ManagerError::Archived);
+            }
+            entry.summary.ci_tracking = Some(CiTracking {
+                pr_ref,
+                last_state: CiCheckState::Unknown,
+            });
+            entry.ci_poll = None;
+        }
+        self.publish_agent(agent_id).await;
+        self.persist_roster().await?;
+        self.agent(agent_id).await
+    }
+
+    /// Stop polling a pull request's CI status for this agent.
+    pub async fn clear_ci_tracking(&self, agent_id: &str) -> Result<AgentSummary, ManagerError> {
+        {
+            let mut agents = self.agents.lock().await;
+            let entry = agents
+                .iter_mut()
+                .find(|entry| entry.summary.id == agent_id)
+                .ok_or(ManagerError::AgentNotFound)?;
+            entry.summary.ci_tracking = None;
+            entry.ci_poll = None;
         }
         self.publish_agent(agent_id).await;
         self.persist_roster().await?;
@@ -1619,6 +1836,7 @@ mod tests {
             data_dir: dir.join("data"),
             agent_command: command,
             max_agents: 10,
+            github_api_base_url: "https://api.github.com".to_owned(),
         }
     }
 
@@ -1904,5 +2122,41 @@ mod tests {
         let preamble = history_preamble(&items);
         assert!(preamble.len() < 20_000);
         assert!(preamble.contains("recent"));
+    }
+
+    #[test]
+    fn ci_check_is_due_when_never_checked() {
+        assert!(super::ci_check_is_due(None, std::time::Duration::from_secs(300)));
+    }
+
+    #[test]
+    fn ci_check_is_due_respects_the_base_interval() {
+        // Tiny durations only, so subtracting from `Instant::now()` can never
+        // underflow a monotonic clock that has been running for less than
+        // the test suite's own startup time.
+        let state = super::CiPollState {
+            last_checked_at: std::time::Instant::now() - std::time::Duration::from_millis(50),
+            consecutive_unchanged: 0,
+        };
+        assert!(!super::ci_check_is_due(Some(state), std::time::Duration::from_secs(10)));
+        assert!(super::ci_check_is_due(
+            Some(state),
+            std::time::Duration::from_millis(10)
+        ));
+    }
+
+    #[test]
+    fn ci_check_is_due_accounts_for_backoff() {
+        // Checked 200ms ago with 3 consecutive unchanged polls: the base
+        // interval has already doubled once, so a base of 100ms means the
+        // next check isn't due until 200ms have passed.
+        let state = super::CiPollState {
+            last_checked_at: std::time::Instant::now() - std::time::Duration::from_millis(90),
+            consecutive_unchanged: 3,
+        };
+        assert!(!super::ci_check_is_due(
+            Some(state),
+            std::time::Duration::from_millis(100)
+        ));
     }
 }
