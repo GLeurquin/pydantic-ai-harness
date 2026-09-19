@@ -52,6 +52,64 @@ async def test_notices_wait_until_all_screen_owners_leave() -> None:
     assert output.getvalue() == '[literal] notice\n'
 
 
+async def test_closed_session_keeps_notices_blocked_until_unload() -> None:
+    output = io.StringIO()
+    console = Console(file=output)
+    screen = Screen()
+    started = anyio.Event()
+
+    async def notify() -> None:
+        started.set()
+        await screen.notify('stale notice', console=console)
+
+    with anyio.fail_after(READINESS_TIMEOUT):
+        async with anyio.create_task_group() as tasks:
+            with screen.busy():
+                with screen.session():
+                    tasks.start_soon(notify)
+                    await started.wait()
+                    await anyio.wait_all_tasks_blocked()
+            await anyio.wait_all_tasks_blocked()
+            assert output.getvalue() == ''
+            tasks.cancel_scope.cancel()
+    with screen.session():
+        await screen.notify('fresh notice', console=console)
+    assert output.getvalue() == 'fresh notice\n'
+
+
+async def test_exit_discards_a_notice_that_becomes_ready_during_goodbye(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ready = anyio.Event()
+    before = asyncio.all_tasks()
+
+    class Output(io.StringIO):
+        def write(self, text: str) -> int:
+            if 'Goodbye.' in text:
+                ready.set()
+            return super().write(text)
+
+    async def check() -> Version | None:
+        await ready.wait()
+        return Version('999999')
+
+    monkeypatch.setattr(updates, 'latest_version', check)
+    output = Output()
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        pipe.send_text('/exit\n')
+        await chat(
+            Agent(TestModel()),
+            deps=None,
+            console=Console(file=output),
+            store=SettingsStore(tmp_path / 'config.db'),
+            builtin_plugins=[PluginSettings(id='updates', factory='pydantic_clai2.updates')],
+        )
+    assert ready.is_set()
+    assert 'Goodbye.' in output.getvalue()
+    assert 'available (installed' not in output.getvalue()
+    assert asyncio.all_tasks() == before
+
+
 @pytest.mark.parametrize('terminal', [False, True])
 async def test_shell_defers_plugin_notice_until_command_returns(tmp_path: Path, terminal: bool) -> None:
     before = asyncio.all_tasks()

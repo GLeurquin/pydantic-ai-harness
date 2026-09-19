@@ -215,6 +215,15 @@ async def test_missing_metadata_and_failed_check_are_harmless(
     assert output.getvalue() == ''
 
 
+async def test_stopping_an_activated_host_before_start_is_a_noop() -> None:
+    output = io.StringIO()
+    host: PluginHost[None] = PluginHost(name='updates', console=Console(file=output), settings={})
+    activate(host)
+    for handler in host.handlers:
+        await handler(SessionEnd(reason='error'))
+    assert output.getvalue() == ''
+
+
 @pytest.mark.parametrize('cancel_outer', [False, True])
 async def test_loader_owns_workers_and_persists_opt_out(
     installed: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel_outer: bool
