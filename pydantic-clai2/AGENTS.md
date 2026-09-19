@@ -76,7 +76,7 @@ Plugins load and unload while CLAI runs. The rules that make that safe:
   natural unit; nothing rebuilds the agent.
 - **Built-ins are declarations, not code paths.** `DEFAULT_PLUGINS` in
   `_app.py` lists what CLAI ships enabled (`coder`, `ask_user`, `repo_context`,
-  `compaction`, `persistence`, `notifications`, `mcp`). The loader treats them like
+  `compaction`, `persistence`, `notifications`, `mcp`, `updates`). The loader treats them like
   drop-ins with the lowest precedence: a store declaration with the same id replaces one, `disable`
   persists an override, `remove` resets it. Do not special-case `Coder`
   anywhere else; the agent from `create_agent()` has no coding tools of its
@@ -151,6 +151,14 @@ actions, `.footer_hint` for the key legend, `markdown_style()` for colours.
   declared once as `ModelSettingsForm` with descriptions and bounds. Extend the
   form, not the menu, to expose another setting.
 
+## Background notices
+
+Use `await host.notify(text)` from a plugin-owned background task for terminal
+notices. It waits until turns and menus release output; it is not an OS alert.
+Do not await it in a turn hook or command that must finish before the notice can
+appear. Cancel and await the worker at `session_end`. Model events still use
+`host.render`.
+
 ## Rendering
 
 `StreamRenderer` owns text and thinking. It knows nothing about any specific
@@ -212,6 +220,8 @@ pydantic.dev's `pydantic-visual-identity` skill's `brand-identity.md`.
 | `project_settings.py` | `.clai/settings.json`: the walk-up to the git root, validation, `ProjectSettings` |
 | `repo_context.py` | the built-in `repo_context` plugin over harness `RepoContext` |
 | `notifications.py` | the built-in desktop notifications for turn outcomes and `AskUserRequestedEvent` |
+| `updates.py` | the built-in bounded update check and owned background worker |
+| `update_installation.py` | installation-aware manual update guidance |
 | `theme.py` | brand palette, scoped active roles, syntax theme names, `sgr()` |
 
 Keep files concise - we don't need any 10,000 line files. Single responsibility.

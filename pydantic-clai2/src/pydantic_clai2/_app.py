@@ -138,7 +138,9 @@ async def chat(
                             _report_project_plugins(shell.loader, console)
                             if resume is not None:
                                 with shell.screen.busy():
-                                    console.print(await shell.sessions.command([resume] if resume else []), markup=False)
+                                    console.print(
+                                        await shell.sessions.command([resume] if resume else []), markup=False
+                                    )
                                 resume = None
                             reason = await shell.run()
                         finally:
