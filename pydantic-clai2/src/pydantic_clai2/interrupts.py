@@ -16,6 +16,7 @@ class Interrupts:
         self._clock = clock
         self._last: float | None = None
         self.exit_requested = False
+        self._cancel: Callable[[], None] | None = None
 
     def press(self) -> bool:
         """Share the double-press window between running and input modes."""
@@ -23,6 +24,13 @@ class Interrupts:
         self.exit_requested = self._last is not None and now - self._last <= 2
         self._last = now
         return self.exit_requested
+
+    def cancel(self) -> bool:
+        """Interrupt active work from an editor key without sending a process signal."""
+        if self._cancel is None:
+            return False
+        self._cancel()
+        return True
 
     async def run(self, operation: Awaitable[None]) -> bool:
         """Return false for user cancellation; propagate external task cancellation."""
@@ -44,6 +52,7 @@ class Interrupts:
                 task.cancel()
 
         previous = signal.getsignal(signal.SIGINT)
+        self._cancel = lambda: cancel(signal.SIGINT, None)
         try:
             signal.signal(signal.SIGINT, cancel)
             try:
@@ -55,4 +64,5 @@ class Interrupts:
                 return False
             return True
         finally:
+            self._cancel = None
             signal.signal(signal.SIGINT, previous)

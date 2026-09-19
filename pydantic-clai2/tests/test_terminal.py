@@ -212,6 +212,10 @@ async def test_prompt_frame_stays_visible_during_tools(tmp_path: Path, height: i
     completions = anyio.Event()
     searched = anyio.Event()
     pasted = anyio.Event()
+    drafted = anyio.Event()
+    queued = anyio.Event()
+    second = anyio.Event()
+    calls = 0
     frame: list[str] = []
     working = anyio.Event()
     finish = anyio.Event()
@@ -233,21 +237,37 @@ async def test_prompt_frame_stays_visible_during_tools(tmp_path: Path, height: i
                 frame = [
                     ''.join(screen.data_buffer[row][col].char for col in range(80)) for row in range(screen.height)
                 ]
-                if any('ready' in line for line in frame):
-                    painted.set()
-                if any('display.thinking' in line for line in frame):
-                    completions.set()
-                if any('reverse-i-search' in line for line in frame):
-                    searched.set()
-                if any('second line' in line for line in frame):
-                    pasted.set()
+                for text, event in (
+                    ('ready', painted),
+                    ('display.thinking', completions),
+                    ('reverse-i-search', searched),
+                    ('second line', pasted),
+                    ('next message', drafted),
+                    ('retained draft', queued),
+                ):
+                    if any(text in line for line in frame):
+                        event.set()
 
     output = Output()
+    store = SettingsStore(tmp_path / 'config.db')
     terminal = Vt100_Output(output, lambda: Size(rows=height, columns=80), term='xterm-256color')
-    agent = Agent(TestModel(call_tools=['work'], custom_output_text='Finished work'))
+    hooks = Hooks[None]()
+
+    @hooks.on.before_model_request
+    async def observe(ctx: RunContext[None], request: ModelRequestContext) -> ModelRequestContext:
+        if ctx.prompt == 'next message':
+            assert finish.is_set()
+            second.set()
+        return request
+
+    agent = Agent(
+        TestModel(call_tools=['work'], custom_output_text='Finished work'), deps_type=type(None), capabilities=[hooks]
+    )
 
     @agent.tool_plain
     async def work() -> str:
+        nonlocal calls
+        calls += 1
         working.set()
         await finish.wait()
         return 'done'
@@ -257,7 +277,7 @@ async def test_prompt_frame_stays_visible_during_tools(tmp_path: Path, height: i
             agent,
             deps=None,
             console=Console(file=output, force_terminal=True, width=80, height=height),
-            store=SettingsStore(tmp_path / 'config.db'),
+            store=store,
         )
         done.set()
 
@@ -286,14 +306,24 @@ async def test_prompt_frame_stays_visible_during_tools(tmp_path: Path, height: i
             assert bottom - top == 3
             pipe.send_text('\n')
             await working.wait()
-            assert '│> Working... Ctrl-C to interrupt' in output.getvalue()
-            assert f'\x1b[1;{height - 4}r' in output.getvalue()
+            pipe.send_text('next message')
+            await drafted.wait()
+            assert any('│> next message' in line for line in frame)
+            pipe.send_text('\n/set display.thinking false\nretained draft')
+            await queued.wait()
+            assert calls == 1
+            assert store.load().thinking
             finish.set()
-            pipe.send_text('/exit\n')
+            await second.wait()
+            assert any('retained draft' in line for line in frame)
+            pipe.send_text('\x15/exit\n')
             await done.wait()
     assert 'Goodbye.' in output.getvalue()
     assert 'Turn not saved' not in output.getvalue()
-    assert '\x1b[r' in output.getvalue()
+    assert calls == 1
+    assert not store.load().thinking
+    text = output.getvalue()
+    assert text.index('Finished work') < text.index('> next message\n')
 
 
 async def test_prompt_loop_commands(tmp_path: Path) -> None:
