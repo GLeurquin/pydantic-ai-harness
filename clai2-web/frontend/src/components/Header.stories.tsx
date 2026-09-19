@@ -32,6 +32,7 @@ export const ConnectedWithApprovals: Story = () => (
       approvals={approvals}
       agents={agents}
       onResolveApproval={noop}
+      onManageProjects={noop}
       onManageModels={noop}
       onManageGithub={noop}
       onToggleSidebar={noop}
@@ -47,6 +48,7 @@ export const Disconnected: Story = () => (
       approvals={[]}
       agents={[]}
       onResolveApproval={noop}
+      onManageProjects={noop}
       onManageModels={noop}
       onManageGithub={noop}
       onToggleSidebar={noop}

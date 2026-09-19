@@ -435,6 +435,32 @@ describe('App', () => {
     await waitFor(() => expect(screen.getByLabelText('Project')).toHaveValue('project-9'));
   });
 
+  it('opens the projects dialog from the header, adds and removes a project, and closes it', async () => {
+    const user = userEvent.setup();
+    const project = makeProject({ id: 'project-9', name: 'brand-new', repoRoot: '/brand-new' });
+    apiMock.createProject.mockResolvedValue(project);
+    apiMock.deleteProject.mockResolvedValue({ ok: true });
+    render(<App />);
+    await snapshot([makeAgent()]);
+
+    await user.click(screen.getByRole('button', { name: 'Projects' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Projects' });
+
+    await user.click(within(dialog).getByRole('button', { name: 'New project' }));
+    await user.type(within(dialog).getByPlaceholderText('my-other-repo'), 'brand-new');
+    await user.type(within(dialog).getByPlaceholderText('/Users/you/code/my-other-repo'), '/brand-new');
+    await user.click(within(dialog).getByRole('button', { name: 'Add project' }));
+    expect(apiMock.createProject).toHaveBeenCalledWith({ name: 'brand-new', path: '/brand-new' });
+    expect(await within(dialog).findByText('brand-new')).toBeInTheDocument();
+
+    const [firstRemove] = within(dialog).getAllByRole('button', { name: 'Remove' });
+    await user.click(firstRemove!);
+    expect(apiMock.deleteProject).toHaveBeenCalledWith('project-1');
+
+    await user.click(within(dialog).getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Projects' })).toBeNull());
+  });
+
   it('loads model profiles on mount and stores them', async () => {
     apiMock.listModels.mockResolvedValue([makeProfile()]);
     render(<App />);

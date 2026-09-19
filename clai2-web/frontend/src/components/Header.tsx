@@ -8,6 +8,7 @@ export interface HeaderProps {
   approvals: ApprovalView[];
   agents: AgentSummary[];
   onResolveApproval: (approvalId: string, optionId: string) => void;
+  onManageProjects: () => void;
   onManageModels: () => void;
   onManageGithub: () => void;
   onToggleSidebar: () => void;
@@ -18,6 +19,7 @@ export function Header({
   approvals,
   agents,
   onResolveApproval,
+  onManageProjects,
   onManageModels,
   onManageGithub,
   onToggleSidebar,
@@ -36,6 +38,9 @@ export function Header({
       <span className={connected ? 'connection online' : 'connection offline'}>
         {connected ? 'connected' : 'reconnecting...'}
       </span>
+      <button onClick={onManageProjects} aria-label="Projects">
+        Projects
+      </button>
       <button onClick={onManageModels} aria-label="Model profiles">
         Models
       </button>

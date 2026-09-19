@@ -12,12 +12,13 @@ import { ModelsDialog } from './components/ModelsDialog';
 import { NameDialog } from './components/NameDialog';
 import { NewAgentDialog } from './components/NewAgentDialog';
 import { NotificationTray } from './components/NotificationTray';
+import { ProjectsDialog } from './components/ProjectsDialog';
 import { Sidebar } from './components/Sidebar';
 import { transcriptKey } from './state/transcript';
 import { useAppStore } from './state/store';
 import { connectWs, wsUrl } from './ws';
 
-type Dialog = 'none' | 'new-agent' | 'fork' | 'side-session' | 'models' | 'goal' | 'github' | 'ci-tracking';
+type Dialog = 'none' | 'new-agent' | 'fork' | 'side-session' | 'models' | 'goal' | 'github' | 'ci-tracking' | 'projects';
 
 /** Fire a write action; a rejection surfaces as a notification instead of
  * vanishing. The rest of the UI does not wait on it. */
@@ -86,6 +87,11 @@ export function App() {
     return project;
   };
 
+  const deleteProject = async (projectId: string) => {
+    await api.deleteProject(projectId);
+    useAppStore.getState().applyEvent({ type: 'projectRemoved', projectId });
+  };
+
   return (
     <div className="app">
       <NotificationTray notifications={store.notifications} onDismiss={store.dismissNotification} />
@@ -94,6 +100,7 @@ export function App() {
         approvals={store.approvals}
         agents={store.agents}
         onResolveApproval={resolveApproval}
+        onManageProjects={() => setDialog('projects')}
         onManageModels={() => setDialog('models')}
         onManageGithub={() => setDialog('github')}
         onToggleSidebar={() => setSidebarOpen((current) => !current)}
@@ -154,6 +161,14 @@ export function App() {
           onClose={() => setDialog('none')}
           onManageModels={() => setDialog('models')}
           onManageGithub={() => setDialog('github')}
+        />
+      ) : null}
+      {dialog === 'projects' ? (
+        <ProjectsDialog
+          projects={store.projects}
+          onCreateProject={createProject}
+          onDeleteProject={deleteProject}
+          onClose={() => setDialog('none')}
         />
       ) : null}
       {dialog === 'models' ? (
