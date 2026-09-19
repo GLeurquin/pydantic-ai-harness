@@ -23,6 +23,8 @@ export interface MainPaneProps {
   onManageModels: SettingsPanelProps['onManageModels'];
   onArchive: SettingsPanelProps['onArchive'];
   onRename: SettingsPanelProps['onRename'];
+  onSetGoal: SettingsPanelProps['onSetGoal'];
+  onClearGoal: SettingsPanelProps['onClearGoal'];
 }
 
 export function MainPane(props: MainPaneProps) {
@@ -60,10 +62,20 @@ export function MainPane(props: MainPaneProps) {
         >
           Settings
         </button>
-        {activeSession && activeSession.totalTokens > 0 ? (
-          <span className="tabs-usage" title="Total tokens used in this session">
-            {activeSession.totalInputTokens.toLocaleString()} in / {activeSession.totalOutputTokens.toLocaleString()} out
-          </span>
+        {agent.goal || (activeSession && activeSession.totalTokens > 0) ? (
+          <div className="tabs-meta">
+            {agent.goal ? (
+              <span className="tabs-goal" title={agent.goal.goal}>
+                Goal: turn {agent.goal.turnsUsed}/{agent.goal.maxTurns}
+              </span>
+            ) : null}
+            {activeSession && activeSession.totalTokens > 0 ? (
+              <span className="tabs-usage" title="Total tokens used in this session">
+                {activeSession.totalInputTokens.toLocaleString()} in / {activeSession.totalOutputTokens.toLocaleString()}{' '}
+                out
+              </span>
+            ) : null}
+          </div>
         ) : null}
       </div>
       {view.kind === 'session' ? (
@@ -89,6 +101,8 @@ export function MainPane(props: MainPaneProps) {
           onManageModels={props.onManageModels}
           onArchive={props.onArchive}
           onRename={props.onRename}
+          onSetGoal={props.onSetGoal}
+          onClearGoal={props.onClearGoal}
         />
       ) : null}
     </main>

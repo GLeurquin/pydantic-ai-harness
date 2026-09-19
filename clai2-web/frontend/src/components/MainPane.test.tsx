@@ -28,6 +28,7 @@ function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
     modelProfileId: null,
     modelLabel: null,
     lastError: null,
+    goal: null,
     ...overrides,
   };
 }
@@ -53,6 +54,8 @@ function renderPane(overrides: Partial<Parameters<typeof MainPane>[0]> = {}) {
     onManageModels: vi.fn(),
     onArchive: vi.fn(),
     onRename: vi.fn(),
+    onSetGoal: vi.fn(),
+    onClearGoal: vi.fn(),
     ...overrides,
   };
   return { ...render(<MainPane {...props} />), props };
@@ -165,6 +168,17 @@ describe('MainPane', () => {
   it('hides the usage readout for a session with no usage yet', () => {
     renderPane({ view: { kind: 'session', sessionId: 'main' } });
     expect(screen.queryByTitle('Total tokens used in this session')).toBeNull();
+  });
+
+  it('shows the goal progress in the tabs row while a goal is active', () => {
+    const agent = makeAgent({ goal: { goal: 'Ship the feature', maxTurns: 8, turnsUsed: 3 } });
+    renderPane({ agent, view: { kind: 'session', sessionId: 'main' } });
+    expect(screen.getByText('Goal: turn 3/8')).toHaveAttribute('title', 'Ship the feature');
+  });
+
+  it('hides the goal readout when no goal is active', () => {
+    renderPane({ view: { kind: 'session', sessionId: 'main' } });
+    expect(screen.queryByText(/^Goal:/)).toBeNull();
   });
 
   it('hides the usage readout outside the session view', () => {

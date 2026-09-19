@@ -105,6 +105,24 @@ pub struct AgentSummary {
     pub model_label: Option<String>,
     /// Last error message when `status == Error`.
     pub last_error: Option<String>,
+    /// An active autonomous goal, if one was set. Never survives a backend
+    /// restart: [`AgentManager::new`](crate::manager::AgentManager::new)
+    /// clears it on load, since the in-memory turn-continuation loop that
+    /// drives it cannot be resumed either.
+    #[serde(default)]
+    pub goal: Option<GoalConfig>,
+}
+
+/// A goal an agent works toward turn-over-turn without a human re-prompting
+/// after each one, until it calls the `mark_goal_complete` tool, hits
+/// `max_turns`, or hits something that needs a human (an error or a parked
+/// approval).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalConfig {
+    pub goal: String,
+    pub max_turns: u32,
+    pub turns_used: u32,
 }
 
 /// One entry of a permission request's option list, as offered by the agent.

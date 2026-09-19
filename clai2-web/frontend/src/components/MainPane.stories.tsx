@@ -46,6 +46,8 @@ function Frame({ agent, initialView }: { agent: AgentSummary; initialView: MainV
         onManageModels={noop}
         onArchive={noop}
         onRename={noop}
+        onSetGoal={noop}
+        onClearGoal={noop}
       />
     </div>
   );
@@ -62,6 +64,13 @@ export const SessionView: Story = () => (
 );
 
 export const SettingsView: Story = () => <Frame agent={withSideSession()} initialView={{ kind: 'settings' }} />;
+
+export const SessionViewWithActiveGoal: Story = () => (
+  <Frame
+    agent={makeAgent({ goal: { goal: 'Fix the failing auth tests and open a PR', maxTurns: 10, turnsUsed: 3 } })}
+    initialView={{ kind: 'session', sessionId: 'session-main' }}
+  />
+);
 
 export const ArchivedAgent: Story = () => (
   <Frame

@@ -18,6 +18,7 @@ function agent(id: string, name = id): AgentSummary {
     modelProfileId: null,
     modelLabel: null,
     lastError: null,
+    goal: null,
   };
 }
 

@@ -20,6 +20,7 @@ function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
     modelProfileId: null,
     modelLabel: null,
     lastError: null,
+    goal: null,
     ...overrides,
   };
 }
@@ -60,6 +61,8 @@ function renderSettings(props: Partial<Parameters<typeof SettingsPanel>[0]> = {}
     onManageModels: vi.fn(),
     onArchive: vi.fn(),
     onRename: vi.fn(),
+    onSetGoal: vi.fn(),
+    onClearGoal: vi.fn(),
   };
   const merged = { ...defaults, ...props };
   return { ...render(<SettingsPanel {...merged} />), props: merged };
@@ -91,6 +94,31 @@ describe('SettingsPanel', () => {
     expect(screen.queryByText('Every tool call runs without asking.')).toBeNull();
     rerender(<SettingsPanel {...props} agent={makeAgent({ approvalMode: 'auto' })} />);
     expect(screen.getByText('Every tool call runs without asking.')).toHaveClass('mode-auto-warning');
+  });
+
+  it('offers to set a goal when none is active', async () => {
+    const user = userEvent.setup();
+    const { props } = renderSettings();
+    expect(screen.queryByText(/^Turn \d/)).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Set a goal' }));
+    expect(props.onSetGoal).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables Set a goal for an archived agent', () => {
+    renderSettings({ agent: makeAgent({ status: 'archived' }) });
+    expect(screen.getByRole('button', { name: 'Set a goal' })).toBeDisabled();
+  });
+
+  it('shows the active goal, its progress, and fires onClearGoal from Stop', async () => {
+    const user = userEvent.setup();
+    const { props } = renderSettings({
+      agent: makeAgent({ goal: { goal: 'Ship the feature', maxTurns: 8, turnsUsed: 3 } }),
+    });
+    expect(screen.queryByRole('button', { name: 'Set a goal' })).toBeNull();
+    expect(screen.getByText('Ship the feature')).toBeInTheDocument();
+    expect(screen.getByText('Turn 3 of 8')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Stop' }));
+    expect(props.onClearGoal).toHaveBeenCalledTimes(1);
   });
 
   it('renders only the directory when optional workspace fields are absent', () => {

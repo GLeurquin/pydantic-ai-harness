@@ -14,6 +14,8 @@ export const AlwaysAskWithWorktree: Story = () => (
     onManageModels={noop}
     onArchive={noop}
     onRename={noop}
+    onSetGoal={noop}
+    onClearGoal={noop}
   />
 );
 
@@ -26,6 +28,22 @@ export const AutoModeWarning: Story = () => (
     onManageModels={noop}
     onArchive={noop}
     onRename={noop}
+    onSetGoal={noop}
+    onClearGoal={noop}
+  />
+);
+
+export const WithActiveGoal: Story = () => (
+  <SettingsPanel
+    agent={makeAgent({ goal: { goal: 'Fix the failing auth tests and open a PR', maxTurns: 10, turnsUsed: 3 } })}
+    models={sampleProfiles}
+    onSetApprovalMode={noop}
+    onSetModel={noop}
+    onManageModels={noop}
+    onArchive={noop}
+    onRename={noop}
+    onSetGoal={noop}
+    onClearGoal={noop}
   />
 );
 
@@ -42,5 +60,7 @@ export const ArchivedAgent: Story = () => (
     onManageModels={noop}
     onArchive={noop}
     onRename={noop}
+    onSetGoal={noop}
+    onClearGoal={noop}
   />
 );

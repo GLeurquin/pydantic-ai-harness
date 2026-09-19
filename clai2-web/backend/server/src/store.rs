@@ -240,6 +240,7 @@ mod tests {
                 model_profile_id: None,
                 model_label: None,
                 last_error: None,
+                goal: None,
             },
             command: vec!["stub-agent".to_owned()],
         }

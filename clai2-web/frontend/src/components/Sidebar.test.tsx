@@ -20,6 +20,7 @@ function makeAgent(id: string, name: string, status: AgentStatus, projectId = 'p
     modelProfileId: null,
     modelLabel: null,
     lastError: null,
+    goal: null,
   };
 }
 

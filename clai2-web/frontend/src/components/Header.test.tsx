@@ -20,6 +20,7 @@ function makeAgent(id: string, name: string): AgentSummary {
     modelProfileId: null,
     modelLabel: null,
     lastError: null,
+    goal: null,
   };
 }
 

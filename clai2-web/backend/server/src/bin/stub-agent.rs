@@ -159,6 +159,27 @@ async fn handle_prompt(stub: Arc<Stub>, request_id: Value, params: Value) {
         std::process::exit(0);
     }
 
+    // Announce a mark_goal_complete tool call (the exact title clai_agent.py's
+    // real tool gets by default -- see manager.rs's MARK_GOAL_COMPLETE_TOOL),
+    // then end the turn, to exercise goal auto-continuation stopping on it.
+    if text.contains("complete-goal") {
+        let call_number = stub.next_tool_call.fetch_add(1, Ordering::Relaxed);
+        stub.send_update(
+            &session_id,
+            json!({
+                "sessionUpdate": "tool_call",
+                "toolCallId": format!("call-{call_number}"),
+                "title": "mark_goal_complete",
+                "kind": "other",
+                "status": "completed",
+            }),
+        )
+        .await;
+        stub.send_text_chunk(&session_id, "agent_message_chunk", "done").await;
+        stub.respond(&request_id, json!({"stopReason": "end_turn"})).await;
+        return;
+    }
+
     // Emit a plan update, then end the turn.
     if text.contains("emit-plan") {
         stub.send_update(

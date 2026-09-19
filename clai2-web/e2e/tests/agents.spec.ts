@@ -111,6 +111,26 @@ test('cancel stops a running turn', async ({ page }) => {
   await expect(page.getByText('cancelled')).toBeVisible();
 });
 
+test('a goal runs on its own and stops once the agent marks it complete', async ({ page }) => {
+  await createAgent(page, { worktree: false });
+  await page.getByRole('tab', { name: 'Settings' }).click();
+  await page.getByRole('button', { name: 'Set a goal' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Set a goal' });
+  await dialog.getByLabel('Goal').fill('say complete-goal right away');
+  await dialog.getByRole('button', { name: 'Start working toward it' }).click();
+  await expect(dialog).not.toBeVisible();
+
+  await page.getByRole('tab', { name: 'Conversation' }).click();
+  await expect(page.locator('.block-assistant')).toHaveText('done');
+
+  // No human ever sent this first prompt -- the goal dialog itself fired it.
+  await expect(page.getByText('New autonomous goal: say complete-goal right away')).toBeVisible();
+
+  await page.getByRole('tab', { name: 'Settings' }).click();
+  await expect(page.getByRole('button', { name: 'Set a goal' })).toBeVisible();
+  await expect(page.getByText(/^Turn \d/)).not.toBeVisible();
+});
+
 test('forking carries the conversation into a new worktree agent', async ({ page }) => {
   const name = await createAgent(page, { worktree: true });
   await send(page, 'remember: the sky is teal');

@@ -118,4 +118,13 @@ export const api = {
       method: 'PATCH',
       body: JSON.stringify({ modelProfileId }),
     }),
+
+  setGoal: (agentId: string, goal: string, maxTurns: number) =>
+    request<AgentSummary>(`/api/agents/${agentId}/goal`, {
+      method: 'POST',
+      body: JSON.stringify({ goal, maxTurns }),
+    }),
+
+  clearGoal: (agentId: string) =>
+    request<AgentSummary>(`/api/agents/${agentId}/goal`, { method: 'DELETE' }),
 };

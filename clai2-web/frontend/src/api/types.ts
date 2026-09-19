@@ -51,6 +51,14 @@ export interface AgentSummary {
   modelProfileId: string | null;
   modelLabel: string | null;
   lastError: string | null;
+  goal: GoalConfig | null;
+}
+
+/** An autonomous goal an agent works toward turn-over-turn on its own. */
+export interface GoalConfig {
+  goal: string;
+  maxTurns: number;
+  turnsUsed: number;
 }
 
 export type Provider =

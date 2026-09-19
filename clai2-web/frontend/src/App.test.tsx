@@ -30,6 +30,8 @@ const apiMock = vi.hoisted(() => ({
   updateModel: vi.fn(),
   deleteModel: vi.fn(),
   setAgentModel: vi.fn(),
+  setGoal: vi.fn(),
+  clearGoal: vi.fn(),
 }));
 
 const ws = vi.hoisted(() => ({
@@ -68,6 +70,7 @@ function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
     modelProfileId: null,
     modelLabel: null,
     lastError: null,
+    goal: null,
     ...overrides,
   };
 }
@@ -147,6 +150,8 @@ beforeEach(() => {
   apiMock.rename.mockResolvedValue(makeAgent());
   apiMock.archiveAgent.mockResolvedValue(makeAgent({ status: 'archived' }));
   apiMock.setAgentModel.mockResolvedValue(makeAgent());
+  apiMock.setGoal.mockResolvedValue(makeAgent());
+  apiMock.clearGoal.mockResolvedValue({ ok: true });
   apiMock.listModels.mockResolvedValue([]);
 });
 
@@ -348,6 +353,29 @@ describe('App', () => {
     expect(apiMock.setApprovalMode).toHaveBeenCalledWith('a1', 'accept_edits');
     await user.click(screen.getByRole('button', { name: 'Archive' }));
     expect(apiMock.archiveAgent).toHaveBeenCalledWith('a1', false);
+  });
+
+  it('sets a goal from the Settings tab and closes the dialog', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await snapshot([makeAgent()]);
+    await user.click(screen.getByRole('tab', { name: 'Settings' }));
+    await user.click(screen.getByRole('button', { name: 'Set a goal' }));
+    await user.type(screen.getByPlaceholderText('Fix the failing auth tests and open a PR'), 'Ship it');
+    await user.click(screen.getByRole('button', { name: 'Start working toward it' }));
+    expect(apiMock.setGoal).toHaveBeenCalledWith('a1', 'Ship it', 10);
+    // The WS stream, not this response, is what updates the goal indicator --
+    // applying this response directly would race it (see App.tsx).
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Set a goal' })).toBeNull());
+  });
+
+  it('clears the active goal from the Settings tab', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await snapshot([makeAgent({ goal: { goal: 'Ship it', maxTurns: 6, turnsUsed: 2 } })]);
+    await user.click(screen.getByRole('tab', { name: 'Settings' }));
+    await user.click(screen.getByRole('button', { name: 'Stop' }));
+    expect(apiMock.clearGoal).toHaveBeenCalledWith('a1');
   });
 
   it('renames the selected agent from the Settings tab', async () => {

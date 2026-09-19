@@ -246,6 +246,27 @@ describe('api', () => {
       body: JSON.stringify({ modelProfileId: null }),
     });
   });
+
+  it('setGoal POSTs the goal text and turn limit', async () => {
+    const payload = { id: 'a1', goal: { goal: 'ship it', maxTurns: 5, turnsUsed: 0 } };
+    fetchMock.mockResolvedValue(okResponse(payload));
+    await expect(api.setGoal('a1', 'ship it', 5)).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith('/api/agents/a1/goal', {
+      ...JSON_HEADERS,
+      method: 'POST',
+      body: JSON.stringify({ goal: 'ship it', maxTurns: 5 }),
+    });
+  });
+
+  it('clearGoal DELETEs the goal', async () => {
+    const payload = { id: 'a1', goal: null };
+    fetchMock.mockResolvedValue(okResponse(payload));
+    await expect(api.clearGoal('a1')).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith('/api/agents/a1/goal', {
+      ...JSON_HEADERS,
+      method: 'DELETE',
+    });
+  });
 });
 
 describe('ApiError', () => {

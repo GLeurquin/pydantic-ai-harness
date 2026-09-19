@@ -299,11 +299,23 @@
   border-bottom-color: var(--accent);
 }
 
-.tabs-usage {
+.tabs-meta {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.tabs-usage {
   font-size: 11px;
   font-family: var(--font-mono);
   color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.tabs-goal {
+  font-size: 11px;
+  color: var(--accent);
   white-space: nowrap;
 }
 
@@ -533,7 +545,7 @@
   align-items: center;
 }
 
-.settings .hint {
+.hint {
   font-size: 12px;
   color: var(--text-muted);
 }

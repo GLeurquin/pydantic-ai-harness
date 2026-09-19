@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from './api/client';
 import type { CreateAgentRequest } from './api/types';
 import { errorMessage } from './errors';
+import { GoalDialog } from './components/GoalDialog';
 import { Header } from './components/Header';
 import { MainPane } from './components/MainPane';
 import { ModelsDialog } from './components/ModelsDialog';
@@ -14,7 +15,7 @@ import { transcriptKey } from './state/transcript';
 import { useAppStore } from './state/store';
 import { connectWs, wsUrl } from './ws';
 
-type Dialog = 'none' | 'new-agent' | 'fork' | 'side-session' | 'models';
+type Dialog = 'none' | 'new-agent' | 'fork' | 'side-session' | 'models' | 'goal';
 
 /** Fire a write action; a rejection surfaces as a notification instead of
  * vanishing. The rest of the UI does not wait on it. */
@@ -127,6 +128,8 @@ export function App() {
           onManageModels={() => setDialog('models')}
           onArchive={(removeWorktree) => runAction(api.archiveAgent(selected.id, removeWorktree))}
           onRename={(name) => runAction(api.rename(selected.id, name))}
+          onSetGoal={() => setDialog('goal')}
+          onClearGoal={() => runAction(api.clearGoal(selected.id))}
         />
       ) : (
         <main className="main">
@@ -157,6 +160,18 @@ export function App() {
             useAppStore.getState().applyEvent({ type: 'agentAdded', agent: fork });
             useAppStore.getState().selectAgent(fork.id);
           }}
+          onClose={() => setDialog('none')}
+        />
+      ) : null}
+      {dialog === 'goal' && selected ? (
+        <GoalDialog
+          agentName={selected.name}
+          // Applying the response directly (like fork/side-session do) would
+          // race the WS stream: a goal can run and clear itself before this
+          // request even returns, and a stale "just set" snapshot applied
+          // after that would clobber the real, newer state back to active.
+          // The WS stream alone is both sufficient and race-free here.
+          onSubmit={(goal, maxTurns) => api.setGoal(selected.id, goal, maxTurns).then(() => undefined)}
           onClose={() => setDialog('none')}
         />
       ) : null}

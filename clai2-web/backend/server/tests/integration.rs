@@ -315,6 +315,197 @@ async fn prompting_twice_accumulates_session_usage_totals() {
 }
 
 #[tokio::test]
+async fn goal_completes_via_the_mark_goal_complete_tool() {
+    let world = world().await;
+    let agent = world.create_agent("goal-agent", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let mut ws = world.ws().await;
+
+    let (status, set) = world
+        .post(
+            &format!("/api/agents/{agent_id}/goal"),
+            json!({"goal": "say complete-goal right away", "maxTurns": 5}),
+        )
+        .await;
+    assert_eq!(status, 200, "{set}");
+    assert_eq!(set["goal"]["goal"], "say complete-goal right away");
+    assert_eq!(set["goal"]["maxTurns"], 5);
+    assert_eq!(set["goal"]["turnsUsed"], 0);
+
+    let events = ws
+        .collect_until(|event| event["type"] == "agentUpdated" && event["agent"]["goal"].is_null())
+        .await;
+    let turn_ends = events_of_type(&events, "turnEnded");
+    assert_eq!(
+        turn_ends.len(),
+        1,
+        "the tool call should stop the loop after just the completing turn"
+    );
+
+    let (_, fetched) = world.get(&format!("/api/agents/{agent_id}")).await;
+    assert!(fetched["goal"].is_null());
+}
+
+#[tokio::test]
+async fn goal_stops_after_max_turns_without_completing() {
+    let world = world().await;
+    let agent = world.create_agent("goal-agent-exhaust", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let mut ws = world.ws().await;
+
+    let (status, _) = world
+        .post(
+            &format!("/api/agents/{agent_id}/goal"),
+            json!({"goal": "keep working forever", "maxTurns": 2}),
+        )
+        .await;
+    assert_eq!(status, 200);
+
+    let events = ws
+        .collect_until(|event| event["type"] == "agentUpdated" && event["agent"]["goal"].is_null())
+        .await;
+    let turn_ends = events_of_type(&events, "turnEnded");
+    assert_eq!(
+        turn_ends.len(),
+        2,
+        "should run exactly maxTurns turns then stop without completing"
+    );
+
+    let (_, fetched) = world.get(&format!("/api/agents/{agent_id}")).await;
+    assert!(fetched["goal"].is_null());
+}
+
+#[tokio::test]
+async fn goal_pauses_for_approval_then_stops_once_resolved() {
+    let world = world().await;
+    let agent = world.create_agent("goal-agent-approval", false, "always_ask").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let mut ws = world.ws().await;
+
+    let (status, set) = world
+        .post(
+            &format!("/api/agents/{agent_id}/goal"),
+            json!({"goal": "approve:execute run the tests", "maxTurns": 5}),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert!(!set["goal"].is_null());
+
+    let events = ws.collect_until(|event| event["type"] == "approvalRequested").await;
+    let approval = &events_of_type(&events, "approvalRequested").last().unwrap()["approval"];
+    let approval_id = approval["id"].as_str().unwrap().to_owned();
+
+    let (_, fetched) = world.get(&format!("/api/agents/{agent_id}")).await;
+    assert_eq!(fetched["status"], "waiting_approval");
+    assert!(
+        !fetched["goal"].is_null(),
+        "the goal stays visible while parked on an approval"
+    );
+
+    // Reject it: the turn ends `cancelled`, not `end_turn`, so the
+    // auto-continuation stops instead of firing another prompt.
+    let (status, _) = world
+        .post(
+            &format!("/api/approvals/{approval_id}"),
+            json!({"optionId": "reject_once"}),
+        )
+        .await;
+    assert_eq!(status, 200);
+
+    ws.collect_until(|event| event["type"] == "agentUpdated" && event["agent"]["goal"].is_null())
+        .await;
+    let (_, fetched) = world.get(&format!("/api/agents/{agent_id}")).await;
+    assert!(fetched["goal"].is_null());
+}
+
+#[tokio::test]
+async fn cancel_clears_an_active_goal() {
+    let world = world().await;
+    let agent = world.create_agent("goal-agent-cancel", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+
+    let (status, set) = world
+        .post(
+            &format!("/api/agents/{agent_id}/goal"),
+            json!({"goal": "keep working", "maxTurns": 5}),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert!(!set["goal"].is_null());
+
+    let (status, _) = world.post(&format!("/api/agents/{agent_id}/cancel"), json!({})).await;
+    assert_eq!(status, 200);
+    let (_, fetched) = world.get(&format!("/api/agents/{agent_id}")).await;
+    assert!(fetched["goal"].is_null());
+}
+
+#[tokio::test]
+async fn setting_a_blank_goal_is_rejected() {
+    let world = world().await;
+    let agent = world.create_agent("goal-agent-blank", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let (status, _) = world
+        .post(
+            &format!("/api/agents/{agent_id}/goal"),
+            json!({"goal": "   ", "maxTurns": 3}),
+        )
+        .await;
+    assert_eq!(status, 400);
+}
+
+#[tokio::test]
+async fn setting_a_goal_with_zero_max_turns_is_rejected() {
+    let world = world().await;
+    let agent = world.create_agent("goal-agent-zero", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let (status, _) = world
+        .post(
+            &format!("/api/agents/{agent_id}/goal"),
+            json!({"goal": "do it", "maxTurns": 0}),
+        )
+        .await;
+    assert_eq!(status, 400);
+}
+
+#[tokio::test]
+async fn setting_a_goal_on_an_archived_agent_rolls_back_and_errors() {
+    let world = world().await;
+    let agent = world.create_agent("goal-agent-archived", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    world
+        .http
+        .delete(format!("{}/api/agents/{agent_id}", world.base_url))
+        .send()
+        .await
+        .unwrap();
+
+    let (status, _) = world
+        .post(
+            &format!("/api/agents/{agent_id}/goal"),
+            json!({"goal": "do it", "maxTurns": 3}),
+        )
+        .await;
+    assert_eq!(status, 400);
+
+    let (_, fetched) = world.get(&format!("/api/agents/{agent_id}")).await;
+    assert!(
+        fetched["goal"].is_null(),
+        "the goal set before the failed prompt must be rolled back"
+    );
+}
+
+#[tokio::test]
+async fn clearing_an_unset_goal_is_a_no_op() {
+    let world = world().await;
+    let agent = world.create_agent("goal-agent-clear", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let status = world.delete(&format!("/api/agents/{agent_id}/goal")).await;
+    assert_eq!(status, 200);
+    let (_, fetched) = world.get(&format!("/api/agents/{agent_id}")).await;
+    assert!(fetched["goal"].is_null());
+}
+
+#[tokio::test]
 async fn thought_chunks_stream_separately() {
     let world = world().await;
     let agent = world.create_agent("thinker", false, "always_ask").await;

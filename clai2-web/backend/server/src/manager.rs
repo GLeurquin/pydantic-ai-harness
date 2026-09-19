@@ -17,8 +17,8 @@ use crate::acp::{AcpClient, AcpEvent, PermissionRequest, SessionUpdate};
 use crate::approvals::{decide, ApprovalLedger, ApprovalOutcome, PolicyDecision};
 use crate::events::{Event, EventHub};
 use crate::model::{
-    AgentStatus, AgentSummary, ApprovalMode, ApprovalView, ProjectSummary, SessionSummary, StopReason, ToolCallView,
-    TranscriptItem,
+    AgentStatus, AgentSummary, ApprovalMode, ApprovalView, GoalConfig, ProjectSummary, SessionSummary, StopReason,
+    ToolCallView, TranscriptItem,
 };
 use crate::models::{ModelProfile, ProfileEdit, RedactedProfile};
 use crate::store::{PersistedAgent, Store, StoreError};
@@ -96,6 +96,12 @@ struct AgentEntry {
     /// Sessions whose next prompt must carry a history preamble (fork or
     /// backend restart re-attached them to a fresh agent process).
     needs_replay: HashSet<String>,
+    /// Set when the agent calls the `mark_goal_complete` tool during the
+    /// turn in flight. Reset at the start of every turn; read back once
+    /// that turn's `client.prompt(...)` resolves, which the event pump's
+    /// single-consumer ordering guarantees happens only after every tool
+    /// call the turn announced has already been processed.
+    goal_complete_signal: bool,
 }
 
 impl AgentEntry {
@@ -140,6 +146,17 @@ pub struct AgentManager {
 
 /// Cap applied to the history preamble a fork or restored session sends.
 const MAX_PREAMBLE_CHARS: usize = 16_000;
+
+/// Name of the tool `clai_agent.py` exposes for the agent to signal an
+/// active goal is fully met. ACP defaults a tool call's title to its raw
+/// tool name absent a custom presenter (see
+/// `pydantic_ai_harness.experimental.acp._presentation`'s module docstring),
+/// so this doubles as the wire-level signal `upsert_tool_call` watches for.
+const MARK_GOAL_COMPLETE_TOOL: &str = "mark_goal_complete";
+
+/// Message sent to keep an agent working toward its goal without a human
+/// re-prompting after each turn.
+const CONTINUE_GOAL_PROMPT: &str = "Continue working toward the goal.";
 
 /// Build the first-prompt preamble that hands a new agent process the
 /// conversation so far.
@@ -222,6 +239,11 @@ impl AgentManager {
                     summary.status = AgentStatus::Idle;
                 }
                 summary.pending_approvals = 0;
+                // A goal's turn-continuation loop is an in-memory Tokio task,
+                // not something a restart can resume -- leaving a loaded
+                // goal in place would show it as active forever with no
+                // further progress.
+                summary.goal = None;
                 let needs_replay = summary.sessions.iter().map(|session| session.id.clone()).collect();
                 for session in &mut summary.sessions {
                     session.acp_session_id = None;
@@ -233,6 +255,7 @@ impl AgentManager {
                     active_turns: 0,
                     tool_calls: HashMap::new(),
                     needs_replay,
+                    goal_complete_signal: false,
                 }
             })
             .collect();
@@ -459,6 +482,7 @@ impl AgentManager {
             model_profile_id: request.model_profile_id,
             model_label,
             last_error: None,
+            goal: None,
         };
         self.finish_creation(summary, None).await
     }
@@ -522,6 +546,7 @@ impl AgentManager {
                 active_turns: 0,
                 tool_calls: HashMap::new(),
                 needs_replay: needs_replay.unwrap_or_default(),
+                goal_complete_signal: false,
             });
         }
         self.hub.publish(Event::AgentAdded { agent: summary });
@@ -548,6 +573,8 @@ impl AgentManager {
                 if !matches!(entry.summary.status, AgentStatus::Archived) {
                     entry.summary.status = AgentStatus::Error;
                     entry.summary.last_error = Some(message.to_owned());
+                    // An errored turn cannot be trusted to auto-continue.
+                    entry.summary.goal = None;
                 }
             }
         }
@@ -747,6 +774,53 @@ impl AgentManager {
                         )
                         .await;
                     manager.publish_agent(&agent_id).await;
+
+                    // Goal auto-continuation: decide once, inside the same
+                    // lock as the goal_complete_signal reset, whether this
+                    // agent should keep working toward its goal on its own.
+                    let goal_transition = {
+                        let mut agents = manager.agents.lock().await;
+                        agents
+                            .iter_mut()
+                            .find(|entry| entry.summary.id == agent_id)
+                            .and_then(|entry| {
+                                let goal_complete = std::mem::replace(&mut entry.goal_complete_signal, false);
+                                entry.summary.goal.as_ref()?;
+                                let exhausted = entry
+                                    .summary
+                                    .goal
+                                    .as_ref()
+                                    .is_some_and(|goal| goal.turns_used + 1 >= goal.max_turns);
+                                let should_stop = !matches!(stop_reason, StopReason::EndTurn)
+                                    || goal_complete
+                                    || matches!(
+                                        entry.summary.status,
+                                        AgentStatus::Error | AgentStatus::WaitingApproval
+                                    )
+                                    || exhausted;
+                                if should_stop {
+                                    entry.summary.goal = None;
+                                    Some(false)
+                                } else {
+                                    if let Some(goal) = entry.summary.goal.as_mut() {
+                                        goal.turns_used += 1;
+                                    }
+                                    Some(true)
+                                }
+                            })
+                    };
+                    if let Some(keep_going) = goal_transition {
+                        manager.publish_agent(&agent_id).await;
+                        let _ = manager.persist_roster().await;
+                        if keep_going {
+                            let continuation = Arc::clone(&manager);
+                            tokio::spawn(async move {
+                                let _ = continuation
+                                    .prompt_boxed(agent_id.clone(), session_id.clone(), CONTINUE_GOAL_PROMPT.to_owned())
+                                    .await;
+                            });
+                        }
+                    }
                 }
                 Err(err) => {
                     let message = err.to_string();
@@ -770,6 +844,20 @@ impl AgentManager {
             }
         });
         Ok(())
+    }
+
+    /// `prompt`, boxed so a goal's continuation can `.await` it from inside
+    /// `prompt`'s own spawned task. Calling `prompt` there directly makes
+    /// its `async fn` self-referential (an unbounded `impl Future` embedding
+    /// another copy of itself), which rustc rejects as not `Send`; going
+    /// through a boxed, type-erased future breaks that cycle.
+    fn prompt_boxed(
+        self: Arc<Self>,
+        agent_id: String,
+        session_id: String,
+        text: String,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), ManagerError>> + Send>> {
+        Box::pin(async move { self.prompt(&agent_id, &session_id, text).await })
     }
 
     /// Persist a transcript item and publish its event.
@@ -806,11 +894,18 @@ impl AgentManager {
                 option_id: None,
             });
         }
-        if !cancelled.is_empty() {
+        {
             let mut agents = self.agents.lock().await;
             if let Some(entry) = agents.iter_mut().find(|entry| entry.summary.id == agent_id) {
-                entry.summary.pending_approvals = 0;
-                entry.recompute_status();
+                if !cancelled.is_empty() {
+                    entry.summary.pending_approvals = 0;
+                    entry.recompute_status();
+                }
+                // Stop any goal auto-continuation. A turn already in flight
+                // when this runs still completes and may fire one more
+                // continuation before that turn's own completion check
+                // observes the goal is gone; a human can cancel again.
+                entry.summary.goal = None;
             }
         }
         if let Some(client) = client {
@@ -920,6 +1015,7 @@ impl AgentManager {
             model_profile_id: parent_summary.model_profile_id.clone(),
             model_label: parent_summary.model_label.clone(),
             last_error: None,
+            goal: None,
         };
         let mut needs_replay = HashSet::new();
         needs_replay.insert("main".to_owned());
@@ -1043,6 +1139,68 @@ impl AgentManager {
                 .find(|entry| entry.summary.id == agent_id)
                 .ok_or(ManagerError::AgentNotFound)?;
             entry.summary.approval_mode = mode;
+        }
+        self.publish_agent(agent_id).await;
+        self.persist_roster().await?;
+        self.agent(agent_id).await
+    }
+
+    /// Set an autonomous goal and fire its first turn on the main session.
+    /// The goal is stored before that first prompt goes out (and rolled back
+    /// if sending it fails) so the turn-completion check in `prompt()` can
+    /// never observe a completed turn with no goal in place yet to continue.
+    pub async fn set_goal(
+        self: &Arc<Self>,
+        agent_id: &str,
+        goal: String,
+        max_turns: u32,
+    ) -> Result<AgentSummary, ManagerError> {
+        let goal_text = goal.trim().to_owned();
+        if goal_text.is_empty() {
+            return Err(ManagerError::Invalid("goal must not be empty".to_owned()));
+        }
+        if max_turns == 0 {
+            return Err(ManagerError::Invalid("max turns must be at least 1".to_owned()));
+        }
+        {
+            let mut agents = self.agents.lock().await;
+            let entry = agents
+                .iter_mut()
+                .find(|entry| entry.summary.id == agent_id)
+                .ok_or(ManagerError::AgentNotFound)?;
+            entry.summary.goal = Some(GoalConfig {
+                goal: goal_text.clone(),
+                max_turns,
+                turns_used: 0,
+            });
+        }
+        self.publish_agent(agent_id).await;
+        self.persist_roster().await?;
+        let prompt_text = format!(
+            "New autonomous goal: {goal_text}\n\nWork toward it across as many turns as needed, without waiting \
+             for further input after each one. Call the mark_goal_complete tool with a short summary once it is \
+             fully met. If you get blocked on something only a human can resolve, stop and explain what you need."
+        );
+        if let Err(err) = self.prompt(agent_id, "main", prompt_text).await {
+            let mut agents = self.agents.lock().await;
+            if let Some(entry) = agents.iter_mut().find(|entry| entry.summary.id == agent_id) {
+                entry.summary.goal = None;
+            }
+            return Err(err);
+        }
+        self.agent(agent_id).await
+    }
+
+    /// Stop an agent's goal auto-continuation without cancelling any turn
+    /// already in flight (unlike [`Self::cancel`]).
+    pub async fn clear_goal(&self, agent_id: &str) -> Result<AgentSummary, ManagerError> {
+        {
+            let mut agents = self.agents.lock().await;
+            let entry = agents
+                .iter_mut()
+                .find(|entry| entry.summary.id == agent_id)
+                .ok_or(ManagerError::AgentNotFound)?;
+            entry.summary.goal = None;
         }
         self.publish_agent(agent_id).await;
         self.persist_roster().await?;
@@ -1302,6 +1460,9 @@ impl AgentManager {
             if let Some(entry) = agents.iter_mut().find(|entry| entry.summary.id == agent_id) {
                 let key = format!("{session_id}/{}", view.tool_call_id);
                 entry.tool_calls.insert(key, view.clone());
+                if view.title == MARK_GOAL_COMPLETE_TOOL {
+                    entry.goal_complete_signal = true;
+                }
             }
         }
         self.record(

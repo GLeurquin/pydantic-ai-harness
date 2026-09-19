@@ -97,6 +97,19 @@ def _compaction() -> FallbackCompaction[None]:
     )
 
 
+def mark_goal_complete(summary: str) -> str:
+    """Call this when, and only when, you were given an autonomous goal to work toward across multiple turns and it is now fully met.
+
+    clai2-web's backend watches for this call to stop auto-continuing the
+    conversation; it has no effect otherwise, so ignore it in an ordinary
+    chat where no goal was given.
+
+    Args:
+        summary: A short summary of what was done to meet the goal.
+    """
+    return f'Goal marked complete: {summary}'
+
+
 def build_agent() -> Agent[None, str]:
     """Build a coding agent from harness capabilities, with the model chosen by `CLAI_MODEL`."""
     workspace = Path.cwd()
@@ -107,6 +120,7 @@ def build_agent() -> Agent[None, str]:
             RepoContext(workspace_dir=workspace),
             _compaction(),
         ],
+        tools=[mark_goal_complete],
     )
 
 

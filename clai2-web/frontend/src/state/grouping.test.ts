@@ -18,6 +18,7 @@ function agent(id: string, name: string, status: AgentStatus, projectId = 'proje
     modelProfileId: null,
     modelLabel: null,
     lastError: null,
+    goal: null,
   };
 }
 

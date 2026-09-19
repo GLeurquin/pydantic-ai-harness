@@ -87,6 +87,13 @@ struct RenameAgentBody {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct SetGoalBody {
+    goal: String,
+    max_turns: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ResolveApprovalBody {
     option_id: String,
 }
@@ -216,6 +223,23 @@ async fn rename_agent(
     Ok(Json(json!(manager.rename_agent(&agent_id, body.name).await?)))
 }
 
+async fn set_goal(
+    State(manager): State<AppState>,
+    Path(agent_id): Path<String>,
+    Json(body): Json<SetGoalBody>,
+) -> Result<Json<serde_json::Value>, ManagerError> {
+    Ok(Json(json!(
+        manager.set_goal(&agent_id, body.goal, body.max_turns).await?
+    )))
+}
+
+async fn clear_goal(
+    State(manager): State<AppState>,
+    Path(agent_id): Path<String>,
+) -> Result<Json<serde_json::Value>, ManagerError> {
+    Ok(Json(json!(manager.clear_goal(&agent_id).await?)))
+}
+
 async fn agent_approvals(
     State(manager): State<AppState>,
     Path(agent_id): Path<String>,
@@ -341,6 +365,7 @@ pub fn build_router(manager: AppState) -> Router {
         )
         .route("/api/agents/{agent_id}/approval-mode", patch(set_approval_mode))
         .route("/api/agents/{agent_id}/name", patch(rename_agent))
+        .route("/api/agents/{agent_id}/goal", post(set_goal).delete(clear_goal))
         .route("/api/agents/{agent_id}/approvals", get(agent_approvals))
         .route("/api/agents/{agent_id}/diff", get(diff))
         .route("/api/agents/{agent_id}/model", patch(set_agent_model))

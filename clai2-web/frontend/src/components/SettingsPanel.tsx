@@ -10,6 +10,8 @@ export interface SettingsPanelProps {
   onManageModels: () => void;
   onArchive: (removeWorktree: boolean) => void;
   onRename: (name: string) => void;
+  onSetGoal: () => void;
+  onClearGoal: () => void;
 }
 
 export const MODE_LABELS: Record<ApprovalMode, string> = {
@@ -52,6 +54,8 @@ export function SettingsPanel({
   onManageModels,
   onArchive,
   onRename,
+  onSetGoal,
+  onClearGoal,
 }: SettingsPanelProps) {
   const archived = agent.status === 'archived';
   const busy = agent.status === 'working' || agent.status === 'waiting_approval';
@@ -104,6 +108,32 @@ export function SettingsPanel({
           ) : null}
         </div>
         <p className="hint">Applies to permission requests arriving after the change.</p>
+      </section>
+
+      <section>
+        <h3>Goal</h3>
+        {agent.goal ? (
+          <>
+            <p>{agent.goal.goal}</p>
+            <p className="hint">
+              Turn {agent.goal.turnsUsed} of {agent.goal.maxTurns}
+            </p>
+            <div className="settings-row">
+              <button className="danger" onClick={onClearGoal}>
+                Stop
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="hint">Let the agent keep working on its own across multiple turns until it's done.</p>
+            <div className="settings-row">
+              <button onClick={onSetGoal} disabled={archived}>
+                Set a goal
+              </button>
+            </div>
+          </>
+        )}
       </section>
 
       <section>
