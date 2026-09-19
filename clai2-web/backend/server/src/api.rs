@@ -336,7 +336,14 @@ async fn fetch_github_issue(
     State(manager): State<AppState>,
     Json(body): Json<FetchIssueBody>,
 ) -> Result<Json<serde_json::Value>, ManagerError> {
-    Ok(Json(json!(manager.fetch_github_issue(&body.issue_ref).await?)))
+    let issue = manager.fetch_github_issue(&body.issue_ref).await?;
+    let prompt = crate::github::issue_prompt(&issue);
+    Ok(Json(json!({
+        "title": issue.title,
+        "body": issue.body,
+        "url": issue.url,
+        "prompt": prompt,
+    })))
 }
 
 async fn set_agent_model(
