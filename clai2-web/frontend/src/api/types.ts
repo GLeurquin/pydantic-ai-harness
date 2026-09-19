@@ -61,6 +61,21 @@ export interface GoalConfig {
   turnsUsed: number;
 }
 
+/** Whether a GitHub personal access token is configured; the token itself
+ * never round-trips to the client. */
+export interface RedactedGithubSettings {
+  hasToken: boolean;
+}
+
+/** A GitHub issue fetched for the "import from issue" preview, plus the
+ * ready-made prompt text an agent's first turn would start with. */
+export interface FetchedIssue {
+  title: string;
+  body: string;
+  url: string;
+  prompt: string;
+}
+
 export type Provider =
   | 'anthropic'
   | 'openai'
@@ -197,6 +212,7 @@ export interface CreateAgentRequest {
   baseBranch?: string;
   approvalMode: ApprovalMode;
   modelProfileId?: string;
+  initialPrompt?: string;
 }
 
 export interface CreateProjectRequest {

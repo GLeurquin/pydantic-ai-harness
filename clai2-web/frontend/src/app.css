@@ -743,6 +743,31 @@
   gap: 8px;
 }
 
+.github-import {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.issue-preview {
+  background: var(--bg-sunken);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.issue-preview p {
+  margin: 0;
+  color: var(--text-muted);
+}
+
 .env-editor legend {
   font-size: 12px;
   color: var(--text-muted);

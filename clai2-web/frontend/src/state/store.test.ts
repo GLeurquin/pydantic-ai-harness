@@ -56,6 +56,7 @@ function resetStore(partial: Partial<AppState> = {}): void {
     agents: [],
     approvals: [],
     models: [],
+    githubSettings: { hasToken: false },
     projects: [],
     selectedProjectId: 'all',
     maxAgents: 100,
@@ -245,6 +246,12 @@ describe('useAppStore actions', () => {
     resetStore({ models: [profile('m1')] });
     state().setModels([profile('m2', 'GPT'), profile('m3', 'Gemini')]);
     expect(state().models).toEqual([profile('m2', 'GPT'), profile('m3', 'Gemini')]);
+  });
+
+  it('setGithubSettings replaces the GitHub settings', () => {
+    resetStore({ githubSettings: { hasToken: false } });
+    state().setGithubSettings({ hasToken: true });
+    expect(state().githubSettings).toEqual({ hasToken: true });
   });
 
   it('applySnapshot keeps a selection that still exists', () => {

@@ -32,6 +32,10 @@ const apiMock = vi.hoisted(() => ({
   setAgentModel: vi.fn(),
   setGoal: vi.fn(),
   clearGoal: vi.fn(),
+  githubSettings: vi.fn(),
+  setGithubToken: vi.fn(),
+  clearGithubToken: vi.fn(),
+  fetchGithubIssue: vi.fn(),
 }));
 
 const ws = vi.hoisted(() => ({
@@ -135,6 +139,7 @@ beforeEach(() => {
     agents: [],
     approvals: [],
     models: [],
+    githubSettings: { hasToken: false },
     projects: [],
     selectedProjectId: 'all',
     maxAgents: 100,
@@ -153,6 +158,7 @@ beforeEach(() => {
   apiMock.setGoal.mockResolvedValue(makeAgent());
   apiMock.clearGoal.mockResolvedValue({ ok: true });
   apiMock.listModels.mockResolvedValue([]);
+  apiMock.githubSettings.mockResolvedValue({ hasToken: false });
 });
 
 describe('App', () => {
@@ -508,6 +514,64 @@ describe('App', () => {
       useWorktree: true,
       approvalMode: 'always_ask',
       modelProfileId: 'm2',
+    });
+  });
+
+  it('loads GitHub settings on mount and stores them', async () => {
+    apiMock.githubSettings.mockResolvedValue({ hasToken: true });
+    render(<App />);
+    await waitFor(() => expect(useAppStore.getState().githubSettings).toEqual({ hasToken: true }));
+    expect(apiMock.githubSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores a failed GitHub settings fetch', async () => {
+    apiMock.githubSettings.mockRejectedValue(new Error('offline'));
+    render(<App />);
+    await snapshot([makeAgent()]);
+    expect(useAppStore.getState().githubSettings).toEqual({ hasToken: false });
+  });
+
+  it('saves a GitHub token from the new-agent dialog and stores the updated settings', async () => {
+    const user = userEvent.setup();
+    apiMock.githubSettings.mockResolvedValue({ hasToken: false });
+    apiMock.setGithubToken.mockResolvedValue({ hasToken: true });
+    render(<App />);
+    await snapshot([makeAgent()]);
+    await waitFor(() => expect(useAppStore.getState().githubSettings).toEqual({ hasToken: false }));
+    await user.click(screen.getByRole('button', { name: 'New' }));
+    await user.click(screen.getByLabelText('Import from a GitHub issue'));
+    await user.type(screen.getByLabelText('GitHub personal access token'), 'ghp_secret');
+    await user.click(screen.getByRole('button', { name: 'Save token' }));
+    expect(apiMock.setGithubToken).toHaveBeenCalledWith('ghp_secret');
+    await waitFor(() => expect(useAppStore.getState().githubSettings).toEqual({ hasToken: true }));
+  });
+
+  it('creates an agent with an initial prompt fetched from a GitHub issue', async () => {
+    const user = userEvent.setup();
+    apiMock.githubSettings.mockResolvedValue({ hasToken: true });
+    apiMock.fetchGithubIssue.mockResolvedValue({
+      title: 'Fix the flaky test',
+      body: 'It fails on CI about once a week.',
+      url: 'https://github.com/o/r/issues/7',
+      prompt: 'Work on this GitHub issue:\n\n# Fix the flaky test\n\n...',
+    });
+    apiMock.createAgent.mockResolvedValue(makeAgent({ id: 'b1', name: 'Fix the flaky test' }));
+    render(<App />);
+    await snapshot([makeAgent()]);
+    await waitFor(() => expect(useAppStore.getState().githubSettings).toEqual({ hasToken: true }));
+    await user.click(screen.getByRole('button', { name: 'New' }));
+    await user.click(screen.getByLabelText('Import from a GitHub issue'));
+    await user.type(screen.getByLabelText('Issue'), 'o/r#7');
+    await user.click(screen.getByRole('button', { name: 'Fetch issue' }));
+    await screen.findByText('Fix the flaky test');
+    await user.click(screen.getByRole('button', { name: 'Start agent' }));
+    expect(apiMock.fetchGithubIssue).toHaveBeenCalledWith('o/r#7');
+    expect(apiMock.createAgent).toHaveBeenCalledWith({
+      name: 'Fix the flaky test',
+      projectId: 'project-1',
+      useWorktree: true,
+      approvalMode: 'always_ask',
+      initialPrompt: 'Work on this GitHub issue:\n\n# Fix the flaky test\n\n...',
     });
   });
 

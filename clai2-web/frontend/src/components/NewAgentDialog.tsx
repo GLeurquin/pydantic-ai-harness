@@ -1,6 +1,13 @@
 import { useState } from 'react';
 
-import type { ApprovalMode, CreateAgentRequest, ProjectSummary, RedactedProfile } from '../api/types';
+import type {
+  ApprovalMode,
+  CreateAgentRequest,
+  FetchedIssue,
+  ProjectSummary,
+  RedactedGithubSettings,
+  RedactedProfile,
+} from '../api/types';
 import { errorMessage } from '../errors';
 import { MODE_LABELS } from './SettingsPanel';
 
@@ -9,8 +16,11 @@ export interface NewAgentDialogProps {
   projects: ProjectSummary[];
   /** The sidebar's active project filter, if any, to preselect. */
   defaultProjectId?: string;
+  githubSettings: RedactedGithubSettings;
   onCreate: (request: CreateAgentRequest) => Promise<void>;
   onCreateProject: (name: string, path: string) => Promise<ProjectSummary>;
+  onFetchGithubIssue: (issueRef: string) => Promise<FetchedIssue>;
+  onSetGithubToken: (token: string) => Promise<void>;
   onClose: () => void;
   onManageModels: () => void;
 }
@@ -19,8 +29,11 @@ export function NewAgentDialog({
   models,
   projects,
   defaultProjectId,
+  githubSettings,
   onCreate,
   onCreateProject,
+  onFetchGithubIssue,
+  onSetGithubToken,
   onClose,
   onManageModels,
 }: NewAgentDialogProps) {
@@ -37,6 +50,14 @@ export function NewAgentDialog({
   const [baseBranch, setBaseBranch] = useState('');
   const [approvalMode, setApprovalMode] = useState<ApprovalMode>('always_ask');
   const [modelProfileId, setModelProfileId] = useState('');
+  const [fromGithub, setFromGithub] = useState(false);
+  const [issueRef, setIssueRef] = useState('');
+  const [issue, setIssue] = useState<FetchedIssue | null>(null);
+  const [issueBusy, setIssueBusy] = useState(false);
+  const [issueError, setIssueError] = useState<string | null>(null);
+  const [tokenDraft, setTokenDraft] = useState('');
+  const [tokenBusy, setTokenBusy] = useState(false);
+  const [tokenError, setTokenError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -61,6 +82,35 @@ export function NewAgentDialog({
     }
   };
 
+  const saveToken = async () => {
+    setTokenBusy(true);
+    setTokenError(null);
+    try {
+      await onSetGithubToken(tokenDraft.trim());
+      setTokenDraft('');
+    } catch (failure) {
+      setTokenError(errorMessage(failure));
+    } finally {
+      setTokenBusy(false);
+    }
+  };
+
+  const fetchIssue = async () => {
+    setIssueBusy(true);
+    setIssueError(null);
+    try {
+      const fetched = await onFetchGithubIssue(issueRef.trim());
+      setIssue(fetched);
+      if (!name.trim()) {
+        setName(fetched.title.slice(0, 80));
+      }
+    } catch (failure) {
+      setIssueError(errorMessage(failure));
+    } finally {
+      setIssueBusy(false);
+    }
+  };
+
   const submit = async () => {
     if (!name.trim()) {
       setError('Give the agent a name.');
@@ -68,6 +118,10 @@ export function NewAgentDialog({
     }
     if (!projectId) {
       setError('Choose or add a project.');
+      return;
+    }
+    if (fromGithub && !issue) {
+      setError('Fetch the issue first.');
       return;
     }
     setBusy(true);
@@ -79,6 +133,9 @@ export function NewAgentDialog({
       }
       if (modelProfileId) {
         request.modelProfileId = modelProfileId;
+      }
+      if (fromGithub && issue) {
+        request.initialPrompt = issue.prompt;
       }
       await onCreate(request);
       onClose();
@@ -138,6 +195,71 @@ export function NewAgentDialog({
         )}
         {addingProject ? null : (
           <>
+            <div className="dialog-row">
+              <input
+                id="from-github"
+                type="checkbox"
+                checked={fromGithub}
+                onChange={(change) => {
+                  setFromGithub(change.target.checked);
+                  setIssue(null);
+                  setIssueError(null);
+                }}
+              />
+              <label htmlFor="from-github">Import from a GitHub issue</label>
+            </div>
+            {fromGithub ? (
+              <div className="github-import">
+                {githubSettings.hasToken ? (
+                  <>
+                    <label>
+                      Issue
+                      <input
+                        value={issueRef}
+                        onChange={(change) => {
+                          setIssueRef(change.target.value);
+                          setIssue(null);
+                        }}
+                        placeholder="owner/repo#123 or a github.com issue URL"
+                      />
+                    </label>
+                    {issueError ? <div className="form-error">{issueError}</div> : null}
+                    {issue ? (
+                      <div className="issue-preview">
+                        <strong>{issue.title}</strong>
+                        <p>{issue.body.length > 280 ? `${issue.body.slice(0, 280)}...` : issue.body}</p>
+                        <a href={issue.url} target="_blank" rel="noreferrer">
+                          {issue.url}
+                        </a>
+                      </div>
+                    ) : null}
+                    <div className="dialog-row">
+                      <button onClick={() => void fetchIssue()} disabled={issueBusy || !issueRef.trim()}>
+                        {issueBusy ? 'Fetching...' : issue ? 'Fetch again' : 'Fetch issue'}
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <label>
+                      GitHub personal access token
+                      <input
+                        type="password"
+                        value={tokenDraft}
+                        onChange={(change) => setTokenDraft(change.target.value)}
+                        placeholder="ghp_..."
+                      />
+                    </label>
+                    {tokenError ? <div className="form-error">{tokenError}</div> : null}
+                    <div className="dialog-row">
+                      <button onClick={() => void saveToken()} disabled={tokenBusy || !tokenDraft.trim()}>
+                        {tokenBusy ? 'Saving...' : 'Save token'}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            ) : null}
             <div className="dialog-row">
               <input
                 id="use-worktree"

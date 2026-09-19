@@ -6,6 +6,7 @@ import type {
   AgentSummary,
   ApprovalView,
   ProjectSummary,
+  RedactedGithubSettings,
   RedactedProfile,
   ServerEvent,
   TranscriptItem,
@@ -30,6 +31,7 @@ export interface AppState {
   agents: AgentSummary[];
   approvals: ApprovalView[];
   models: RedactedProfile[];
+  githubSettings: RedactedGithubSettings;
   projects: ProjectSummary[];
   selectedProjectId: ProjectFilter;
   maxAgents: number;
@@ -42,6 +44,7 @@ export interface AppState {
   applySnapshot: (snapshot: Snapshot) => void;
   applyEvent: (event: ServerEvent) => void;
   setModels: (models: RedactedProfile[]) => void;
+  setGithubSettings: (settings: RedactedGithubSettings) => void;
   selectAgent: (agentId: string) => void;
   selectProjectFilter: (projectId: ProjectFilter) => void;
   setView: (view: MainView) => void;
@@ -161,6 +164,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   agents: [],
   approvals: [],
   models: [],
+  githubSettings: { hasToken: false },
   projects: [],
   selectedProjectId: 'all',
   maxAgents: 100,
@@ -188,6 +192,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
   setModels: (models) => set({ models }),
+  setGithubSettings: (githubSettings) => set({ githubSettings }),
   selectAgent: (agentId) => set({ selectedAgentId: agentId, view: { kind: 'session', sessionId: 'main' } }),
   selectProjectFilter: (projectId) => set({ selectedProjectId: projectId }),
   setView: (view) => set({ view }),

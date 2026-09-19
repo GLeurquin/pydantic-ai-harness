@@ -36,6 +36,7 @@ export function App() {
       onConnected: useAppStore.getState().setConnected,
     });
     void api.listModels().then(useAppStore.getState().setModels, () => undefined);
+    void api.githubSettings().then(useAppStore.getState().setGithubSettings, () => undefined);
     return connection.close;
   }, []);
 
@@ -81,6 +82,11 @@ export function App() {
     const project = await api.createProject({ name, path });
     useAppStore.getState().applyEvent({ type: 'projectAdded', project });
     return project;
+  };
+
+  const setGithubToken = async (token: string) => {
+    const settings = await api.setGithubToken(token);
+    useAppStore.getState().setGithubSettings(settings);
   };
 
   return (
@@ -141,8 +147,11 @@ export function App() {
           models={store.models}
           projects={store.projects}
           {...(store.selectedProjectId !== 'all' ? { defaultProjectId: store.selectedProjectId } : {})}
+          githubSettings={store.githubSettings}
           onCreate={createAgent}
           onCreateProject={createProject}
+          onFetchGithubIssue={api.fetchGithubIssue}
+          onSetGithubToken={setGithubToken}
           onClose={() => setDialog('none')}
           onManageModels={() => setDialog('models')}
         />

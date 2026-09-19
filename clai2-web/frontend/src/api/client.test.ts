@@ -267,6 +267,42 @@ describe('api', () => {
       method: 'DELETE',
     });
   });
+
+  it('githubSettings GETs /api/github', async () => {
+    const payload = { hasToken: false };
+    fetchMock.mockResolvedValue(okResponse(payload));
+    await expect(api.githubSettings()).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith('/api/github', JSON_HEADERS);
+  });
+
+  it('setGithubToken PATCHes the token', async () => {
+    const payload = { hasToken: true };
+    fetchMock.mockResolvedValue(okResponse(payload));
+    await expect(api.setGithubToken('ghp_secret')).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith('/api/github', {
+      ...JSON_HEADERS,
+      method: 'PATCH',
+      body: JSON.stringify({ token: 'ghp_secret' }),
+    });
+  });
+
+  it('clearGithubToken DELETEs the token', async () => {
+    const payload = { hasToken: false };
+    fetchMock.mockResolvedValue(okResponse(payload));
+    await expect(api.clearGithubToken()).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith('/api/github', { ...JSON_HEADERS, method: 'DELETE' });
+  });
+
+  it('fetchGithubIssue POSTs the issue reference', async () => {
+    const payload = { title: 't', body: 'b', url: 'u', prompt: 'p' };
+    fetchMock.mockResolvedValue(okResponse(payload));
+    await expect(api.fetchGithubIssue('o/r#42')).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith('/api/github/issue', {
+      ...JSON_HEADERS,
+      method: 'POST',
+      body: JSON.stringify({ issueRef: 'o/r#42' }),
+    });
+  });
 });
 
 describe('ApiError', () => {

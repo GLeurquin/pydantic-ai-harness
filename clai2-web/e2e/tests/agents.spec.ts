@@ -239,3 +239,31 @@ test('registering a project lets an agent run in another repository', async ({ p
   await expect(page.getByRole('button', { name: new RegExp(agentName) })).toBeVisible();
   await page.getByLabel('Filter by project').selectOption({ label: 'All projects' });
 });
+
+test('saving a GitHub token reveals the issue import field', async ({ page, request }) => {
+  // A token is server-side, persistent state outside this test's page/context;
+  // start from a known-clean slate regardless of what ran before it.
+  await request.delete('/api/github');
+  await page.goto('/');
+  await expect(page.getByText('connected')).toBeVisible();
+
+  await page.getByRole('button', { name: 'New', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'New agent' });
+  await dialog.getByLabel('Import from a GitHub issue').check();
+  await expect(dialog.getByLabel('GitHub personal access token')).toBeVisible();
+  await expect(dialog.getByLabel('Issue', { exact: true })).toHaveCount(0);
+
+  try {
+    await dialog.getByLabel('GitHub personal access token').fill('ghp_e2e_test_token');
+    await dialog.getByRole('button', { name: 'Save token' }).click();
+    await expect(dialog.getByLabel('Issue', { exact: true })).toBeVisible();
+    await expect(dialog.getByLabel('GitHub personal access token')).toHaveCount(0);
+
+    await dialog.getByRole('button', { name: 'Cancel' }).click();
+    await expect(dialog).not.toBeVisible();
+  } finally {
+    // The token is stored server-side and would otherwise leak into every
+    // test that runs afterward in this shared-backend suite.
+    await request.delete('/api/github');
+  }
+});

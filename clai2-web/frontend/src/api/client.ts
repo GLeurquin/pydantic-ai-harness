@@ -5,10 +5,12 @@ import type {
   ApprovalView,
   CreateAgentRequest,
   CreateProjectRequest,
+  FetchedIssue,
   ForkAgentRequest,
   ApprovalMode,
   ProfileEdit,
   ProjectSummary,
+  RedactedGithubSettings,
   RedactedProfile,
   TranscriptItem,
   WorktreeDiff,
@@ -127,4 +129,14 @@ export const api = {
 
   clearGoal: (agentId: string) =>
     request<AgentSummary>(`/api/agents/${agentId}/goal`, { method: 'DELETE' }),
+
+  githubSettings: () => request<RedactedGithubSettings>('/api/github'),
+
+  setGithubToken: (token: string) =>
+    request<RedactedGithubSettings>('/api/github', { method: 'PATCH', body: JSON.stringify({ token }) }),
+
+  clearGithubToken: () => request<RedactedGithubSettings>('/api/github', { method: 'DELETE' }),
+
+  fetchGithubIssue: (issueRef: string) =>
+    request<FetchedIssue>('/api/github/issue', { method: 'POST', body: JSON.stringify({ issueRef }) }),
 };
