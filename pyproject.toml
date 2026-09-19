@@ -187,7 +187,7 @@ packages = ['pydantic_ai_harness']
 [tool.ruff]
 line-length = 120
 target-version = 'py310'
-exclude = ['template']
+exclude = ['template', 'upstream_proposals']
 
 [tool.ruff.lint]
 extend-select = ['Q', 'RUF100', 'C90', 'UP', 'I', 'D', 'TID251', 'PLC0415']
@@ -222,7 +222,7 @@ quote-style = 'single'
 # Shared library stubs need CLAI's Python version; Harness source keeps its own target below.
 pythonVersion = '3.11'
 typeCheckingMode = 'strict'
-exclude = ['template', '**/.venv*', 'local-notes', 'mutants', '.agents', '.claude']
+exclude = ['template', '**/.venv*', 'local-notes', 'mutants', '.agents', '.claude', 'upstream_proposals']
 # `reportUnusedFunction` is disabled for tests because fixtures and `@agent.tool_plain`
 # helpers are registered via decorators and never referenced by name (matches pydantic-ai).
 executionEnvironments = [
