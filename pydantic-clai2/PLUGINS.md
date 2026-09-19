@@ -88,7 +88,8 @@ Plugins are trusted code running as you. Only install what you trust.
 
 The coding tools are a plugin too, and so are asking you multiple-choice
 questions mid-run, reading the repository's instruction file, and keeping the
-conversation inside the context window. These five plugins are marked
+conversation inside the context window. Native desktop notifications are a plugin
+too. These six plugins are marked
 `(built-in)` and enabled unless you say otherwise:
 
 | Id | Backed by | Settings | Does |
@@ -98,6 +99,7 @@ conversation inside the context window. These five plugins are marked
 | `repo_context` | `pydantic_clai2.repo_context` | `{}` | reads `CLAUDE.md` or `AGENTS.md` from the launch directory into the instructions |
 | `persistence` | `pydantic_clai2.sessions` | `{}` | Harness step checkpoints for interrupted session recovery |
 | `compaction` | `pydantic_clai2.compaction` | `{}` | automatic summarisation with a truncation fallback, `/compact`, and the context warning |
+| `notifications` | `pydantic_clai2.notifications` | `{}` | native desktop alerts for completed or failed turns and questions awaiting an answer |
 
 ### Optional harness capabilities
 
@@ -169,6 +171,43 @@ changes its settings (`strategy`, `threshold`, `protected_tokens`,
 ```text
 /plugins add compaction pydantic_clai2.compaction '{"threshold": 0.7, "context_window": 200000}'
 ```
+
+### `notifications`: native desktop alerts
+
+```text
+/plugins disable notifications
+/plugins enable notifications
+/plugins remove notifications
+```
+
+`notifications` is enabled by default and has no settings. Enable and disable
+choices persist; removing it restores the enabled default. It observes `turn_end`
+for completed and failed turns, and `AskUserRequestedEvent` before the answerer
+runs. Cancelled turns do not notify. Disabling notifications leaves `ask_user`
+available; replacing its answerer still notifies if it uses harness `AskUser`.
+No new lifecycle hooks are introduced.
+
+Notifications use the title `CLAI2` and fixed status text. Prompts, answers, tool
+arguments, paths, and error details are excluded to keep conversation content out
+of desktop banners and notification history. They are sent even when the terminal
+is focused, without requesting a sound.
+
+macOS uses `/usr/bin/osascript`; the sender may appear as Script Editor. Allow
+notifications for that sender in System Settings if needed. Focus mode and OS
+notification settings can hide them. Linux uses `/usr/bin/notify-send` when
+installed and requires a desktop notification service. Other platforms do nothing. Remote
+sessions notify the machine running CLAI, not your local client.
+
+Delivery awaits an async subprocess with a two-second timeout, no shell
+interpolation, and terminal input/output disconnected. Both utilities use
+absolute system paths rather than `PATH` lookup. The child receives only
+`DISPLAY`, `WAYLAND_DISPLAY`, `DBUS_SESSION_BUS_ADDRESS`, `XDG_RUNTIME_DIR`, and
+`XAUTHORITY` when set; provider credentials and dynamic-loader settings are not inherited. Missing utilities, nonzero
+exits, and timeouts are ignored rather than failing the turn or question. A stalled
+utility can delay the next prompt or question menu by up to two seconds. Timeout or
+cancellation kills and reaps the child. There are no background workers to survive
+unloading and no additional telemetry; core already traces the event hooks when
+instrumentation is enabled.
 
 ### `ask_user`: questions answered from the terminal
 

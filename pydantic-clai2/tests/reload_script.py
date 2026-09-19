@@ -61,6 +61,7 @@ async def main(root: Path, mode: str) -> None:
     declaration = PluginSettings(id='example', factory='reload_plugin')
     store.save_plugin(declaration)
     store.save_plugin(PluginSettings(id='disabled', factory='must_not_be_imported', enabled=False))
+    store.save_plugin(PluginSettings(id='notifications', factory='pydantic_clai2.notifications', enabled=False))
     sys.path.append(str(root))
     prompts = iter(
         [
