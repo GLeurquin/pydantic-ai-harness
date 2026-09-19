@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
+use crate::github::GithubSettings;
 use crate::model::{AgentSummary, ProjectSummary, TranscriptItem};
 use crate::models::ModelProfile;
 
@@ -127,6 +128,34 @@ impl Store {
         let path = self.models_path();
         let tmp = self.data_dir.join("models.json.tmp");
         let bytes = serde_json::to_vec_pretty(profiles).map_err(corrupt_err(&path))?;
+        tokio::fs::write(&tmp, bytes).await.map_err(io_err(&tmp))?;
+        restrict_permissions(&tmp).await?;
+        tokio::fs::rename(&tmp, &path).await.map_err(io_err(&path))?;
+        Ok(())
+    }
+
+    fn github_settings_path(&self) -> PathBuf {
+        self.data_dir.join("github.json")
+    }
+
+    pub async fn load_github_settings(&self) -> Result<GithubSettings, StoreError> {
+        let path = self.github_settings_path();
+        match tokio::fs::read(&path).await {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|source| StoreError::Corrupt { path, source }),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(GithubSettings::default()),
+            Err(source) => Err(StoreError::Io { path, source }),
+        }
+    }
+
+    /// Rewrite the GitHub settings atomically. The file holds a personal
+    /// access token, so it is created with owner-only permissions on Unix.
+    pub async fn save_github_settings(&self, settings: &GithubSettings) -> Result<(), StoreError> {
+        tokio::fs::create_dir_all(&self.data_dir)
+            .await
+            .map_err(io_err(&self.data_dir))?;
+        let path = self.github_settings_path();
+        let tmp = self.data_dir.join("github.json.tmp");
+        let bytes = serde_json::to_vec_pretty(settings).map_err(corrupt_err(&path))?;
         tokio::fs::write(&tmp, bytes).await.map_err(io_err(&tmp))?;
         restrict_permissions(&tmp).await?;
         tokio::fs::rename(&tmp, &path).await.map_err(io_err(&path))?;
@@ -461,6 +490,61 @@ mod tests {
         let store = Store::new(dir.path().to_owned());
         store.save_models(&[profile("m1")]).await.unwrap();
         let meta = std::fs::metadata(dir.path().join("models.json")).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+    }
+
+    #[tokio::test]
+    async fn github_settings_default_to_no_token_when_unset() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().to_owned());
+        assert_eq!(store.load_github_settings().await.unwrap(), GithubSettings::default());
+    }
+
+    #[tokio::test]
+    async fn github_settings_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().to_owned());
+        let settings = GithubSettings {
+            token: Some("ghp_secret".to_owned()),
+        };
+        store.save_github_settings(&settings).await.unwrap();
+        assert_eq!(store.load_github_settings().await.unwrap(), settings);
+    }
+
+    #[tokio::test]
+    async fn corrupt_github_settings_reports_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::write(dir.path().join("github.json"), b"{not json")
+            .await
+            .unwrap();
+        let store = Store::new(dir.path().to_owned());
+        assert!(matches!(
+            store.load_github_settings().await,
+            Err(StoreError::Corrupt { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn load_github_settings_reports_io_error_when_path_is_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::create_dir(dir.path().join("github.json")).await.unwrap();
+        let store = Store::new(dir.path().to_owned());
+        assert!(matches!(store.load_github_settings().await, Err(StoreError::Io { .. })));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn save_github_settings_writes_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().to_owned());
+        store
+            .save_github_settings(&GithubSettings {
+                token: Some("ghp_secret".to_owned()),
+            })
+            .await
+            .unwrap();
+        let meta = std::fs::metadata(dir.path().join("github.json")).unwrap();
         assert_eq!(meta.permissions().mode() & 0o777, 0o600);
     }
 

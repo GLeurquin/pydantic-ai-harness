@@ -30,7 +30,9 @@ impl IntoResponse for ManagerError {
             | ManagerError::ModelInUse
             | ManagerError::ProjectInUse
             | ManagerError::Busy => StatusCode::CONFLICT,
-            ManagerError::Archived | ManagerError::NoWorktree | ManagerError::Invalid(_) => StatusCode::BAD_REQUEST,
+            ManagerError::Archived | ManagerError::NoWorktree | ManagerError::Invalid(_) | ManagerError::Github(_) => {
+                StatusCode::BAD_REQUEST
+            }
             ManagerError::Git(_) | ManagerError::Store(_) | ManagerError::Spawn(_) | ManagerError::Rpc(_) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
@@ -51,6 +53,8 @@ struct CreateAgentBody {
     approval_mode: ApprovalMode,
     #[serde(default)]
     model_profile_id: Option<String>,
+    #[serde(default)]
+    initial_prompt: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -112,6 +116,17 @@ struct SetModelBody {
     model_profile_id: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct GithubTokenBody {
+    token: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FetchIssueBody {
+    issue_ref: String,
+}
+
 async fn health() -> Json<serde_json::Value> {
     Json(json!({"ok": true}))
 }
@@ -132,6 +147,7 @@ async fn create_agent(
             base_branch: body.base_branch,
             approval_mode: body.approval_mode,
             model_profile_id: body.model_profile_id,
+            initial_prompt: body.initial_prompt,
         })
         .await?;
     Ok(Json(json!(agent)))
@@ -301,6 +317,28 @@ async fn delete_model(
     Ok(Json(json!({"ok": true})))
 }
 
+async fn github_settings(State(manager): State<AppState>) -> Json<serde_json::Value> {
+    Json(json!(manager.github_settings().await))
+}
+
+async fn set_github_token(
+    State(manager): State<AppState>,
+    Json(body): Json<GithubTokenBody>,
+) -> Result<Json<serde_json::Value>, ManagerError> {
+    Ok(Json(json!(manager.set_github_token(body.token).await?)))
+}
+
+async fn clear_github_token(State(manager): State<AppState>) -> Result<Json<serde_json::Value>, ManagerError> {
+    Ok(Json(json!(manager.clear_github_token().await?)))
+}
+
+async fn fetch_github_issue(
+    State(manager): State<AppState>,
+    Json(body): Json<FetchIssueBody>,
+) -> Result<Json<serde_json::Value>, ManagerError> {
+    Ok(Json(json!(manager.fetch_github_issue(&body.issue_ref).await?)))
+}
+
 async fn set_agent_model(
     State(manager): State<AppState>,
     Path(agent_id): Path<String>,
@@ -373,6 +411,11 @@ pub fn build_router(manager: AppState) -> Router {
         .route("/api/approvals/{approval_id}", post(resolve_approval))
         .route("/api/models", get(list_models).post(create_model))
         .route("/api/models/{model_id}", patch(update_model).delete(delete_model))
+        .route(
+            "/api/github",
+            get(github_settings).patch(set_github_token).delete(clear_github_token),
+        )
+        .route("/api/github/issue", post(fetch_github_issue))
         .route("/api/projects", get(list_projects).post(create_project))
         .route("/api/projects/{project_id}", delete(delete_project))
         .route("/api/ws", get(ws_upgrade))

@@ -16,6 +16,7 @@ use crate::acp::transport::RpcError;
 use crate::acp::{AcpClient, AcpEvent, PermissionRequest, SessionUpdate};
 use crate::approvals::{decide, ApprovalLedger, ApprovalOutcome, PolicyDecision};
 use crate::events::{Event, EventHub};
+use crate::github::{FetchIssueError, FetchedIssue, GithubSettings, RedactedGithubSettings};
 use crate::model::{
     AgentStatus, AgentSummary, ApprovalMode, ApprovalView, GoalConfig, ProjectSummary, SessionSummary, StopReason,
     ToolCallView, TranscriptItem,
@@ -58,6 +59,8 @@ pub enum ManagerError {
     Spawn(#[from] SpawnError),
     #[error(transparent)]
     Rpc(#[from] RpcError),
+    #[error(transparent)]
+    Github(#[from] FetchIssueError),
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +83,9 @@ pub struct CreateAgent {
     pub base_branch: Option<String>,
     pub approval_mode: ApprovalMode,
     pub model_profile_id: Option<String>,
+    /// Sent as the agent's first prompt once it is running, e.g. a GitHub
+    /// issue's title and body. No prompt is sent when absent.
+    pub initial_prompt: Option<String>,
 }
 
 struct Runtime {
@@ -139,6 +145,8 @@ pub struct AgentManager {
     agents: Mutex<Vec<AgentEntry>>,
     models: Mutex<Vec<ModelProfile>>,
     projects: Mutex<Vec<ProjectSummary>>,
+    github: Mutex<GithubSettings>,
+    http: reqwest::Client,
     /// Serializes process spawns and ACP session opens, so two concurrent
     /// prompts cannot double-spawn an agent or double-open a session.
     spawn_lock: Mutex<()>,
@@ -222,6 +230,7 @@ impl AgentManager {
         }
         let persisted = store.load_roster().await?;
         let models = store.load_models().await?;
+        let github = store.load_github_settings().await?;
         // Roster files predating the project registry have no project_id
         // (defaults to empty on deserialize); backfill them to the bootstrap
         // default project rather than leaving them pointing nowhere.
@@ -278,6 +287,8 @@ impl AgentManager {
             agents: Mutex::new(agents),
             models: Mutex::new(models),
             projects: Mutex::new(projects),
+            github: Mutex::new(github),
+            http: reqwest::Client::new(),
             spawn_lock: Mutex::new(()),
         }))
     }
@@ -429,6 +440,7 @@ impl AgentManager {
         if name.is_empty() {
             return Err(ManagerError::Invalid("agent name must not be empty".to_owned()));
         }
+        let initial_prompt = request.initial_prompt.clone();
         let project = self.project(&request.project_id).await?;
         {
             let agents = self.agents.lock().await;
@@ -484,7 +496,14 @@ impl AgentManager {
             last_error: None,
             goal: None,
         };
-        self.finish_creation(summary, None).await
+        let agent = self.finish_creation(summary, None).await?;
+        // Best-effort: the agent already exists either way, so a failure to
+        // send the seed prompt (e.g. the process is still starting up) does
+        // not undo its creation.
+        if let Some(text) = initial_prompt {
+            let _ = self.prompt(&agent.id, "main", text).await;
+        }
+        Ok(agent)
     }
 
     /// Look up a model profile's label, erroring if the id is unknown.
@@ -1092,6 +1111,41 @@ impl AgentManager {
         Ok(())
     }
 
+    /// Whether a GitHub token is configured, for the settings UI.
+    pub async fn github_settings(&self) -> RedactedGithubSettings {
+        self.github.lock().await.redacted()
+    }
+
+    pub async fn set_github_token(&self, token: String) -> Result<RedactedGithubSettings, ManagerError> {
+        let token = token.trim().to_owned();
+        if token.is_empty() {
+            return Err(ManagerError::Invalid("token must not be empty".to_owned()));
+        }
+        let settings = {
+            let mut github = self.github.lock().await;
+            github.token = Some(token);
+            github.clone()
+        };
+        self.store.save_github_settings(&settings).await?;
+        Ok(settings.redacted())
+    }
+
+    pub async fn clear_github_token(&self) -> Result<RedactedGithubSettings, ManagerError> {
+        let settings = {
+            let mut github = self.github.lock().await;
+            github.token = None;
+            github.clone()
+        };
+        self.store.save_github_settings(&settings).await?;
+        Ok(settings.redacted())
+    }
+
+    /// Fetch one GitHub issue for the "import from issue" preview.
+    pub async fn fetch_github_issue(&self, issue_ref: &str) -> Result<FetchedIssue, ManagerError> {
+        let token = self.github.lock().await.token.clone().ok_or(FetchIssueError::NoToken)?;
+        Ok(crate::github::fetch_issue(&self.http, "https://api.github.com", &token, issue_ref).await?)
+    }
+
     /// Switch an idle agent's model profile. The change restarts the agent
     /// process so the new provider environment takes effect; the conversation
     /// is replayed to the fresh process on the next prompt.
@@ -1680,6 +1734,7 @@ mod tests {
                 base_branch: None,
                 approval_mode: ApprovalMode::Auto,
                 model_profile_id: None,
+                initial_prompt: None,
             })
             .await
             .unwrap_err();
@@ -1728,6 +1783,7 @@ mod tests {
                 base_branch: None,
                 approval_mode: ApprovalMode::Auto,
                 model_profile_id: None,
+                initial_prompt: None,
             })
             .await
             .unwrap();

@@ -506,6 +506,111 @@ async fn clearing_an_unset_goal_is_a_no_op() {
 }
 
 #[tokio::test]
+async fn creating_an_agent_with_an_initial_prompt_seeds_the_first_turn() {
+    let world = world().await;
+    // The manager only awaits recording the user message before returning from
+    // `create_agent`; the turn itself runs in a spawned task, so a WS connection
+    // opened before the create call is what proves it actually ran, not just
+    // that a message was queued.
+    let mut ws = world.ws().await;
+
+    let (status, agent) = world
+        .post(
+            "/api/agents",
+            json!({
+                "name": "from issue",
+                "projectId": world.project_id,
+                "approvalMode": "always_ask",
+                "initialPrompt": "hello there",
+            }),
+        )
+        .await;
+    assert_eq!(status, 200, "create agent failed: {agent}");
+    let agent_id = agent["id"].as_str().unwrap().to_owned();
+
+    let events = ws.collect_until(|event| event["type"] == "turnEnded").await;
+    ws.close().await;
+    let user = events_of_type(&events, "userMessage");
+    assert_eq!(user[0]["text"], "hello there");
+
+    let (status, transcript) = world
+        .get(&format!("/api/agents/{agent_id}/sessions/main/transcript"))
+        .await;
+    assert_eq!(status, 200);
+    let items = transcript.as_array().unwrap();
+    assert_eq!(items[0]["type"], "userMessage");
+    assert_eq!(items[0]["text"], "hello there");
+    assert!(items.iter().any(|item| item["type"] == "turnEnded"));
+
+    let (_, fetched) = world.get(&format!("/api/agents/{agent_id}")).await;
+    assert_eq!(fetched["status"], "idle");
+}
+
+#[tokio::test]
+async fn github_settings_default_to_no_token_and_round_trip_through_set_and_clear() {
+    let world = world().await;
+
+    let (status, settings) = world.get("/api/github").await;
+    assert_eq!(status, 200);
+    assert_eq!(settings["hasToken"], false);
+
+    let (status, settings) = world.patch("/api/github", json!({"token": "ghp_secret"})).await;
+    assert_eq!(status, 200);
+    assert_eq!(settings["hasToken"], true);
+    assert!(
+        settings.get("token").is_none(),
+        "the token must never round-trip to the client"
+    );
+
+    let (status, settings) = world.get("/api/github").await;
+    assert_eq!(status, 200);
+    assert_eq!(settings["hasToken"], true);
+
+    let status = world.delete("/api/github").await;
+    assert_eq!(status, 200);
+
+    let (status, settings) = world.get("/api/github").await;
+    assert_eq!(status, 200);
+    assert_eq!(settings["hasToken"], false);
+}
+
+#[tokio::test]
+async fn setting_a_blank_github_token_is_rejected() {
+    let world = world().await;
+    let (status, body) = world.patch("/api/github", json!({"token": "   "})).await;
+    assert_eq!(status, 400);
+    assert!(body["error"].as_str().unwrap().contains("token"));
+    let (_, settings) = world.get("/api/github").await;
+    assert_eq!(settings["hasToken"], false);
+}
+
+#[tokio::test]
+async fn fetching_an_issue_without_a_token_configured_is_400() {
+    let world = world().await;
+    let (status, body) = world
+        .post("/api/github/issue", json!({"issueRef": "pydantic/pydantic-ai#1"}))
+        .await;
+    assert_eq!(status, 400);
+    assert!(body["error"].as_str().unwrap().contains("no GitHub token"));
+}
+
+#[tokio::test]
+async fn fetching_an_issue_with_a_malformed_reference_is_400() {
+    let world = world().await;
+    let (status, _) = world.patch("/api/github", json!({"token": "ghp_secret"})).await;
+    assert_eq!(status, 200);
+
+    let (status, body) = world
+        .post("/api/github/issue", json!({"issueRef": "not-an-issue"}))
+        .await;
+    assert_eq!(status, 400);
+    assert!(
+        body["error"].as_str().unwrap().contains("could not parse"),
+        "error: {body}"
+    );
+}
+
+#[tokio::test]
 async fn thought_chunks_stream_separately() {
     let world = world().await;
     let agent = world.create_agent("thinker", false, "always_ask").await;
@@ -1006,6 +1111,7 @@ async fn roster_survives_backend_restart_with_history_replay() {
                 base_branch: None,
                 approval_mode: clai2_web_server::model::ApprovalMode::Auto,
                 model_profile_id: None,
+                initial_prompt: None,
             })
             .await
             .unwrap();
@@ -2105,6 +2211,7 @@ async fn agent_referencing_a_deleted_model_starts_with_an_empty_overlay() {
                 base_branch: None,
                 approval_mode: clai2_web_server::model::ApprovalMode::Auto,
                 model_profile_id: Some(model.id.clone()),
+                initial_prompt: None,
             })
             .await
             .unwrap();

@@ -4,6 +4,7 @@ pub mod acp;
 pub mod api;
 pub mod approvals;
 pub mod events;
+pub mod github;
 pub mod manager;
 pub mod model;
 pub mod models;

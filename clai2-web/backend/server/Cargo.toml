@@ -9,6 +9,7 @@ description = "Web backend for managing CLAI coding agents over the Agent Client
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
 futures-util = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror = "2"
