@@ -51,10 +51,12 @@ class _Imports(ast.NodeVisitor):
     def visit_Import(self, node: ast.Import) -> None:
         self.names.update(alias.name for alias in node.names)
         for alias in node.names:
-            self._forget(alias.asname or alias.name.partition('.')[0])
+            imported = alias.name if alias.asname else alias.name.partition('.')[0]
+            bound = alias.asname or imported
+            self._forget(bound)
             for key, value in _IMPORT_VALUES.items():
-                if key.startswith(alias.name + '.'):
-                    self.values[key.replace(alias.name, alias.asname or alias.name, 1)] = value
+                if key.startswith(imported + '.'):
+                    self.values[key.replace(imported, bound, 1)] = value
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         name = importlib.util.resolve_name('.' * node.level + (node.module or ''), self.package)
@@ -85,12 +87,21 @@ class _Imports(ast.NodeVisitor):
             key: value for key, value in self.values.items() if key != name and not key.startswith(name + '.')
         }
 
+    def _forget_target(self, target: ast.expr) -> None:
+        for child in ast.walk(target):
+            if isinstance(child, ast.Name):
+                self._forget(child.id)
+
     def visit_Assign(self, node: ast.Assign) -> None:
-        # A reassignment can shadow one of the standard-library guard aliases.
         for target in node.targets:
-            for child in ast.walk(target):
-                if isinstance(child, ast.Name):
-                    self._forget(child.id)
+            self._forget_target(target)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        if node.value is not None:
+            self._forget_target(node.target)
+
+    def visit_AugAssign(self, node: ast.AugAssign) -> None:
+        self._forget_target(node.target)
 
     def _value(self, node: ast.expr) -> _GuardValue | _Unknown:
         key = ast.unparse(node)

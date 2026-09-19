@@ -31,6 +31,8 @@ def run_script(tmp_path: Path, script: str, mode: str) -> None:
     'mode',
     [
         'relative',
+        'annotated',
+        'augmented',
         'branch_alias',
         'agreed_alias',
         'unknown_guards',
@@ -41,6 +43,8 @@ def run_script(tmp_path: Path, script: str, mode: str) -> None:
                 'platform',
                 'platform_alias',
                 'os_alias',
+                'os_dotted',
+                'annotation_only',
                 'version',
                 'version_lt',
                 'version_le',

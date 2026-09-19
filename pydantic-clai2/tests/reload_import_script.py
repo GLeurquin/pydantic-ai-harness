@@ -17,6 +17,8 @@ def conditional_source(mode: str) -> str:
     guards = {
         'platform': ('import sys', f'sys.platform == {sys.platform!r}', True),
         'platform_alias': ('import sys as runtime', 'runtime.platform != "nonexistent"', True),
+        'os_dotted': ('import os.path', f'os.name == {os.name!r}', True),
+        'annotation_only': ('from typing import TYPE_CHECKING\nTYPE_CHECKING: bool', 'TYPE_CHECKING', False),
         'os_alias': ('from os import name as system_name', f'system_name == {os.name!r}', True),
         'version': ('import sys', 'sys.version_info >= (3, 10)', True),
         'version_lt': ('import sys', 'sys.version_info < (100,)', True),
@@ -52,9 +54,15 @@ def main(root: Path, mode: str) -> None:
         'invalid_guard': 'if 1 < "invalid":\n    pass\n',
         'cycle': 'from .reload_consumer import VALUE\nNEW = VALUE\n',
         'syntax': 'invalid syntax!\n',
+        'annotated': 'from .reload_leaf import VALUE\nNEW = "new"\n',
+        'augmented': 'from .reload_leaf import VALUE\nNEW = "new"\n',
     }
     provider_path.write_text(provider_sources.get(mode, "NEW = 'new'\n"))
     consumer_sources = {
+        'annotated': 'from typing import TYPE_CHECKING\nTYPE_CHECKING: bool = True\n'
+        'if TYPE_CHECKING:\n    from .reload_provider import NEW\nVALUE = NEW\n',
+        'augmented': 'from typing import TYPE_CHECKING\nTYPE_CHECKING |= True\n'
+        'if TYPE_CHECKING:\n    from .reload_provider import NEW\nVALUE = NEW\n',
         'absolute': 'from pydantic_clai2.reload_provider import NEW\nVALUE = NEW\n',
         'module': 'import pydantic_clai2.reload_provider as dependency\nVALUE = dependency.NEW\n',
         'relative_module': 'from . import reload_provider as dependency\nVALUE = dependency.NEW\n',
