@@ -149,21 +149,18 @@ jobs:
         working-directory: clai2-web/frontend
         run: pnpm install --frozen-lockfile && pnpm mutation
 
-  # Screenshot-diffs every Ladle story. Runs inside the exact Playwright
-  # Docker image the committed baselines were generated from -- rendering
+  # Screenshot-diffs every Ladle story against the committed baselines under
+  # clai2-web/e2e/tests/visual.spec.ts-snapshots/. Runs inside the exact
+  # Playwright Docker image those baselines were generated from -- rendering
   # varies by host OS/libs enough that a bare ubuntu-latest runner with
   # `playwright install` would not reproduce them pixel-for-pixel (see
   # https://playwright.dev/docs/test-snapshots). Keep this image tag in sync
   # with the @playwright/test version pinned in clai2-web/e2e/package.json.
   #
-  # workflow_dispatch-only for now: no baseline has been committed yet, so
-  # wiring this into push/pull_request would fail on every run until someone
-  # triggers this job once with update_visual_baselines, downloads the
-  # visual-baselines artifact, and commits
-  # clai2-web/e2e/tests/visual.spec.ts-snapshots/. Move it next to `mutation`
-  # in the schedule (or into push/pull_request) once that baseline exists.
+  # To re-bless the baselines after an intentional UI change, trigger this
+  # workflow manually with update_visual_baselines, download the
+  # visual-baselines artifact, and commit it over the existing snapshots.
   visual:
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     container:
       image: mcr.microsoft.com/playwright:v1.63.0-noble
