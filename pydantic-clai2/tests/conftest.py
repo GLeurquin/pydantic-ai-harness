@@ -6,6 +6,8 @@ import keyring
 import pytest
 from pydantic_ai import models
 
+from pydantic_clai2 import notifications
+
 
 @pytest.fixture
 def anyio_backend() -> str:
@@ -20,6 +22,7 @@ def isolated_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setenv('HOME', str(tmp_path / 'home'))
     monkeypatch.delenv('CLAI_MODEL', raising=False)
     monkeypatch.setattr(models, 'ALLOW_MODEL_REQUESTS', False)
+    monkeypatch.setattr(notifications, 'platform', 'test')
     credentials: dict[tuple[str, str], str] = {}
 
     def get_password(service: str, account: str) -> str | None:

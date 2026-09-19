@@ -232,6 +232,34 @@ Tool calls print once with a filled-circle marker and the tool name, followed by
 are truncated to one terminal row. Completion activity remains in the footer
 rather than adding a separate `Finished:` line to the transcript.
 
+## Desktop notifications
+
+```text
+/plugins disable notifications
+/plugins enable notifications
+```
+
+The built-in `notifications` plugin is enabled by default. It notifies when a
+turn completes or fails and when `ask_user` needs input. Cancelled turns do not
+notify. Banners contain the title `CLAI2` and fixed status text, not prompts,
+answers, paths, tool arguments, or error details. They are sent even when the
+terminal is focused, without requesting a sound.
+
+macOS uses `/usr/bin/osascript`; the sender may appear as Script Editor. Allow
+notifications for that sender in System Settings if needed. Focus mode and OS
+notification settings can hide banners. Linux uses an installed `notify-send`
+and desktop notification service. Other platforms do nothing. Remote sessions
+notify the machine running CLAI, not the local client.
+
+Delivery uses an async subprocess, no shell interpolation, and a two-second
+timeout. Missing utilities, nonzero exits, and timeouts do not fail the turn or
+question. A stalled utility can delay the next prompt or question by up to two
+seconds. Timeout or cancellation kills and reaps the child. No background workers
+or additional telemetry are added.
+
+The plugin has no settings. Enable/disable choices persist; removing it restores
+the enabled default. Disabling notifications does not disable `ask_user`.
+
 ## Questions from the model
 
 The built-in `ask_user` plugin displays questions inline below the conversation,
