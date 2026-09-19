@@ -232,6 +232,20 @@ Tool calls print once with a filled-circle marker and the tool name, followed by
 are truncated to one terminal row. Completion activity remains in the footer
 rather than adding a separate `Finished:` line to the transcript.
 
+## Questions from the model
+
+The built-in `ask_user` plugin displays questions inline below the conversation,
+without clearing it or entering the alternate screen. Preceding output remains
+in terminal scrollback. Up/Down moves and Enter or an option's number selects it.
+For multi-select questions, Enter or a number toggles an option; move to `Done`
+and press Enter to submit at least one selected option. Space is not required.
+The highlighted option's description appears below the choices.
+
+Esc, Ctrl-C, or Ctrl-D declines the whole request and lets the model continue.
+The editor pauses while questions own input, then returns with its draft intact.
+Selected answers are recorded in the transcript. `/plugins disable ask_user`
+removes the tool.
+
 ## Grep previews
 
 Grep calls display the expression and path. Results show the first 20 logical

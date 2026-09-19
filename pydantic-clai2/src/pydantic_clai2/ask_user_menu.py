@@ -1,14 +1,13 @@
-"""The built-in `ask_user` plugin: `AskUser` answered from a full-screen terminal menu.
-
-`build_question_menu` is pure; `TerminalAnswerer` runs one menu per question through `Runners`
-so tests script it. Swap the answerer for something else (a web form, a scripted test) by
-constructing `AskUser` yourself; see PLUGINS.md.
-"""
+"""Inline questions that leave the conversation in the terminal scrollback."""
 
 import asyncio
-from dataclasses import dataclass
-from functools import partial
+from dataclasses import dataclass, field
 
+from prompt_toolkit.application import Application
+from prompt_toolkit.formatted_text import FormattedText
+from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
+from prompt_toolkit.layout import FormattedTextControl, HSplit, Layout, Window
+from prompt_toolkit.layout.dimension import Dimension
 from pydantic_ai_harness.ask_user import (
     AskUser,
     AskUserAnswer,
@@ -19,99 +18,144 @@ from pydantic_ai_harness.ask_user import (
 )
 from rich.console import RenderableType
 from rich.text import Text
-from termflow.tui import MenuBuilder, MenuItem  # pyright: ignore[reportMissingTypeStubs]
-from termflow.tui.menu import Menu  # pyright: ignore[reportMissingTypeStubs]
 
 from . import theme
-from ._rendering import markdown_style
-from .field_menu import TERMINAL, Runners
-from .menu_worker import menu_key, run_worker
 from .plugins import FullScreen, PluginHost
 
-_SINGLE_HINT = 'Enter select - Esc decline'
-_MULTI_HINT = 'Space toggle - Enter confirm - Esc decline'
-_NO_DESCRIPTION = '(no description)'
 
-
-@dataclass(frozen=True, kw_only=True)
+@dataclass(kw_only=True)
 class QuestionMenu:
-    """One question as the menu shows it: options as rows, the question and the option's meaning alongside."""
+    """A compact question: Enter selects or toggles, and multi-select has a Done row."""
 
     question: Question
     position: int
     total: int
+    cursor: int = 0
+    selected: set[int] = field(default_factory=set[int])
 
     @property
     def title(self) -> str:
-        """The header, plus where this question sits when there are several."""
+        """Name the question and its position in the request."""
         if self.total == 1:
             return self.question.header
         return f'{self.question.header} (question {self.position} of {self.total})'
 
     @property
     def hint(self) -> str:
-        """The footer: how to pick, and that Esc declines."""
-        return _MULTI_HINT if self.question.multi_select else _SINGLE_HINT
+        """Keep the selection keys visible without requiring Space."""
+        action = 'Enter toggle - Done submits' if self.question.multi_select else 'Enter select'
+        return f'Up/Down move - 1-{len(self.question.options)} pick - {action} - Esc decline'
 
-    def items(self) -> list[MenuItem]:
-        """One row per option, valued by its label."""
-        return [MenuItem(option.label, value=option.label) for option in self.question.options]
+    def build(self) -> Application[tuple[str, ...] | None]:
+        """Draw beneath the transcript, without entering the alternate screen."""
+        keys = KeyBindings()
+        count = len(self.question.options) + int(self.question.multi_select)
 
-    def preview(self, item: MenuItem) -> str:
-        """The right-hand panel: the question text, then what the highlighted option means."""
-        descriptions = {option.label: option.description or _NO_DESCRIPTION for option in self.question.options}
-        return f'{self.question.question}\n\n{descriptions[str(item.value)]}'
+        @keys.add('up')
+        def up(event: KeyPressEvent) -> None:
+            self.cursor = (self.cursor - 1) % count
 
-    def build(self) -> Menu:
-        """Wire rows, preview, and keys into a termflow menu on the alternate screen."""
-        return (
-            MenuBuilder(self.title)
-            .style(markdown_style())
-            .items(self.items())
-            .multi_select(self.question.multi_select)
-            .preview(self.preview)
-            .footer_hint(self.hint)
-            .key_source(menu_key)
-            .build()
+        @keys.add('down')
+        def down(event: KeyPressEvent) -> None:
+            self.cursor = (self.cursor + 1) % count
+
+        @keys.add('enter')
+        def choose(event: KeyPressEvent) -> None:
+            if self.cursor == len(self.question.options):
+                if self.selected:
+                    event.app.exit(result=tuple(self.question.options[i].label for i in sorted(self.selected)))
+            elif self.question.multi_select:
+                self.selected.symmetric_difference_update({self.cursor})
+            else:
+                event.app.exit(result=(self.question.options[self.cursor].label,))
+
+        def number(event: KeyPressEvent) -> None:
+            self.cursor = int(event.data) - 1
+            choose(event)
+
+        for index in range(len(self.question.options)):
+            keys.add(str(index + 1))(number)
+
+        @keys.add('escape')
+        @keys.add('c-c')
+        @keys.add('c-d')
+        def decline(event: KeyPressEvent) -> None:
+            event.app.exit(result=None)
+
+        def rows() -> FormattedText:
+            fragments: list[tuple[str, str]] = []
+            labels = [option.label for option in self.question.options]
+            if self.question.multi_select:
+                labels.append('Done' if self.selected else 'Done (select at least one option)')
+            for index, label in enumerate(labels):
+                if index == self.cursor:
+                    fragments.append(('[SetCursorPosition]', ''))
+                style = theme.ACCENT if index == self.cursor else theme.MUTED
+                marker = '[x]' if index in self.selected else '[ ]'
+                prefix = f'{marker} ' if self.question.multi_select and index < len(self.question.options) else ''
+                number = f'{index + 1}. ' if index < len(self.question.options) else ''
+                ending = '\n' if index < len(labels) - 1 else ''
+                fragments.append((style, f'{">" if index == self.cursor else " "} {number}{prefix}{label}{ending}'))
+            return FormattedText(fragments)
+
+        def description() -> FormattedText:
+            text = '' if self.cursor == len(self.question.options) else self.question.options[self.cursor].description
+            return FormattedText([(theme.MUTED, text or '')])
+
+        options = Window(
+            FormattedTextControl(rows, focusable=True),
+            wrap_lines=True,
+            dont_extend_height=True,
+            height=lambda: Dimension(max=max(2, app.output.get_size().rows // 2)),
         )
-
-
-def build_question_menu(question: Question, *, position: int, total: int) -> Menu:
-    """The menu for `question`, the `position`th of `total`."""
-    return QuestionMenu(question=question, position=position, total=total).build()
+        app: Application[tuple[str, ...] | None] = Application(
+            layout=Layout(
+                HSplit(
+                    [
+                        Window(FormattedTextControl(FormattedText([(theme.ACCENT, self.title)])), height=1),
+                        Window(
+                            FormattedTextControl(self.question.question),
+                            wrap_lines=True,
+                            dont_extend_height=True,
+                        ),
+                        options,
+                        Window(FormattedTextControl(description), wrap_lines=True, dont_extend_height=True),
+                        Window(FormattedTextControl(self.hint), wrap_lines=True, dont_extend_height=True),
+                    ]
+                ),
+                focused_element=options,
+            ),
+            key_bindings=keys,
+            full_screen=False,
+            erase_when_done=True,
+        )
+        app.ttimeoutlen = 0.05
+        return app
 
 
 class TerminalAnswerer:
-    """Ask each question in turn on the alternate screen; Esc or Ctrl-C on any of them declines the lot.
+    """Serialize question requests while the shell's editor and output are suspended."""
 
-    There is one terminal, so requests are answered one at a time: when the model calls the tool
-    twice in parallel, the second request's menus open after the first request is fully answered.
-    """
-
-    def __init__(self, *, full_screen: FullScreen, runners: Runners = TERMINAL) -> None:
-        """`full_screen` settles the shell's output first; `runners` shows the menus."""
+    def __init__(self, *, full_screen: FullScreen) -> None:
+        """Borrow terminal ownership without clearing the conversation."""
         self._full_screen = full_screen
-        self._runners = runners
         self._terminal = asyncio.Lock()
 
     async def __call__(self, request: AskUserRequest, /) -> AskUserResponse:
-        """Answer every question or report the user declined; never raise for a cancel."""
+        """Answer every question or decline the request with Esc or Ctrl-C."""
         answers: list[AskUserAnswer] = []
-        total = len(request.questions)
         async with self._terminal, self._full_screen():
             for position, question in enumerate(request.questions, start=1):
-                menu = build_question_menu(question, position=position, total=total)
-                result = await run_worker(partial(self._runners.run_choice, menu))
-                if result.cancelled:
+                app = QuestionMenu(question=question, position=position, total=len(request.questions)).build()
+                selected = await app.run_async(handle_sigint=False)
+                if selected is None:
                     return AskUserResponse(cancelled=True)
-                # Never empty: on a multi-select menu, Enter with nothing toggled picks the highlighted row.
-                selected = tuple(str(item.value) for item in result.items)
                 answers.append(AskUserAnswer(header=question.header, selected=selected))
         return AskUserResponse(answers=tuple(answers))
 
 
 def render_answer(event: AskUserAnsweredEvent) -> RenderableType:
-    """Leave a record of what was picked in the transcript, since the menu itself is gone."""
+    """Leave a record of the selected answers in the transcript."""
     text = Text()
     if event.response.cancelled:
         text.append('● You declined to answer', style=theme.MUTED)
@@ -126,6 +170,6 @@ def render_answer(event: AskUserAnsweredEvent) -> RenderableType:
 
 
 def activate(host: PluginHost[None]) -> None:
-    """Register `AskUser` with the terminal answerer and a transcript line per answer."""
+    """Register `AskUser` with inline questions and a transcript line per answer."""
     host.add(AskUser(answerer=TerminalAnswerer(full_screen=host.full_screen)))
     host.render(AskUserAnsweredEvent)(render_answer)
