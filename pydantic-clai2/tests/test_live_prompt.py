@@ -2,7 +2,8 @@
 
 import asyncio
 import io
-from collections.abc import AsyncGenerator
+import time
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 
 import anyio
@@ -26,12 +27,14 @@ def anyio_backend() -> str:
 
 
 @asynccontextmanager
-async def editor() -> AsyncGenerator[tuple[LivePrompt, PipeInput, io.StringIO]]:
+async def editor(
+    *, clock: Callable[[], float] = time.monotonic
+) -> AsyncGenerator[tuple[LivePrompt, PipeInput, io.StringIO]]:
     output = io.StringIO()
     console = Console(file=output, force_terminal=True)
     with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()), anyio.fail_after(TIMEOUT):
         prompt = PromptSession[str]()
-        live = LivePrompt(prompt, console, prepare=lambda: None, interrupts=Interrupts())
+        live = LivePrompt(prompt, console, prepare=lambda: None, interrupts=Interrupts(), clock=clock)
         async with live.opened():
             yield live, pipe, output
         assert console.file is output
@@ -228,3 +231,65 @@ async def test_queue_preview_is_bounded_and_does_not_modify_messages() -> None:
         assert live.queue_preview()[0][1] == ''
         with pytest.raises(EOFError):
             await live.read()
+
+
+@pytest.mark.parametrize('outcome', ['completed', 'cancelled', 'failed'])
+async def test_working_animation_is_inside_editor_without_changing_draft(outcome: str) -> None:
+    now = 0.0
+    started = anyio.Event()
+    finish = anyio.Event()
+    finished = anyio.Event()
+    frames = [anyio.Event(), anyio.Event()]
+    idle = anyio.Event()
+
+    async with editor(clock=lambda: now) as (live, pipe, _):
+
+        def rendered(app: Application[str]) -> None:
+            screen = app.renderer.last_rendered_screen
+            if screen is None:
+                return
+            rows = [''.join(cell.char for cell in row.values()) for row in screen.data_buffer.values()]
+            text = '\n'.join(rows)
+            if '> draft' not in text:
+                return
+            for index, spinner in enumerate(('⠋', '⠙')):
+                if f'Working {spinner}' in text:
+                    assert text.index('┌') < text.index('Working') < text.index('> draft') < text.index('└')
+                    frames[index].set()
+            if finished.is_set() and 'Working' not in text:
+                idle.set()
+
+        live.prompt.app.after_render += rendered
+        assert ''.join(fragment[1] for fragment in live.prompt_text()) == '> '
+
+        async def operation() -> None:
+            started.set()
+            await finish.wait()
+            if outcome == 'failed':
+                raise ValueError('test failure')
+
+        async def run() -> None:
+            if outcome == 'failed':
+                with pytest.raises(ValueError, match='test failure'):
+                    await live.interrupts.run(operation())
+            else:
+                assert await live.interrupts.run(operation()) == (outcome == 'completed')
+            finished.set()
+            live.prompt.app.invalidate()
+
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(run)
+            await started.wait()
+            pipe.send_text('draft')
+            await frames[0].wait()
+            now = 0.1
+            live.prompt.app.invalidate()
+            await frames[1].wait()
+            assert live.prompt.default_buffer.text == 'draft'
+            if outcome == 'cancelled':
+                pipe.send_text('\x1b')
+            else:
+                finish.set()
+            await idle.wait()
+        assert ''.join(fragment[1] for fragment in live.prompt_text()) == '> '
+        assert live.prompt.default_buffer.text == 'draft'

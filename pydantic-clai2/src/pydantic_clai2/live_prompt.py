@@ -2,6 +2,7 @@
 
 import asyncio
 import io
+import time
 from collections import deque
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
@@ -21,6 +22,8 @@ from rich.text import Text
 
 from . import theme
 from .interrupts import Interrupts
+
+_WORKING_FRAMES = ('⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏')
 
 
 class PromptOutput(io.StringIO):
@@ -76,16 +79,30 @@ class LivePrompt:
     """Own the editor and output worker until the shell exits, including cancellation."""
 
     def __init__(
-        self, prompt: PromptSession[str], console: Console, *, prepare: Callable[[], None], interrupts: Interrupts
+        self,
+        prompt: PromptSession[str],
+        console: Console,
+        *,
+        prepare: Callable[[], None],
+        interrupts: Interrupts,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         """Keep all input and output resources scoped to one shell."""
         self.prompt = prompt
         self.console = console
         self.prepare = prepare
         self.interrupts = interrupts
+        self._clock = clock
         self._submissions: deque[str | KeyboardInterrupt | EOFError] = deque()
         self._submitted = asyncio.Event()
         self.output = PromptOutput(console.file)
+
+    def prompt_text(self) -> FormattedText:
+        """Keep the working indicator inside the frame but outside the editable buffer."""
+        if not self.interrupts.active:
+            return FormattedText([('', '> ')])
+        frame = _WORKING_FRAMES[int(self._clock() * 10) % len(_WORKING_FRAMES)]
+        return FormattedText([(theme.MUTED, 'Working '), (theme.ACCENT, frame), ('', '\n> ')])
 
     async def read(self) -> str:
         """Consume submissions in order without overlapping agent runs."""
@@ -193,7 +210,7 @@ class LivePrompt:
         async def edit() -> None:
             try:
                 await self.prompt.prompt_async(
-                    '> ',
+                    self.prompt_text,
                     pre_run=prepare,
                     key_bindings=self.bindings(),
                     handle_sigint=False,
