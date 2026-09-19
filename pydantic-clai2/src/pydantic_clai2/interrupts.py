@@ -34,9 +34,7 @@ class Interrupts:
 
     async def run(self, operation: Awaitable[None]) -> bool:
         """Return false for user cancellation; propagate external task cancellation."""
-        if threading.current_thread() is not threading.main_thread():
-            await operation
-            return True
+        main_thread = threading.current_thread() is threading.main_thread()
 
         async def invoke() -> None:
             await operation
@@ -54,7 +52,8 @@ class Interrupts:
         previous = signal.getsignal(signal.SIGINT)
         self._cancel = lambda: cancel(signal.SIGINT, None)
         try:
-            signal.signal(signal.SIGINT, cancel)
+            if main_thread:
+                signal.signal(signal.SIGINT, cancel)
             try:
                 await task
             except asyncio.CancelledError:
@@ -65,4 +64,5 @@ class Interrupts:
             return True
         finally:
             self._cancel = None
-            signal.signal(signal.SIGINT, previous)
+            if main_thread:
+                signal.signal(signal.SIGINT, previous)
