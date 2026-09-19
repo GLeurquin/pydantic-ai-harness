@@ -54,7 +54,11 @@ pip install pydantic-ai-harness 'pydantic-ai-slim[openai]'
 
 The router creates an internal agent named `model_router`. Its `output_type` is a `Literal` built from the choice keys. Language models answer through structured output, while typed models can make the same choice without generating text. The router instructions contain each choice description.
 
-The routing input is the normalized message history serialized as JSON. On the first step it also contains the new run prompt, which Pydantic AI's bootstrap `ModelSelectionContext` does not yet contain. A router on another provider therefore receives the conversation content used to make the decision.
+## Routing input
+
+The routing input is the normalized message history serialized as JSON. On the first step it also carries the run's new prompt, which Pydantic AI's bootstrap `ModelSelectionContext` does not contain yet -- so a fresh run's very first step is routed from the user's own question rather than defaulting. A router on another provider therefore receives the conversation content used to make the decision.
+
+That input is not bounded. In `'per_step'` mode each routing request grows with the conversation, so a long run eventually spends more on routing than the choice is worth, and a history that outgrows the router's context window fails the request and falls back to `default`. Pair `'per_step'` routing with [compaction](https://github.com/pydantic/pydantic-ai-harness/tree/main/pydantic_ai_harness/compaction/): the compacted history is what the router reads, which is usually what you wanted it to read anyway.
 
 ## When routing runs
 
@@ -77,7 +81,9 @@ When the router response has `provider_details['confidence']`, a value below the
 
 A router model that reports no confidence keeps its pick. This lets ordinary language models route without provider-specific metadata.
 
-If the router model raises, returns invalid model behavior after its normal output retries, or returns an unknown key, `ModelRouter` selects `default` and the main run continues. Cancellation is not converted into a fallback.
+If the router model raises at request time, returns invalid model behavior after its normal output retries, or returns an unknown key, `ModelRouter` selects `default` and the main run continues. Cancellation is not converted into a fallback.
+
+Configuration mistakes do not fall back. An empty menu, an unknown `default`, a threshold outside `0` to `1`, and a `router_model` Pydantic AI cannot resolve all raise `UserError` from the `ModelRouter` constructor, so a typo surfaces immediately instead of routing every request to `default` for the life of the agent.
 
 ## Options
 

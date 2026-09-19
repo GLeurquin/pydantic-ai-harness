@@ -11,6 +11,7 @@ from typing import Literal, TypeGuard
 from opentelemetry.trace import NoOpTracer, Status, StatusCode, Tracer
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import AbstractCapability, ModelSelection, ModelSelector
+from pydantic_ai.exceptions import UserError
 from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter, ModelRequest, UserContent, UserPromptPart
 from pydantic_ai.models import ModelSelectionContext
 from pydantic_ai.output import OutputSpec
@@ -65,6 +66,7 @@ class ModelRouter(AbstractCapability[AgentDepsT]):
     A router that reports no confidence keeps its pick.
     """
 
+    _router_agent: Agent[None, str] = field(init=False, repr=False, compare=False)
     _run_ready: bool = field(default=False, init=False, repr=False)
     _run_prompt: str | Sequence[UserContent] | None = field(default=None, init=False, repr=False)
     _cached_choice: str | None = field(default=None, init=False, repr=False)
@@ -72,20 +74,31 @@ class ModelRouter(AbstractCapability[AgentDepsT]):
     _usage_limits: UsageLimits | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        """Copy and validate the routing menu."""
+        """Validate the routing menu and build the internal router agent."""
         self.choices = dict(self.choices)
         if not self.choices:
-            raise ValueError('ModelRouter.choices must not be empty')
+            raise UserError('ModelRouter.choices must not be empty')
         if any(not name for name in self.choices):
-            raise ValueError('ModelRouter choice names must not be empty')
+            raise UserError('ModelRouter choice names must not be empty')
         if any(not choice.description for choice in self.choices.values()):
-            raise ValueError('ModelRouter choice descriptions must not be empty')
+            raise UserError('ModelRouter choice descriptions must not be empty')
         if self.default not in self.choices:
-            raise ValueError(f'ModelRouter.default must name a configured choice, got {self.default!r}')
+            raise UserError(f'ModelRouter.default must name a configured choice, got {self.default!r}')
         if self.mode not in {'once', 'per_step'}:
-            raise ValueError("ModelRouter.mode must be 'once' or 'per_step'")
+            raise UserError("ModelRouter.mode must be 'once' or 'per_step'")
         if self.confidence_threshold is not None and not 0 <= self.confidence_threshold <= 1:
-            raise ValueError('ModelRouter.confidence_threshold must be between 0 and 1')
+            raise UserError('ModelRouter.confidence_threshold must be between 0 and 1')
+        # Built here rather than per selection: `per_step` would otherwise re-infer the router
+        # model on every step, and an unresolvable `router_model` would be swallowed by the
+        # fallback and silently route every request to `default` for the life of the agent.
+        output_type: OutputSpec[str] = Literal[tuple(self.choices)]  # type: ignore[valid-type]
+        self._router_agent = Agent[None, str](
+            self.router_model,
+            name='model_router',
+            deps_type=type(None),
+            output_type=output_type,
+            instructions=self._instructions(),
+        )
 
     async def for_run(self, ctx: RunContext[AgentDepsT]) -> ModelRouter[AgentDepsT]:
         """Return a run-scoped router with the new prompt and isolated selection cache."""
@@ -111,15 +124,7 @@ class ModelRouter(AbstractCapability[AgentDepsT]):
             confidence: float | None = None
             fallback_reason = 'none'
             try:
-                output_type: OutputSpec[str] = Literal[tuple(self.choices)]  # type: ignore[valid-type]
-                router_agent = Agent[None, str](
-                    self.router_model,
-                    name='model_router',
-                    deps_type=type(None),
-                    output_type=output_type,
-                    instructions=self._instructions(),
-                )
-                result = await router_agent.run(
+                result = await self._router_agent.run(
                     self._routing_input(ctx),
                     usage=ctx.usage,
                     usage_limits=reserved_usage_limits(self._usage_limits),
