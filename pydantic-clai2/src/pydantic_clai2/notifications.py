@@ -3,7 +3,7 @@
 from subprocess import DEVNULL
 from sys import platform
 
-from anyio import move_on_after, run_process
+from anyio import create_task_group, move_on_after, run_process
 from pydantic_ai import RunContext
 from pydantic_ai_harness.ask_user import AskUserRequestedEvent
 
@@ -37,8 +37,14 @@ async def _notify(message: str) -> None:
         command = ['notify-send', '--app-name=CLAI2', '--', 'CLAI2', message]
     else:
         return
-    try:
-        with move_on_after(2):
+
+    async def deliver() -> None:
+        try:
             await run_process(command, stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL, check=False)
-    except OSError:
-        pass
+        except OSError:
+            pass
+
+    # Level cancellation ensures run_process reaps its child after a shell Task.cancel().
+    with move_on_after(2):
+        async with create_task_group() as workers:
+            workers.start_soon(deliver)

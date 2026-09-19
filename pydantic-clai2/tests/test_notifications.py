@@ -1,5 +1,6 @@
 """Native notifications through the public plugin host and loader."""
 
+import asyncio
 import io
 import json
 import os
@@ -19,6 +20,7 @@ from rich.console import Console
 
 from pydantic_clai2 import DEFAULT_PLUGINS, notifications
 from pydantic_clai2.commands import Commands
+from pydantic_clai2.interrupts import Interrupts
 from pydantic_clai2.plugin_loader import PluginLoader
 from pydantic_clai2.plugins import SessionStart, TurnEnd, TurnStart
 from pydantic_clai2.settings_store import SettingsStore
@@ -242,6 +244,67 @@ async def test_async_delivery_reaps_the_child_on_timeout_or_cancellation(
         with pytest.raises(ProcessLookupError):
             os.kill(pid, 0)
     finally:
+        os.close(read_fd)
+        os.close(write_fd)
+        await loader.close('exit')
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX file descriptors and process existence check')
+@pytest.mark.parametrize('through_interrupts', [False, True])
+async def test_native_cancellation_reaps_child_and_stays_cancelled(
+    through_interrupts: bool, loader_factory: Callable[[], PluginLoader[None]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    read_fd, write_fd = os.pipe()
+
+    async def run_process(
+        command: list[str], *, stdin: int, stdout: int, stderr: int, check: bool
+    ) -> CompletedProcess[bytes]:
+        return await anyio.run_process(
+            [
+                sys.executable,
+                '-c',
+                'import os, sys, time; os.write(int(sys.argv[1]), str(os.getpid()).encode()); time.sleep(60)',
+                str(write_fd),
+            ],
+            stdin=stdin,
+            stdout=stdout,
+            stderr=stderr,
+            check=check,
+            pass_fds=(write_fd,),
+        )
+
+    monkeypatch.setattr(notifications, 'run_process', run_process)
+    monkeypatch.setattr(notifications, 'platform', 'linux')
+    loader = loader_factory()
+    await loader.load_all()
+    interrupts = Interrupts()
+    completed: list[bool] = []
+
+    async def deliver() -> None:
+        await loader.fire(TurnEnd(text=SECRET, outcome='completed'))
+        completed.append(True)
+
+    async def interruptible() -> None:
+        assert not await interrupts.run(deliver())
+
+    task = asyncio.create_task(interruptible() if through_interrupts else deliver())
+    try:
+        with anyio.fail_after(READINESS_TIMEOUT):
+            await anyio.wait_readable(read_fd)
+            pid = int(os.read(read_fd, 100))
+            if through_interrupts:
+                assert interrupts.cancel()
+                await task
+            else:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+        assert completed == []
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
         os.close(read_fd)
         os.close(write_fd)
         await loader.close('exit')
