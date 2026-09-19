@@ -291,8 +291,8 @@ of reaching the model. Absolute paths such as `/Users/me/Desktop/Screenshot.png`
 are prompts, not commands: a slash, dot, or backslash in the first token after
 `/` marks path-like input. Quoted paths are also prompts. For an ambiguous
 single-component path with spaces, quote it, for example `"/Screen Shot.png"`.
-The original prompt text, including spaces and shell escapes, reaches the agent
-unchanged. This routing does not read or attach the file automatically; the
+After the editor trims surrounding whitespace, the prompt text, including
+internal spaces and shell escapes, reaches the agent unchanged. This routing does not read or attach the file automatically; the
 agent's configured tools determine how it can access the screenshot.
 
 Up/down recall saved prompt history. Ctrl-D exits. Ctrl-C at input clears the line; during a run it cancels
