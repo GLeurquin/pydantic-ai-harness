@@ -57,6 +57,15 @@ def main(root: Path, mode: str) -> None:
     if mode.startswith('guard:'):
         (package / 'reload_inactive.py').write_text('from .reload_consumer import VALUE as NEW\n')
         new_consumer = conditional_source(mode.removeprefix('guard:'))
+    elif mode in ('branch_alias', 'agreed_alias'):
+        provider_path.write_text('from .reload_leaf import VALUE\nNEW = "new"\n')
+        second = 'sys.platform' if mode == 'agreed_alias' else 'os.name'
+        module, attr = second.split('.')
+        new_consumer = (
+            'if bool(1):\n    from sys import platform as runtime_platform\n'
+            f'else:\n    from {module} import {attr} as runtime_platform\n'
+            f'if runtime_platform == {sys.platform!r}:\n    from .reload_provider import NEW\nVALUE = NEW\n'
+        )
     elif mode == 'unknown_guards':
         provider_path.write_text(
             'import sys\n'

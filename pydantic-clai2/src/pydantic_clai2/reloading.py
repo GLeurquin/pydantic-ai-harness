@@ -51,6 +51,7 @@ class _Imports(ast.NodeVisitor):
     def visit_Import(self, node: ast.Import) -> None:
         self.names.update(alias.name for alias in node.names)
         for alias in node.names:
+            self._forget(alias.asname or alias.name.partition('.')[0])
             for key, value in _IMPORT_VALUES.items():
                 if key.startswith(alias.name + '.'):
                     self.values[key.replace(alias.name, alias.asname or alias.name, 1)] = value
@@ -60,6 +61,7 @@ class _Imports(ast.NodeVisitor):
         self.names.add(name)
         self.names.update(f'{name}.{alias.name}' for alias in node.names)
         for alias in node.names:
+            self._forget(alias.asname or alias.name)
             key = f'{name}.{alias.name}'
             if key in _IMPORT_VALUES:
                 self.values[alias.asname or alias.name] = _IMPORT_VALUES[key]
@@ -70,16 +72,17 @@ class _Imports(ast.NodeVisitor):
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         pass
 
+    def _forget(self, name: str) -> None:
+        self.values = {
+            key: value for key, value in self.values.items() if key != name and not key.startswith(name + '.')
+        }
+
     def visit_Assign(self, node: ast.Assign) -> None:
         # A reassignment can shadow one of the standard-library guard aliases.
         for target in node.targets:
             for child in ast.walk(target):
                 if isinstance(child, ast.Name):
-                    self.values = {
-                        key: value
-                        for key, value in self.values.items()
-                        if key != child.id and not key.startswith(child.id + '.')
-                    }
+                    self._forget(child.id)
 
     def _value(self, node: ast.expr) -> _GuardValue | _Unknown:
         key = ast.unparse(node)
@@ -117,11 +120,17 @@ class _Imports(ast.NodeVisitor):
     def visit_If(self, node: ast.If) -> None:
         condition = self._condition(node.test)
         if condition is None:
-            statements = (*node.body, *node.orelse)
+            before = self.values.copy()
+            for statement in node.body:
+                self.visit(statement)
+            after_body = self.values
+            self.values = before
+            for statement in node.orelse:
+                self.visit(statement)
+            self.values = {key: value for key, value in self.values.items() if after_body.get(key, _UNKNOWN) == value}
         else:
-            statements = node.body if condition else node.orelse
-        for statement in statements:
-            self.visit(statement)
+            for statement in node.body if condition else node.orelse:
+                self.visit(statement)
 
 
 def _reload_plan(names: Iterable[str]) -> tuple[tuple[str, Path], ...]:

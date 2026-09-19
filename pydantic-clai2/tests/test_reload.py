@@ -31,6 +31,8 @@ def run_script(tmp_path: Path, script: str, mode: str) -> None:
     'mode',
     [
         'relative',
+        'branch_alias',
+        'agreed_alias',
         'unknown_guards',
         'invalid_guard',
         *(
