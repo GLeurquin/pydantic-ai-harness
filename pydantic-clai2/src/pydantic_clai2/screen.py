@@ -27,8 +27,21 @@ class Screen:
         self._owner = asyncio.Lock()
         self.editor: FullScreen | None = None
         self._busy = 0
+        self._closed = False
         self._idle = asyncio.Event()
         self._idle.set()
+
+    @contextmanager
+    def session(self) -> Generator[None]:
+        """Keep notices suspended after input ends until plugin workers are unloaded."""
+        self._closed = False
+        if not self._busy:
+            self._idle.set()
+        try:
+            yield
+        finally:
+            self._closed = True
+            self._idle.clear()
 
     @contextmanager
     def busy(self) -> Generator[None]:
@@ -39,12 +52,12 @@ class Screen:
             yield
         finally:
             self._busy -= 1
-            if not self._busy:
+            if not self._busy and not self._closed:
                 self._idle.set()
 
     async def notify(self, message: str, *, console: Console) -> None:
         """Print only at an idle boundary, without taking input away from the editor."""
-        while self._busy:
+        while self._busy or self._closed:
             await self._idle.wait()
         console.print(message, style=theme.current().info, markup=False, highlight=False)
 

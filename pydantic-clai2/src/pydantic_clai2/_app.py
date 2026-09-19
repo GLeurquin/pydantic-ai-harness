@@ -410,11 +410,13 @@ class _Shell(Generic[DepsT, OutputT]):
             self.screen.editor = self.editor.suspended
             try:
                 async with self.editor.opened():
-                    return await self._read_loop(show_frame, prepare_prompt)
+                    with self.screen.session():
+                        return await self._read_loop(show_frame, prepare_prompt)
             finally:
                 self.screen.editor = None
                 self.editor = None
-        return await self._read_loop(show_frame, prepare_prompt)
+        with self.screen.session():
+            return await self._read_loop(show_frame, prepare_prompt)
 
     async def _read_loop(self, show_frame: Filter, prepare_prompt: Callable[[], None]) -> SessionEndReason:
         while True:
