@@ -111,21 +111,12 @@ pub enum FetchIssueError {
     Request(#[from] reqwest::Error),
 }
 
-/// Fetch one issue. `base_url` is `https://api.github.com` in production;
-/// tests point it at a local server so this never depends on the real API.
-pub async fn fetch_issue(
-    client: &reqwest::Client,
-    base_url: &str,
-    token: &str,
-    issue_ref: &str,
-) -> Result<FetchedIssue, FetchIssueError> {
-    let issue = IssueRef::parse(issue_ref)?;
-    let url = format!(
-        "{base_url}/repos/{}/{}/issues/{}",
-        issue.owner, issue.repo, issue.number
-    );
+/// GET `url` with the standard GitHub auth/accept headers and parse the
+/// response as JSON, mapping a non-2xx status to [`FetchIssueError::Github`].
+/// Shared by every GitHub REST call this module makes.
+async fn get_json(client: &reqwest::Client, url: &str, token: &str) -> Result<serde_json::Value, FetchIssueError> {
     let response = client
-        .get(&url)
+        .get(url)
         .bearer_auth(token)
         .header("Accept", "application/vnd.github+json")
         .header("User-Agent", "clai2-web")
@@ -139,7 +130,23 @@ pub async fn fetch_issue(
             message,
         });
     }
-    let body: serde_json::Value = response.json().await?;
+    Ok(response.json().await?)
+}
+
+/// Fetch one issue. `base_url` is `https://api.github.com` in production;
+/// tests point it at a local server so this never depends on the real API.
+pub async fn fetch_issue(
+    client: &reqwest::Client,
+    base_url: &str,
+    token: &str,
+    issue_ref: &str,
+) -> Result<FetchedIssue, FetchIssueError> {
+    let issue = IssueRef::parse(issue_ref)?;
+    let url = format!(
+        "{base_url}/repos/{}/{}/issues/{}",
+        issue.owner, issue.repo, issue.number
+    );
+    let body = get_json(client, &url, token).await?;
     let html_url = body
         .get("html_url")
         .and_then(serde_json::Value::as_str)
