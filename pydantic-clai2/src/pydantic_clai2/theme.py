@@ -157,6 +157,13 @@ _BASIC = {
     '#696168': 90,
     '#6940B5': 35,
     DARK_PURPLE: 30,
+    ELEMENT_PURPLE: 30,
+    DIFF_ADDITION: 90,
+    DIFF_DELETION: 31,
+    '#F6F2F5': 97,
+    '#E8DFE7': 97,
+    '#DDEEE5': 97,
+    '#F8E1DD': 97,
 }
 
 

@@ -142,6 +142,27 @@ async def test_roles_reach_markdown_status_and_tool_output(
     assert theme.current() == theme.THEMES['pydantic']
 
 
+def test_all_palette_colours_have_basic_ansi_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv('COLORTERM', raising=False)
+    for colors in theme.THEMES.values():
+        for color in (
+            colors.primary,
+            colors.info,
+            colors.warning,
+            colors.error,
+            colors.muted,
+            colors.thinking,
+            colors.surface,
+            colors.panel,
+            colors.link,
+            colors.text,
+            colors.highlight,
+            colors.diff_addition,
+            colors.diff_deletion,
+        ):
+            assert int(theme.sgr(color)[2:-1]) in (*range(30, 40), *range(90, 98))
+
+
 async def test_fenced_code_uses_the_selected_syntax_theme() -> None:
     styles: list[str] = []
     name: theme.ThemeName
