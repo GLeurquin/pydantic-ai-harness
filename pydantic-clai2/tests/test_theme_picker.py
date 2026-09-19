@@ -144,10 +144,15 @@ async def test_roles_reach_markdown_status_and_tool_output(
 
 async def test_fenced_code_uses_the_selected_syntax_theme() -> None:
     styles: list[str] = []
+    name: theme.ThemeName
     for name in theme.THEMES:
         output = io.StringIO()
         console = Console(file=output, force_terminal=True, color_system='truecolor')
-        with theme.use(lambda: name):
+
+        def selected_theme() -> theme.ThemeName:
+            return name
+
+        with theme.use(selected_theme):
             renderer = StreamRenderer(console, stop_loading=lambda: None)
             await renderer.on_stream_event(PartStartEvent(index=0, part=TextPart('```python\nreturn True\n```\n')))
             await renderer.finish()
