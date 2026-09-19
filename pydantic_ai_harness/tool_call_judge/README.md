@@ -144,7 +144,7 @@ judge = ToolCallJudge(
 )
 ```
 
-The judge then also receives a `<conversation>` block: user messages, assistant messages, tool calls, and tool results rendered as a transcript and clamped to the most recent `conversation_window` tokens. System prompts and thinking parts are left out, so the judge is shown observable behavior rather than the agent's configuration or private reasoning.
+The judge then also receives a `<conversation>` block: user messages, assistant messages, tool calls, and tool results rendered as a transcript and clamped to the most recent `conversation_window` tokens (estimated at ~4 characters per token). System prompts and thinking parts are left out, so the judge is shown observable behavior rather than the agent's configuration or private reasoning.
 
 Turning it on widens the judge's own prompt-injection surface, because that transcript includes third-party content. The judge instructions label both blocks as untrusted data, and both are escaped before they are embedded. That reduces the risk rather than removing it: content-derived instructions are exactly what a model is least able to discount, which is why the judge is one filter among the controls a sensitive tool needs.
 

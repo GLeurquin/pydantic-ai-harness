@@ -188,7 +188,8 @@ class ToolCallJudge(AbstractCapability[AgentDepsT]):
     conversation_window: int = 4_000
     """Token budget for the conversation, when `include_conversation` is set.
 
-    The rendered transcript is clamped to its tail, so the judge sees the most recent turns.
+    The rendered transcript is clamped to its most recent tokens (estimated at ~4 characters
+    per token), so the judge sees the latest turns and per-judgement cost stays bounded.
     """
 
     on_uncertain: Literal['block', 'allow', 'ask'] = 'block'
