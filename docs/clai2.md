@@ -67,13 +67,13 @@ py-cli clai2 -w
 A Git worktree is another checkout of the same repository with its own branch
 and working files. Run these commands inside a repository with at least one
 commit. `--worktree NAME` creates a `clai/NAME` branch from the current `HEAD`
-and starts CLAI at `<repository-parent>/<repository-name>.worktrees/NAME`.
+and starts CLAI at `<repository-root>/.worktrees/NAME`.
 `-w` is the short form; omit the name to generate one. Names start with a letter
 or digit and contain only ASCII letters, digits, hyphens, and underscores.
 
-The worktree lives outside your source checkout so it does not appear as an
-untracked directory there. Uncommitted changes, ignored files, and untracked
-files are not copied. Project settings, repository instructions, and coding
+CLAI adds `/.worktrees/` to Git's local `info/exclude` file to keep generated
+checkouts out of `git status`, without changing your tracked `.gitignore`.
+Uncommitted changes, ignored files, and untracked files are not copied. Project settings, repository instructions, and coding
 tools use the new worktree root. Your user settings and plugins stay available;
 a relative `--database` path still refers to the directory you launched from.
 
@@ -87,7 +87,7 @@ When you no longer need the checkout, use Git's own cleanup commands from your
 original repository root. Without `--force`, Git refuses to remove a dirty worktree:
 
 ```bash
-git worktree remove "../$(basename "$PWD").worktrees/my-task"
+git worktree remove .worktrees/my-task
 git branch -d clai/my-task
 ```
 

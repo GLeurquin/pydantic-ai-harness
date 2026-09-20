@@ -67,7 +67,7 @@ def test_launches_in_new_worktree(repository: Path, args: list[str]) -> None:
     result = launch(nested, *args, prompt='/set run.request_limit\n/exit\n')
 
     assert result.returncode == 0, result.stderr
-    worktrees = list((repository.parent / f'{repository.name}.worktrees').iterdir())
+    worktrees = list((repository / '.worktrees').iterdir())
     assert len(worktrees) == 1
     workspace = worktrees[0]
     assert (
@@ -88,6 +88,8 @@ def test_launches_in_new_worktree(repository: Path, args: list[str]) -> None:
     assert git(repository, 'symbolic-ref', 'HEAD') == original_branch
     assert (repository / 'tracked.txt').read_text() == 'uncommitted'
     assert (repository / 'untracked.txt').read_text() == 'keep this'
+    assert '.worktrees' not in git(repository, 'status', '--porcelain')
+    assert not (repository / '.gitignore').exists()
 
 
 def test_launch_from_linked_worktree(repository: Path) -> None:
@@ -98,9 +100,37 @@ def test_launch_from_linked_worktree(repository: Path) -> None:
     git(linked, 'commit', '-m', 'Advance linked checkout')
     result = launch(linked, '-w', 'child')
     assert result.returncode == 0, result.stderr
-    child = linked.parent / 'linked.worktrees/child'
+    child = linked / '.worktrees/child'
     assert git(child, 'rev-parse', 'HEAD') == git(linked, 'rev-parse', 'HEAD')
     assert (child / 'linked.txt').read_text() == 'linked commit'
+    assert '.worktrees' not in git(linked, 'status', '--porcelain')
+
+
+@pytest.mark.parametrize('existing', [None, b'keep-me', b'keep-me\n/.worktrees/\n'])
+def test_local_exclude_preserves_rules_without_duplicates(repository: Path, existing: bytes | None) -> None:
+    exclude = repository / '.git/info/exclude'
+    if existing is None:
+        exclude.unlink()
+        exclude.parent.rmdir()
+    else:
+        exclude.write_bytes(existing)
+    result = launch(repository, '-w', 'ignored')
+    assert result.returncode == 0, result.stderr
+    contents = exclude.read_bytes()
+    assert contents.startswith(existing or b'')
+    assert contents.splitlines().count(b'/.worktrees/') == 1
+    assert git(repository, 'check-ignore', '.worktrees/ignored') == '.worktrees/ignored'
+
+
+def test_unwritable_exclude_is_a_parser_error(repository: Path) -> None:
+    exclude = repository / '.git/info/exclude'
+    exclude.unlink()
+    exclude.mkdir()
+    result = launch(repository, '-w', 'ignored')
+    assert result.returncode == 2
+    assert 'error: Cannot create worktree:' in result.stderr
+    assert 'Traceback' not in result.stderr
+    assert not (repository / '.worktrees').exists()
 
 
 def test_session_belongs_to_worktree_and_can_be_resumed(repository: Path) -> None:
@@ -111,7 +141,7 @@ def test_session_belongs_to_worktree_and_can_be_resumed(repository: Path) -> Non
         prompt='/plugins disable coder\n/plugins disable ask_user\n/set sessions.naming false\nhello\n/exit\n',
     )
     assert result.returncode == 0, result.stderr
-    workspace = repository.parent / f'{repository.name}.worktrees/saved'
+    workspace = repository / '.worktrees/saved'
     store = SqliteConversationStore(database=repository / 'sessions.db')
     summaries = anyio.run(store.listing)
     assert len(summaries) == 1
@@ -124,7 +154,7 @@ def test_session_belongs_to_worktree_and_can_be_resumed(repository: Path) -> Non
 def test_startup_error_keeps_created_worktree(repository: Path) -> None:
     result = launch(repository, '-w', 'retained', '--request-limit', '0')
     assert result.returncode == 2
-    workspace = repository.parent / f'{repository.name}.worktrees/retained'
+    workspace = repository / '.worktrees/retained'
     assert f'Worktree: {workspace}' in result.stdout
     assert 'Kept on exit.' in result.stdout
     assert (workspace / 'tracked.txt').read_text() == 'committed'
@@ -136,7 +166,7 @@ def test_git_errors_leave_existing_work_untouched(
     repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str
 ) -> None:
     directory = repository
-    workspace = repository.parent / f'{repository.name}.worktrees' / 'feature'
+    workspace = repository / '.worktrees/feature'
     if state == 'outside':
         directory = tmp_path
     elif state == 'unborn':
@@ -170,7 +200,7 @@ def test_invalid_names_are_parser_errors(repository: Path, name: str) -> None:
     assert result.returncode == 2
     assert 'error: Worktree names' in result.stderr
     assert 'Traceback' not in result.stderr
-    assert not (repository.parent / f'{repository.name}.worktrees').exists()
+    assert not (repository / '.worktrees').exists()
 
 
 @pytest.mark.parametrize('args', [['--resume'], ['--resume=session'], ['config', 'show'], ['plugins', 'list']])
@@ -178,5 +208,5 @@ def test_worktree_rejects_incompatible_commands(repository: Path, args: list[str
     result = launch(repository, '--worktree=feature', *args)
     assert result.returncode == 2
     assert 'cannot be combined' in result.stderr
-    assert not (repository.parent / f'{repository.name}.worktrees').exists()
+    assert not (repository / '.worktrees').exists()
     assert not (repository / 'config.db').exists()
