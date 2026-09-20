@@ -28,6 +28,8 @@ class SettingsStore:
             if version not in (0, 1):
                 raise ValueError(f'Unsupported settings schema version: {version}')
             connection.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL)')
+            # Retired theme overrides must not prevent older databases from loading.
+            connection.execute("DELETE FROM settings WHERE key = 'display.theme'")
             connection.execute('CREATE TABLE IF NOT EXISTS plugins (id TEXT PRIMARY KEY, declaration TEXT NOT NULL)')
             connection.execute(
                 'CREATE TABLE IF NOT EXISTS model_settings (model TEXT PRIMARY KEY, settings_json TEXT NOT NULL)'

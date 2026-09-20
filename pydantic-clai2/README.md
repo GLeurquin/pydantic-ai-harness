@@ -270,6 +270,9 @@ Codex tokens are not written to the settings database. Plugin settings are arbit
 JSON stored in plaintext in this database, including secrets if you put them there.
 Pass secret references or use plugin-owned credential storage instead of embedding keys.
 
+When you open an older settings database, CLAI removes the retired `display.theme`
+override so it cannot block startup. Other preferences are preserved.
+
 ```text
 /set
 /set model <Tab>
