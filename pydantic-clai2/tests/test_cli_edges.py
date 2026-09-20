@@ -4,6 +4,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -28,15 +29,18 @@ def test_cli_startup(tmp_path: Path, args: list[str]) -> None:
 
 
 @pytest.mark.parametrize('args', [[], ['config', 'show']])
-def test_cli_removes_retired_theme_setting(tmp_path: Path, args: list[str]) -> None:
+def test_cli_preserves_unknown_saved_settings(tmp_path: Path, args: list[str]) -> None:
     path = tmp_path / 'config.db'
-    with sqlite3.connect(path) as connection:
+    saved = {
+        'display.theme': '"light"',
+        'future.setting': '{"enabled":true}',
+        'display.thinking': 'false',
+        'model': '"test"',
+    }
+    with closing(sqlite3.connect(path)) as connection, connection:
         connection.execute('PRAGMA user_version = 1')
         connection.execute('CREATE TABLE settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL)')
-        connection.executemany(
-            'INSERT INTO settings VALUES (?, ?)',
-            [('display.theme', '"dracula"'), ('display.thinking', 'false'), ('model', '"test"')],
-        )
+        connection.executemany('INSERT INTO settings VALUES (?, ?)', saved.items())
     result = subprocess.run(
         [sys.executable, '-m', 'pydantic_clai2', '--database', str(path), *args],
         input='/exit\n',
@@ -50,8 +54,8 @@ def test_cli_removes_retired_theme_setting(tmp_path: Path, args: list[str]) -> N
     store = SettingsStore(path)
     assert store.overrides() == {'display.thinking': False, 'model': 'test'}
     assert not store.load().thinking
-    with pytest.raises(ValueError, match='Unknown settings: display.theme'):
-        store.set('display.theme', 'dracula')
+    with closing(sqlite3.connect(path)) as connection:
+        assert dict(connection.execute('SELECT key, value_json FROM settings')) == saved
 
 
 def test_cli_startup_interrupt(tmp_path: Path) -> None:

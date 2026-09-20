@@ -28,8 +28,6 @@ class SettingsStore:
             if version not in (0, 1):
                 raise ValueError(f'Unsupported settings schema version: {version}')
             connection.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL)')
-            # Retired theme overrides must not prevent older databases from loading.
-            connection.execute("DELETE FROM settings WHERE key = 'display.theme'")
             connection.execute('CREATE TABLE IF NOT EXISTS plugins (id TEXT PRIMARY KEY, declaration TEXT NOT NULL)')
             connection.execute(
                 'CREATE TABLE IF NOT EXISTS model_settings (model TEXT PRIMARY KEY, settings_json TEXT NOT NULL)'
@@ -47,11 +45,12 @@ class SettingsStore:
             connection.close()
 
     def overrides(self) -> dict[str, JsonValue]:
-        """Read explicit preferences, validating the serialized values."""
+        """Read recognized preferences without modifying unknown stored entries."""
         with self._connect() as connection:
             return {
                 key: _JSON.validate_json(value)
                 for key, value in connection.execute('SELECT key, value_json FROM settings')
+                if key in SETTING_FIELDS
             }
 
     def load(self) -> Settings:

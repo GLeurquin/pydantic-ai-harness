@@ -628,8 +628,9 @@ settings = host.settings(NotifySettings)
 ```
 
 Bad or missing values fail at startup with a message naming your plugin.
-CLAI removes the retired `display.theme` override from its own settings when opening
-the database. This does not change plugin declarations or their settings.
+CLAI ignores unknown names in its own saved settings and preserves their values for
+other versions or branches. This does not relax validation of plugin declarations
+or `host.settings(Model)`.
 
 ### Reach the conversation and the status row: `host.conversation`, `host.status`
 
