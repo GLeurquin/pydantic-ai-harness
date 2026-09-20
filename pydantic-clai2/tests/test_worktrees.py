@@ -167,6 +167,8 @@ def test_git_errors_leave_existing_work_untouched(
 ) -> None:
     directory = repository
     workspace = repository / '.worktrees/feature'
+    exclude = repository / '.git/info/exclude'
+    original_excludes = exclude.read_bytes()
     if state == 'outside':
         directory = tmp_path
     elif state == 'unborn':
@@ -178,7 +180,8 @@ def test_git_errors_leave_existing_work_untouched(
     elif state == 'path':
         workspace.mkdir(parents=True)
         (workspace / 'keep.txt').write_text('keep this')
-    else:
+    original_branches = git(repository, 'branch', '--format=%(refname)')
+    if state == 'missing-git':
         monkeypatch.setenv('PATH', '')
     result = launch(directory, '-w', 'feature')
     assert result.returncode == 2
@@ -186,10 +189,53 @@ def test_git_errors_leave_existing_work_untouched(
     assert 'Traceback' not in result.stderr
     assert 'Worktree:' not in result.stdout
     assert (repository / 'tracked.txt').read_text() == 'committed'
+    assert exclude.read_bytes() == original_excludes
+    if state != 'missing-git':
+        assert git(repository, 'branch', '--format=%(refname)') == original_branches
     if state == 'path':
         assert (workspace / 'keep.txt').read_text() == 'keep this'
     else:
         assert not workspace.exists()
+
+
+def test_failed_checkout_removes_new_branch_and_allows_retry(repository: Path) -> None:
+    (repository / '.gitattributes').write_text('tracked.txt filter=fail\n')
+    git(repository, 'add', '.gitattributes')
+    git(repository, 'commit', '-m', 'Configure checkout filter')
+    git(repository, 'config', 'filter.fail.smudge', 'false')
+    git(repository, 'config', 'filter.fail.required', 'true')
+    result = launch(repository, '-w', 'retry')
+    assert result.returncode == 2
+    assert 'smudge filter fail failed' in result.stderr
+    assert 'clai/retry' not in git(repository, 'branch', '--format=%(refname)')
+    assert not (repository / '.worktrees/retry').exists()
+    git(repository, 'config', 'filter.fail.smudge', 'cat')
+    assert launch(repository, '-w', 'retry').returncode == 0
+
+
+def test_checkout_hook_failure_preserves_work_and_reports_cleanup_failure(repository: Path) -> None:
+    hook = repository / '.git/hooks/post-checkout'
+    hook.write_text('#!/bin/sh\nexit 1\n')
+    hook.chmod(0o755)
+    result = launch(repository, '-w', 'retained')
+    workspace = repository / '.worktrees/retained'
+    assert result.returncode == 2
+    assert f'Cannot create worktree at {workspace}' in result.stderr
+    assert 'Branch clai/retained could not be removed' in result.stderr
+    assert (workspace / 'tracked.txt').read_text() == 'committed'
+    assert git(workspace, 'branch', '--show-current') == 'clai/retained'
+
+
+def test_exclude_write_failure_reports_retained_worktree(repository: Path) -> None:
+    hook = repository / '.git/hooks/post-checkout'
+    hook.write_text('#!/bin/sh\nexclude=$(git rev-parse --git-path info/exclude)\nrm "$exclude"\nmkdir "$exclude"\n')
+    hook.chmod(0o755)
+    result = launch(repository, '-w', 'retained')
+    workspace = repository / '.worktrees/retained'
+    assert result.returncode == 2
+    assert f'Worktree kept at {workspace}, but could not update Git excludes' in result.stderr
+    assert (workspace / 'tracked.txt').read_text() == 'committed'
+    assert git(workspace, 'branch', '--show-current') == 'clai/retained'
 
 
 @pytest.mark.parametrize(

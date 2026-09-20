@@ -71,14 +71,18 @@ and starts CLAI at `<repository-root>/.worktrees/NAME`.
 `-w` is the short form; omit the name to generate one. Names start with a letter
 or digit and contain only ASCII letters, digits, hyphens, and underscores.
 
-CLAI adds `/.worktrees/` to Git's local `info/exclude` file to keep generated
-checkouts out of `git status`, without changing your tracked `.gitignore`.
+After checkout succeeds, CLAI adds `/.worktrees/` to Git's local `info/exclude`
+file to keep generated checkouts out of `git status`, without changing your
+tracked `.gitignore`.
 Uncommitted changes, ignored files, and untracked files are not copied. Project settings, repository instructions, and coding
 tools use the new worktree root. Your user settings and plugins stay available;
 a relative `--database` path still refers to the directory you launched from.
 
 CLAI prints the new path and branch. Existing branches and non-empty directories
-are rejected. The worktree and branch remain after exit, including startup
+are rejected. If checkout fails, CLAI tries to remove only the branch it just
+created, without forcing deletion. If cleanup or the ignore edit fails, the error
+names the retained branch or checkout for recovery. The worktree and branch
+remain after exit, including startup
 errors after creation, so CLAI does not delete your work. Enter that directory
 and run `clai2 --resume` to continue a saved session. `--worktree` cannot be
 combined with `--resume`, `config`, or `plugins`.
