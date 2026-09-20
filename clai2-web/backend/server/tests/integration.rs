@@ -2804,21 +2804,38 @@ async fn debug_context_with_no_snapshot_yet_is_null() {
     assert!(body.is_null(), "body: {body}");
 }
 
+/// Prompts `agent_id`'s main session for real, over a real ACP handshake, and returns the
+/// `acpSessionId` the backend recorded for it -- the id `clai_agent.py` actually names its
+/// snapshot file after, which is *not* the same string as this session's own `"main"` id.
+async fn establish_acp_session(world: &World, agent_id: &str) -> String {
+    let mut ws = world.ws().await;
+    world.prompt(agent_id, "main", "hello").await;
+    ws.collect_until(|event| event["type"] == "turnEnded").await;
+    ws.close().await;
+    let (_, agent) = world.get(&format!("/api/agents/{agent_id}")).await;
+    agent["sessions"][0]["acpSessionId"].as_str().unwrap().to_owned()
+}
+
 #[tokio::test]
 async fn debug_context_passes_through_the_agent_process_snapshot() {
     let world = world().await;
     let agent = world.create_agent("solo", false, "auto").await;
     let agent_id = agent["id"].as_str().unwrap().to_owned();
+    let acp_session_id = establish_acp_session(&world, &agent_id).await;
 
     // Stands in for `clai_agent.py`'s debug-context listener (a
     // `pydantic_ai_harness.compaction.ReportModelRequest` capability plus an `@agent.on_event`
-    // handler), which writes exactly this file shape -- opaque JSON passed straight through.
+    // handler), which writes exactly this file shape -- opaque JSON passed straight through --
+    // named after the ACP session id, the only session identity the agent process ever sees.
     let snapshot_dir = world._dir.path().join("data/debug-context").join(&agent_id);
     tokio::fs::create_dir_all(&snapshot_dir).await.unwrap();
     let snapshot = json!([{"kind": "request", "parts": [{"part_kind": "user-prompt", "content": "hi"}]}]);
-    tokio::fs::write(snapshot_dir.join("main.json"), snapshot.to_string())
-        .await
-        .unwrap();
+    tokio::fs::write(
+        snapshot_dir.join(format!("{acp_session_id}.json")),
+        snapshot.to_string(),
+    )
+    .await
+    .unwrap();
 
     let (status, body) = world
         .get(&format!("/api/agents/{agent_id}/sessions/main/debug-context"))
@@ -2828,14 +2845,40 @@ async fn debug_context_passes_through_the_agent_process_snapshot() {
 }
 
 #[tokio::test]
+async fn debug_context_is_keyed_by_the_acp_session_id_not_the_clai2_web_session_id() {
+    // Regression test: the agent process only ever knows the ACP-protocol session id (it has no
+    // way to learn clai2-web's own "main"/side-session naming), so a file named after clai2-web's
+    // session id -- which is exactly the mistake that shipped with the first version of this
+    // endpoint -- must not be found.
+    let world = world().await;
+    let agent = world.create_agent("solo", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap().to_owned();
+    establish_acp_session(&world, &agent_id).await;
+
+    let snapshot_dir = world._dir.path().join("data/debug-context").join(&agent_id);
+    tokio::fs::create_dir_all(&snapshot_dir).await.unwrap();
+    let wrongly_keyed = json!([{"kind": "request", "parts": []}]);
+    tokio::fs::write(snapshot_dir.join("main.json"), wrongly_keyed.to_string())
+        .await
+        .unwrap();
+
+    let (status, body) = world
+        .get(&format!("/api/agents/{agent_id}/sessions/main/debug-context"))
+        .await;
+    assert_eq!(status, 200);
+    assert!(body.is_null(), "body: {body}");
+}
+
+#[tokio::test]
 async fn debug_context_with_a_corrupt_snapshot_is_400() {
     let world = world().await;
     let agent = world.create_agent("solo", false, "auto").await;
     let agent_id = agent["id"].as_str().unwrap().to_owned();
+    let acp_session_id = establish_acp_session(&world, &agent_id).await;
 
     let snapshot_dir = world._dir.path().join("data/debug-context").join(&agent_id);
     tokio::fs::create_dir_all(&snapshot_dir).await.unwrap();
-    tokio::fs::write(snapshot_dir.join("main.json"), b"not json")
+    tokio::fs::write(snapshot_dir.join(format!("{acp_session_id}.json")), b"not json")
         .await
         .unwrap();
 

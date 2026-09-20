@@ -1665,20 +1665,30 @@ impl AgentManager {
     /// `clai_agent.py` wrote via `pydantic_ai_harness.compaction.ReportModelRequest`
     /// (pydantic-ai's own `ModelMessagesTypeAdapter` serialization), passed through rather than
     /// modeled here.
+    ///
+    /// Keyed by the session's *ACP* session id, not `session_id` (clai2-web's own "main" /
+    /// side-session label): the agent process only ever sees the ACP-protocol id handed to it
+    /// by `session_config`, which has no notion of clai2-web's own naming, so that is what
+    /// `clai_agent.py` names the file after. `None` until the session's first model request
+    /// assigns one (see `AgentManager::new`'s roster reload, which resets it on restart too).
     pub async fn debug_context(
         &self,
         agent_id: &str,
         session_id: &str,
     ) -> Result<Option<serde_json::Value>, ManagerError> {
-        {
+        let acp_session_id = {
             let agents = self.agents.lock().await;
             let entry = agents
                 .iter()
                 .find(|entry| entry.summary.id == agent_id)
                 .ok_or(ManagerError::AgentNotFound)?;
-            entry.session(session_id).ok_or(ManagerError::SessionNotFound)?;
-        }
-        let Some(raw) = self.store.read_debug_context(agent_id, session_id).await? else {
+            let session = entry.session(session_id).ok_or(ManagerError::SessionNotFound)?;
+            session.acp_session_id.clone()
+        };
+        let Some(acp_session_id) = acp_session_id else {
+            return Ok(None);
+        };
+        let Some(raw) = self.store.read_debug_context(agent_id, &acp_session_id).await? else {
             return Ok(None);
         };
         let value = serde_json::from_str(&raw)
