@@ -32,6 +32,7 @@ An agent that runs for many turns accumulates history: tool outputs, file reads,
 | `FallbackCompaction` | depends on chain | Tries the next strategy when one raises | Summarization can fail and deterministic truncation must keep the run alive |
 | `WarnNearLimits` | zero-LLM | Injects an URGENT/CRITICAL warning as limits approach | You want the agent to wrap up rather than have its history rewritten |
 | `ReportContextUsage` | zero-LLM | Reports context usage to your application; never edits history | You want a live context gauge in a UI |
+| `ReportModelRequest` | zero-LLM | Reports the exact messages about to be sent, for a host application; never edits history | You want a debug view or audit trail of what the agent actually sees |
 
 ## Triggers
 
@@ -150,6 +151,32 @@ history with no anchor, uses `tokenizer` or a ~4-characters-per-token heuristic 
 implementation. When a compaction capability runs earlier in the same cycle, a monitor registered
 after it subtracts the rewrite's heuristic reclaim while retaining the anchor's fixed provider
 overhead.
+
+## Reporting the exact request: `ReportModelRequest`
+
+`ReportContextUsage` tells you how full the context is; it does not tell you what is actually in it. An application building a debug view, an audit log, or a support tool that reconstructs a session needs the real messages, and a compaction strategy's `compact_messages` span deliberately records only counts and token estimates -- content does not belong in a trace. `ReportModelRequest` closes that gap: it only observes, never edits the history, and emits the full message list your application subscribes to:
+
+```python
+from pydantic_ai import Agent
+from pydantic_ai_harness import ReportModelRequest, SummarizingCompaction
+from pydantic_ai_harness.compaction import ModelRequestReportedEvent
+
+agent = Agent(
+    'anthropic:claude-sonnet-5',
+    capabilities=[
+        SummarizingCompaction(max_fraction=0.9, keep_messages=20),
+        ReportModelRequest(),
+    ],
+)
+
+@agent.on_event(ModelRequestReportedEvent)
+async def log_request(ctx, event):
+    print(f'sending {len(event.messages)} messages to {event.model_id}')
+```
+
+Order matters, the same as `ReportContextUsage`: register it *after* a compaction capability to see the compacted history, or before it to see what triggered the compaction.
+
+The event carries full message content -- unlike everything else in this package, which emits to OpenTelemetry behind `trace_include_content` because a trace has a wider audience than the application that produced it. Route the event deliberately: a debug artifact, an authenticated operator endpoint, a store your own access control protects -- not a wide telemetry sink or a client-visible channel. `ReportModelRequest` adds no OpenTelemetry spans of its own: core's own model-request span already records that a request happened.
 
 ## Compacting outside a run: `compact_now`
 
@@ -523,6 +550,8 @@ The recommended default is `TieredCompaction`; the other strategies below can be
 ::: pydantic_ai_harness.compaction.ReportContextUsage
 
 ::: pydantic_ai_harness.compaction.ContextUsage
+
+::: pydantic_ai_harness.compaction.ReportModelRequest
 
 ::: pydantic_ai_harness.compaction.pin
 

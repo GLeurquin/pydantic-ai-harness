@@ -257,6 +257,7 @@ COMBINE_POLICY: dict[str, Policy] = {
     'ManagedPrompt': Anonymous('one per prompt name'),
     'RepoContext': Anonymous('one per workspace root'),
     'ReportContextUsage': Anonymous('a passive observer; several callbacks compose'),
+    'ReportModelRequest': Anonymous('a passive observer; one before and one after compaction both make sense'),
     'Skills': Anonymous('a factory: one deferred capability per skill, each named after the skill'),
     'SlidingWindowCompaction': Anonymous('composes as a tier under `TieredCompaction`'),
     'StackOne': Anonymous('one per linked account, and `account_id` is what names it'),

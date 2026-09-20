@@ -18,6 +18,11 @@ from pydantic_ai_harness.compaction._manual import compact_now
 from pydantic_ai_harness.compaction._pinning import is_pinned, pin, reinject_pinned
 from pydantic_ai_harness.compaction._receipts import TranscriptHandleProvider
 from pydantic_ai_harness.compaction._report_context_usage import ContextUsage, ReportContextUsage
+from pydantic_ai_harness.compaction._report_model_request import ReportModelRequest
+from pydantic_ai_harness.compaction._report_model_request_events import (
+    REPORT_MODEL_REQUEST_EVENTS,
+    ModelRequestReportedEvent,
+)
 from pydantic_ai_harness.compaction._shared import (
     CompactionStrategy,
     SupportsFocus,
@@ -37,7 +42,10 @@ __all__ = [
     'ContextUsage',
     'ContextUsageEvent',
     'REPORT_CONTEXT_USAGE_EVENTS',
+    'REPORT_MODEL_REQUEST_EVENTS',
     'ReportContextUsage',
+    'ModelRequestReportedEvent',
+    'ReportModelRequest',
     'DeduplicateFileReads',
     'FallbackCompaction',
     'SlidingWindowCompaction',
