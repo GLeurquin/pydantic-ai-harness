@@ -92,6 +92,21 @@ def test_csi_partial_unknown_and_oversized_sequences_do_not_become_draft_text() 
         assert len(events) == 2
 
 
+@pytest.mark.parametrize('sequence', ['\x1b\x7f', '\x1b\x08'])
+@pytest.mark.parametrize('split', [False, True])
+async def test_alt_backspace_through_actual_decoder(sequence: str, split: bool) -> None:
+    events: list[tuple[str, str]] = []
+    with create_pipe_input() as pipe:
+        keys = PromptKeys(source=pipe, feed=lambda key, data: events.append((key, data)), eof=lambda: None)
+        try:
+            for chunk in sequence if split else [sequence]:
+                pipe.send_text(chunk)
+                keys.read()
+            assert events == [('alt-backspace', sequence[-1])]
+        finally:
+            keys.stop()
+
+
 async def test_cursor_reports_are_not_draft_keys() -> None:
     events: list[tuple[str, str]] = []
     with create_pipe_input() as pipe:
