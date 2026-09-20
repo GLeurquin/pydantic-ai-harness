@@ -244,11 +244,15 @@ class TestShellTool:
             os.kill(supervisors[0], signal.SIGTERM)
 
         output = results[0]
-        assert '"exit_code": null' in output
-        assert recorder.finished.exit_code is None
-        started = recorder.events[0]
-        assert isinstance(started, CommandStartedEvent)
-        os.killpg(started.pid, signal.SIGKILL)
+        try:
+            assert '"exit_code": null' in output
+            assert recorder.finished.exit_code is None
+            started = recorder.events[0]
+            assert isinstance(started, CommandStartedEvent)
+        finally:
+            # The command still runs in the supervisor's session; kill it even when an assertion
+            # fails, so a failure does not leave the process and its temp directory behind.
+            os.killpg(supervisors[0], signal.SIGKILL)
 
     async def test_supervisor_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv('PYTHONHOME', str(tmp_path / 'missing-python'))
