@@ -61,6 +61,10 @@ export interface AgentSummary {
   goal: GoalConfig | null;
   ciTracking: CiTracking | null;
   folderId: string | null;
+  /** Whether this agent's process is the bundled deterministic stub agent rather than a real
+   * model-backed one. Frozen at creation from the server's spawn command at the time -- a model
+   * profile only layers environment on top of it, so it never flips a stub agent real. */
+  isStub: boolean;
 }
 
 /** An autonomous goal an agent works toward turn-over-turn on its own. */

@@ -320,6 +320,7 @@ mod tests {
                 goal: None,
                 ci_tracking: None,
                 folder_id: None,
+                is_stub: true,
             },
             command: vec!["stub-agent".to_owned()],
         }

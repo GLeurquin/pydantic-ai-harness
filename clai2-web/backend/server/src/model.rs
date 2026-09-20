@@ -134,6 +134,17 @@ pub struct AgentSummary {
     /// files persisted before folders existed.
     #[serde(default)]
     pub folder_id: Option<String>,
+    /// Whether this agent's process is the bundled deterministic stub agent
+    /// rather than a real model-backed one. Computed once from the agent's
+    /// own frozen spawn command (see [`AgentEntry`](crate::manager::AgentEntry))
+    /// at creation or roster-reload time -- a model profile only layers
+    /// environment on top of that command, so switching profiles never
+    /// changes this. `#[serde(default)]` covers roster files persisted
+    /// before this field existed; the reload path recomputes it from the
+    /// persisted command regardless, so a stale `false` never survives a
+    /// restart.
+    #[serde(default)]
+    pub is_stub: bool,
 }
 
 /// A goal an agent works toward turn-over-turn without a human re-prompting

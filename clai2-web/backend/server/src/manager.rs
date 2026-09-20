@@ -232,6 +232,19 @@ fn default_project_name(repo_root: &std::path::Path) -> String {
         .unwrap_or_else(|| repo_root.to_string_lossy().into_owned())
 }
 
+/// Whether an agent's frozen spawn command is the bundled stub agent
+/// (`--stub` at startup) rather than a real one (`--agent-cmd`). The stub
+/// binary's own file name is always literally `stub-agent`, however it was
+/// reached (`main.rs` derives it as a sibling of the running executable), so
+/// checking the last path component is exact rather than a substring guess
+/// that would also match a real launcher someone happened to put in a
+/// directory containing that word.
+fn command_is_stub(command: &[String]) -> bool {
+    command
+        .first()
+        .is_some_and(|program| std::path::Path::new(program).file_name() == Some(std::ffi::OsStr::new("stub-agent")))
+}
+
 /// Whether a tracked PR's next CI check is due: no previous check, or the
 /// backed-off interval (see [`crate::github::ci_poll_interval`]) has elapsed
 /// since the last one.
@@ -289,6 +302,10 @@ impl AgentManager {
                 for session in &mut summary.sessions {
                     session.acp_session_id = None;
                 }
+                // Recomputed from each agent's own persisted command (not the manager's
+                // current config): an agent keeps the command it was created with even
+                // when the server later restarts with a different `--agent-cmd`/`--stub`.
+                summary.is_stub = command_is_stub(&agent.command);
                 AgentEntry {
                     summary,
                     command: agent.command,
@@ -623,6 +640,9 @@ impl AgentManager {
             goal: None,
             ci_tracking: None,
             folder_id: None,
+            // `finish_creation` overwrites this from the manager's own config right
+            // before it's stored; this placeholder is never observed.
+            is_stub: false,
         };
         let agent = self.finish_creation(summary, None).await?;
         // Best-effort: the agent already exists either way, so a failure to
@@ -690,10 +710,11 @@ impl AgentManager {
     /// Shared tail of create and fork: register, spawn, persist, announce.
     async fn finish_creation(
         self: &Arc<Self>,
-        summary: AgentSummary,
+        mut summary: AgentSummary,
         needs_replay: Option<HashSet<String>>,
     ) -> Result<AgentSummary, ManagerError> {
         let agent_id = summary.id.clone();
+        summary.is_stub = command_is_stub(&self.config.agent_command);
         {
             let mut agents = self.agents.lock().await;
             agents.push(AgentEntry {
@@ -1176,6 +1197,11 @@ impl AgentManager {
             goal: None,
             ci_tracking: None,
             folder_id: parent_summary.folder_id.clone(),
+            // `finish_creation` overwrites this from the manager's own config right
+            // before it's stored; this placeholder is never observed. A fork always
+            // spawns fresh under the manager's *current* command, same as a new
+            // agent -- it does not inherit the parent's own frozen command.
+            is_stub: false,
         };
         let mut needs_replay = HashSet::new();
         needs_replay.insert("main".to_owned());

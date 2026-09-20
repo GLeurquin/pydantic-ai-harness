@@ -45,6 +45,16 @@ test('creating an agent provisions a worktree branch in the sidebar', async ({ p
   await expect(page.getByRole('tab', { name: 'Conversation' })).toBeVisible();
 });
 
+test('the whole e2e suite runs against the stub agent, tagged as such', async ({ page }) => {
+  // Other tests in this run leave their own stub-backed agents in the sidebar, each with their
+  // own STUB tag, so this scopes to just the fresh agent's own row and tabs-meta -- see
+  // AgentRow.tsx and MainPane.tsx.
+  const name = await createAgent(page, { worktree: false });
+  const row = page.getByRole('button', { name: new RegExp(name) });
+  await expect(row.getByText('STUB')).toBeVisible();
+  await expect(page.locator('.tabs-meta').getByText('STUB')).toBeVisible();
+});
+
 test('chat round-trips through the stub agent', async ({ page }) => {
   await createAgent(page, { worktree: false });
   await send(page, 'hello e2e');

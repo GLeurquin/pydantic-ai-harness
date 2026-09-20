@@ -29,6 +29,7 @@ function makeAgent(
     goal: null,
     ciTracking: null,
     folderId,
+    isStub: false,
   };
 }
 

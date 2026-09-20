@@ -19,6 +19,11 @@ export function AgentRow({ agent, selected, onSelect }: AgentRowProps) {
         {agent.name}
         {agent.worktree ? <span className="agent-row-branch">{agent.worktree.branch}</span> : null}
       </span>
+      {agent.isStub ? (
+        <span className="stub-tag" title="Running the bundled stub agent, not a real model">
+          STUB
+        </span>
+      ) : null}
       {agent.pendingApprovals > 0 ? <span className="badge">{agent.pendingApprovals}</span> : null}
     </button>
   );

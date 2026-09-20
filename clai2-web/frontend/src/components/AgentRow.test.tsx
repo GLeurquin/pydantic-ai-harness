@@ -23,6 +23,7 @@ function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
     goal: null,
     ciTracking: null,
     folderId: null,
+    isStub: false,
     ...overrides,
   };
 }
@@ -49,6 +50,13 @@ describe('AgentRow', () => {
     rerender(<AgentRow agent={makeAgent({ pendingApprovals: 3 })} selected={false} onSelect={vi.fn()} />);
     const badge = document.querySelector('.badge');
     expect(badge).toHaveTextContent('3');
+  });
+
+  it('shows the stub tag only for a stub-backed agent', () => {
+    const { rerender } = render(<AgentRow agent={makeAgent()} selected={false} onSelect={vi.fn()} />);
+    expect(screen.queryByText('STUB')).toBeNull();
+    rerender(<AgentRow agent={makeAgent({ isStub: true })} selected={false} onSelect={vi.fn()} />);
+    expect(screen.getByText('STUB')).toHaveClass('stub-tag');
   });
 
   it('marks the selected row with the selected class and aria-current', () => {

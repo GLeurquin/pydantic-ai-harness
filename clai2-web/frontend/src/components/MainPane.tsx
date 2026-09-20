@@ -68,8 +68,13 @@ export function MainPane(props: MainPaneProps) {
         >
           Settings
         </button>
-        {agent.goal || agent.ciTracking || (activeSession && activeSession.totalTokens > 0) ? (
+        {agent.isStub || agent.goal || agent.ciTracking || (activeSession && activeSession.totalTokens > 0) ? (
           <div className="tabs-meta">
+            {agent.isStub ? (
+              <span className="stub-tag" title="Running the bundled stub agent, not a real model">
+                STUB
+              </span>
+            ) : null}
             {agent.goal ? (
               <span className="tabs-goal" title={agent.goal.goal}>
                 Goal: turn {agent.goal.turnsUsed}/{agent.goal.maxTurns}

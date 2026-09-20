@@ -1405,6 +1405,70 @@ async fn unknown_session_is_404() {
 }
 
 #[tokio::test]
+async fn an_agent_created_under_stub_reports_is_stub() {
+    let world = world().await;
+    let agent = world.create_agent("solo", false, "auto").await;
+    assert_eq!(agent["isStub"], true);
+}
+
+#[tokio::test]
+async fn an_agent_created_under_a_real_agent_cmd_does_not_report_is_stub() {
+    let world = world_with(50, vec!["/nonexistent/agent".to_owned()]).await;
+    let (status, agent) = world
+        .post(
+            "/api/agents",
+            json!({"name": "doomed", "projectId": world.project_id, "useWorktree": false, "approvalMode": "auto"}),
+        )
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(agent["isStub"], false);
+}
+
+#[tokio::test]
+async fn is_stub_reflects_each_agents_own_frozen_command_across_a_restart_with_a_different_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    init_repo(&repo).await;
+    let config = ManagerConfig {
+        repo_root: repo.clone(),
+        worktrees_dir: dir.path().join("worktrees"),
+        data_dir: dir.path().join("data"),
+        agent_command: vec![STUB_AGENT.to_owned()],
+        max_agents: 50,
+        github_api_base_url: "https://api.github.com".to_owned(),
+    };
+
+    let agent_id = {
+        let manager = AgentManager::new(config.clone()).await.unwrap();
+        let project_id = manager.list_projects().await[0].id.clone();
+        let agent = manager
+            .create_agent(clai2_web_server::manager::CreateAgent {
+                name: "stub-born".to_owned(),
+                project_id,
+                use_worktree: false,
+                base_branch: None,
+                approval_mode: clai2_web_server::model::ApprovalMode::Auto,
+                model_profile_id: None,
+                initial_prompt: None,
+            })
+            .await
+            .unwrap();
+        assert!(agent.is_stub);
+        agent.id
+    };
+
+    // Restart with a different (non-stub) agent_command; the already-created agent keeps
+    // reporting is_stub from its own frozen command, not the manager's new one.
+    let mut real_config = config;
+    real_config.agent_command = vec!["/nonexistent/agent".to_owned()];
+    let manager = AgentManager::new(real_config).await.unwrap();
+    let agents = manager.snapshot().await;
+    assert_eq!(agents.len(), 1);
+    assert_eq!(agents[0].id, agent_id);
+    assert!(agents[0].is_stub);
+}
+
+#[tokio::test]
 async fn broken_agent_command_reports_error_status() {
     let world = world_with(50, vec!["/nonexistent/agent".to_owned()]).await;
     let (status, agent) = world

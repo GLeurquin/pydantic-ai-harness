@@ -27,6 +27,7 @@ function agent(
     goal: null,
     ciTracking: null,
     folderId,
+    isStub: false,
   };
 }
 

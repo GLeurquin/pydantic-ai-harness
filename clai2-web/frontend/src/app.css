@@ -196,6 +196,19 @@
   padding: 0 6px;
 }
 
+/* Marks an agent whose process is the bundled deterministic stub agent, not a real
+   model -- informational, so it's a muted outline rather than .badge's warning fill. */
+.stub-tag {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 0 6px;
+  flex-shrink: 0;
+}
+
 .status-dot {
   width: 9px;
   height: 9px;

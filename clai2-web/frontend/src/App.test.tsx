@@ -85,6 +85,7 @@ function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
     goal: null,
     ciTracking: null,
     folderId: null,
+    isStub: false,
     ...overrides,
   };
 }

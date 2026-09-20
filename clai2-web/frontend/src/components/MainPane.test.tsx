@@ -31,6 +31,7 @@ function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
     goal: null,
     ciTracking: null,
     folderId: null,
+    isStub: false,
     ...overrides,
   };
 }
@@ -188,6 +189,17 @@ describe('MainPane', () => {
   it('hides the goal readout when no goal is active', () => {
     renderPane({ view: { kind: 'session', sessionId: 'main' } });
     expect(screen.queryByText(/^Goal:/)).toBeNull();
+  });
+
+  it('shows the stub tag in the tabs row for a stub-backed agent', () => {
+    const agent = makeAgent({ isStub: true });
+    renderPane({ agent, view: { kind: 'session', sessionId: 'main' } });
+    expect(screen.getByText('STUB')).toHaveClass('stub-tag');
+  });
+
+  it('hides the stub tag for a real agent', () => {
+    renderPane({ view: { kind: 'session', sessionId: 'main' } });
+    expect(screen.queryByText('STUB')).toBeNull();
   });
 
   it('shows a failing CI badge in the tabs row while tracking a failing PR', () => {

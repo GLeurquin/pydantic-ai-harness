@@ -21,6 +21,7 @@ function agent(id: string, name = id): AgentSummary {
     goal: null,
     ciTracking: null,
     folderId: null,
+    isStub: false,
   };
 }
 

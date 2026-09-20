@@ -23,6 +23,7 @@ function makeAgent(id: string, name: string): AgentSummary {
     goal: null,
     ciTracking: null,
     folderId: null,
+    isStub: false,
   };
 }
 
