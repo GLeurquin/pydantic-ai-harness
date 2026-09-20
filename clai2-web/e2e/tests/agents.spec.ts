@@ -172,6 +172,17 @@ test('viewing the debug context from the settings tab round-trips through the re
   await expect(dialog).not.toBeVisible();
 });
 
+test('the context-usage gauge stays hidden until a reading exists, with no crash against the real backend', async ({
+  page,
+}) => {
+  // Same caveat as the debug-context test above: the stub agent never runs pydantic_ai's
+  // capability machinery, so context_usage never resolves to a reading either. This exercises
+  // the polling round trip (agent found, session found, no reading yet, no error) rather than a
+  // populated gauge, which ContextUsageBadge.test.tsx covers with a mocked reading.
+  await createAgent(page, { worktree: false });
+  await expect(page.locator('.tabs-context')).toHaveCount(0);
+});
+
 test('forking carries the conversation into a new worktree agent', async ({ page }) => {
   const name = await createAgent(page, { worktree: true });
   await send(page, 'remember: the sky is teal');
@@ -227,6 +238,27 @@ test('the changes tab shows the worktree diff', async ({ page, request }) => {
   await page.getByRole('tab', { name: 'Changes' }).click();
   await expect(page.getByLabel('Changes')).toContainText('+edited by test');
   await expect(page.getByLabel('Changes')).toContainText('brand new');
+});
+
+test('committing from the Changes tab clears the worktree status, against the real backend', async ({ page, request }) => {
+  const name = await createAgent(page, { worktree: true });
+  const agents = await (await request.get('/api/agents')).json();
+  const agent = agents.find((candidate: { name: string }) => candidate.name === name);
+  writeFileSync(join(agent.worktree.path, 'notes.txt'), 'committed via e2e\n');
+
+  await page.getByRole('tab', { name: 'Changes' }).click();
+  await expect(page.locator('.diff-meta')).toContainText('notes.txt');
+
+  await page.getByRole('button', { name: 'Commit...' }).click();
+  const dialog = page.getByRole('dialog', { name: `Commit changes in ${name}` });
+  await expect(dialog.getByLabel('Commit message')).toHaveValue('Update notes.txt');
+  await dialog.getByRole('button', { name: 'Commit' }).click();
+  await expect(dialog).not.toBeVisible();
+
+  // The committed file still differs from the base branch (it's not merged), but the
+  // working tree itself is clean now -- no more status line, nothing left to commit.
+  await expect(page.locator('.diff-meta')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Commit...' })).toBeDisabled();
 });
 
 test('archiving hides the agent from the live groups', async ({ page }) => {

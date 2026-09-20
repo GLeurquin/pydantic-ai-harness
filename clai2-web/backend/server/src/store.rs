@@ -253,6 +253,21 @@ impl Store {
         }
     }
 
+    /// Read the most recent context-usage reading for one session, if the agent process has
+    /// written one. Shares `debug_context_dir` with a distinct filename suffix rather than a
+    /// second directory/env var. `None` (not an error) means no model request yet.
+    pub async fn read_context_usage(&self, agent_id: &str, session_id: &str) -> Result<Option<String>, StoreError> {
+        let path = self
+            .debug_context_dir()
+            .join(agent_id)
+            .join(format!("{session_id}.context-usage.json"));
+        match tokio::fs::read_to_string(&path).await {
+            Ok(contents) => Ok(Some(contents)),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(source) => Err(StoreError::Io { path, source }),
+        }
+    }
+
     pub async fn append_transcript(
         &self,
         agent_id: &str,

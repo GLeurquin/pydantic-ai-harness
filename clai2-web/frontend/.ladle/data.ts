@@ -3,6 +3,7 @@
 import type {
   AgentSummary,
   ApprovalView,
+  ContextUsage,
   PermissionOption,
   ProjectSummary,
   RedactedProfile,
@@ -227,6 +228,20 @@ export function markdownTranscript(): TranscriptItem[] {
     },
   ];
 }
+
+export const sampleContextUsage: ContextUsage = {
+  usedTokens: 42_000,
+  windowTokens: 200_000,
+  resolved: true,
+  fraction: 0.21,
+};
+
+export const sampleContextUsageNearLimit: ContextUsage = {
+  usedTokens: 178_000,
+  windowTokens: 200_000,
+  resolved: true,
+  fraction: 0.89,
+};
 
 export const sampleDiff: WorktreeDiff = {
   status: ' M src/auth/session.py\n M tests/auth/test_session.py\n?? tests/auth/test_refresh.py',

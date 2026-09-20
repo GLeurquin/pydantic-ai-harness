@@ -21,6 +21,7 @@ distinct provider name -- `GoogleProvider.name` is `'google'` either way -- so
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import warnings
@@ -41,8 +42,10 @@ from pydantic_ai.tools import RunContext
 
 from pydantic_ai_harness import Coder
 from pydantic_ai_harness.compaction import (
+    ContextUsageEvent,
     FallbackCompaction,
     ModelRequestReportedEvent,
+    ReportContextUsage,
     ReportModelRequest,
     SlidingWindowCompaction,
     SummarizingCompaction,
@@ -142,9 +145,10 @@ def build_agent() -> Agent[ClaiDeps, str]:
             Coder(unrestricted_filesystem=True),
             RepoContext(workspace_dir=workspace),
             _compaction(),
-            # Listed after `_compaction()`: `before_model_request` hooks apply in list order, so
-            # this observes the compacted history, not what triggered the compaction.
+            # Both listed after `_compaction()`: `before_model_request` hooks apply in list
+            # order, so both observe the compacted history, not what triggered the compaction.
             ReportModelRequest(),
+            ReportContextUsage(),
         ],
         tools=[mark_goal_complete],
     )
@@ -162,6 +166,26 @@ def build_agent() -> Agent[ClaiDeps, str]:
         directory = Path(os.environ['CLAI_DEBUG_CONTEXT_DIR']) / ctx.deps.agent_id
         directory.mkdir(parents=True, exist_ok=True)
         (directory / f'{ctx.deps.session_id}.json').write_bytes(ModelMessagesTypeAdapter.dump_json(event.messages))
+
+    @agent.on_event(ContextUsageEvent)
+    async def write_context_usage(ctx: RunContext[ClaiDeps], event: ContextUsageEvent) -> None:
+        """Snapshot how full the context is, for clai2-web's live context gauge.
+
+        Shares `write_debug_context`'s directory and on-demand-read design, with a distinct
+        filename suffix rather than a second env var. Written in camelCase (unlike the debug
+        context file, which passes through `ModelMessagesTypeAdapter`'s own snake_case
+        untouched) since the backend parses these four fields itself rather than treating them
+        as opaque content.
+        """
+        directory = Path(os.environ['CLAI_DEBUG_CONTEXT_DIR']) / ctx.deps.agent_id
+        directory.mkdir(parents=True, exist_ok=True)
+        payload = {
+            'usedTokens': event.used_tokens,
+            'windowTokens': event.window_tokens,
+            'resolved': event.resolved,
+            'fraction': event.fraction,
+        }
+        (directory / f'{ctx.deps.session_id}.context-usage.json').write_text(json.dumps(payload))
 
     return agent
 

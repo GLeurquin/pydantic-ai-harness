@@ -3,7 +3,9 @@
 import type {
   AgentSummary,
   ApprovalView,
+  ContextUsage,
   CreateAgentRequest,
+  CreatedPullRequest,
   CreateProjectRequest,
   DebugContext,
   FetchedIssue,
@@ -119,8 +121,23 @@ export const api = {
 
   diff: (agentId: string) => request<WorktreeDiff>(`/api/agents/${agentId}/diff`),
 
+  commit: (agentId: string, message: string) =>
+    request<{ ok: boolean }>(`/api/agents/${agentId}/commit`, {
+      method: 'POST',
+      body: JSON.stringify({ message }),
+    }),
+
+  openPullRequest: (agentId: string, title: string, body: string) =>
+    request<CreatedPullRequest>(`/api/agents/${agentId}/pull-request`, {
+      method: 'POST',
+      body: JSON.stringify({ title, body }),
+    }),
+
   debugContext: (agentId: string, sessionId: string) =>
     request<DebugContext>(`/api/agents/${agentId}/sessions/${sessionId}/debug-context`),
+
+  contextUsage: (agentId: string, sessionId: string) =>
+    request<ContextUsage>(`/api/agents/${agentId}/sessions/${sessionId}/context-usage`),
 
   listModels: () => request<RedactedProfile[]>('/api/models'),
 

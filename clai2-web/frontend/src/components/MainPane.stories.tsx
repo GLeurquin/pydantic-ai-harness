@@ -6,16 +6,19 @@ import {
   makeSession,
   makeWorktree,
   richTranscript,
+  sampleContextUsage,
+  sampleContextUsageNearLimit,
   sampleDiff,
   sampleProfiles,
   streamingTranscript,
 } from '../../.ladle/data';
-import type { AgentSummary, TranscriptItem, WorktreeDiff } from '../api/types';
+import type { AgentSummary, ContextUsage, TranscriptItem, WorktreeDiff } from '../api/types';
 import type { MainView } from '../state/store';
 import { MainPane } from './MainPane';
 
 const noop = () => undefined;
 const loadDiff = (): Promise<WorktreeDiff> => Promise.resolve(sampleDiff);
+const loadContextUsage = (): Promise<ContextUsage> => Promise.resolve(sampleContextUsage);
 
 const sideSessionId = 'session-side';
 const transcripts: Record<string, TranscriptItem[]> = {
@@ -24,7 +27,15 @@ const transcripts: Record<string, TranscriptItem[]> = {
 };
 const transcriptFor = (sessionId: string): TranscriptItem[] => transcripts[sessionId] ?? [];
 
-function Frame({ agent, initialView }: { agent: AgentSummary; initialView: MainView }) {
+function Frame({
+  agent,
+  initialView,
+  contextUsage,
+}: {
+  agent: AgentSummary;
+  initialView: MainView;
+  contextUsage?: () => Promise<ContextUsage>;
+}) {
   const [view, setView] = useState<MainView>(initialView);
   return (
     <div style={{ height: '85vh', display: 'flex', flexDirection: 'column', border: '1px solid var(--border)' }}>
@@ -40,6 +51,9 @@ function Frame({ agent, initialView }: { agent: AgentSummary; initialView: MainV
         onFork={noop}
         onSideSession={noop}
         loadDiff={loadDiff}
+        loadContextUsage={contextUsage ?? loadContextUsage}
+        diffVersion={0}
+        onCommit={noop}
         models={sampleProfiles}
         folders={[]}
         onSetApprovalMode={noop}
@@ -67,6 +81,14 @@ const withSideSession = (): AgentSummary =>
 
 export const SessionView: Story = () => (
   <Frame agent={withSideSession()} initialView={{ kind: 'session', sessionId: 'session-main' }} />
+);
+
+export const SessionViewNearContextLimit: Story = () => (
+  <Frame
+    agent={withSideSession()}
+    initialView={{ kind: 'session', sessionId: 'session-main' }}
+    contextUsage={() => Promise.resolve(sampleContextUsageNearLimit)}
+  />
 );
 
 export const SettingsView: Story = () => <Frame agent={withSideSession()} initialView={{ kind: 'settings' }} />;

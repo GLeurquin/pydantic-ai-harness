@@ -29,7 +29,10 @@ const apiMock = vi.hoisted(() => ({
   resolveApproval: vi.fn(),
   transcript: vi.fn(),
   diff: vi.fn(),
+  commit: vi.fn(),
+  openPullRequest: vi.fn(),
   debugContext: vi.fn(),
+  contextUsage: vi.fn(),
   listModels: vi.fn(),
   createModel: vi.fn(),
   updateModel: vi.fn(),
@@ -53,6 +56,8 @@ const ws = vi.hoisted(() => ({
   url: vi.fn(() => 'ws://test/api/ws'),
 }));
 
+const notifyMock = vi.hoisted(() => vi.fn());
+
 vi.mock('./api/client', () => ({ api: apiMock }));
 
 vi.mock('./ws', () => ({
@@ -61,6 +66,11 @@ vi.mock('./ws', () => ({
     ws.handlers = handlers;
     return { close: ws.close };
   }),
+}));
+
+vi.mock('./notify', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./notify')>()),
+  notify: notifyMock,
 }));
 
 function handlers(): WsHandlers {
@@ -161,6 +171,7 @@ beforeEach(() => {
     view: { kind: 'session', sessionId: 'main' },
   });
   apiMock.transcript.mockResolvedValue([]);
+  apiMock.contextUsage.mockResolvedValue(null);
   apiMock.prompt.mockResolvedValue({ ok: true });
   apiMock.resolveApproval.mockResolvedValue({ ok: true });
   apiMock.setApprovalMode.mockResolvedValue(makeAgent());
@@ -363,6 +374,52 @@ describe('App', () => {
     expect(apiMock.diff).toHaveBeenCalledWith('a1');
     expect(await screen.findByText('+wired up')).toBeInTheDocument();
     expect(screen.getByText('M src/a.ts')).toBeInTheDocument();
+  });
+
+  it('commits from the Changes tab, pre-filled with a computed default message, then refreshes the diff', async () => {
+    const user = userEvent.setup();
+    apiMock.diff
+      .mockResolvedValueOnce({ diff: '+wired up', untrackedDiff: '', status: ' M src/a.ts' })
+      .mockResolvedValueOnce({ diff: '+wired up', untrackedDiff: '', status: '' });
+    apiMock.commit.mockResolvedValue({ ok: true });
+    const agent = makeAgent({
+      worktree: { repoRoot: '/repo', path: '/repo/.wt/a1', branch: 'clai/alpha', baseBranch: 'main' },
+    });
+    render(<App />);
+    await snapshot([agent]);
+    await user.click(screen.getByRole('tab', { name: 'Changes' }));
+    await screen.findByText('+wired up');
+    await user.click(screen.getByRole('button', { name: 'Commit...' }));
+    const dialog = screen.getByRole('dialog', { name: 'Commit changes in Alpha' });
+    expect(within(dialog).getByLabelText('Commit message')).toHaveValue('Update src/a.ts');
+    await user.click(within(dialog).getByRole('button', { name: 'Commit' }));
+    expect(apiMock.commit).toHaveBeenCalledWith('a1', 'Update src/a.ts');
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Commit changes in Alpha' })).toBeNull());
+    // Committing clears the working tree, so the Changes tab refetches to drop the stale status.
+    await waitFor(() => expect(apiMock.diff).toHaveBeenCalledTimes(2));
+  });
+
+  it('commits and opens a pull request in one flow, showing the resulting link', async () => {
+    const user = userEvent.setup();
+    apiMock.diff.mockResolvedValue({ diff: '+wired up', untrackedDiff: '', status: ' M src/a.ts' });
+    apiMock.commit.mockResolvedValue({ ok: true });
+    apiMock.openPullRequest.mockResolvedValue({ url: 'https://github.com/o/r/pull/9', number: 9 });
+    const agent = makeAgent({
+      worktree: { repoRoot: '/repo', path: '/repo/.wt/a1', branch: 'clai/alpha', baseBranch: 'main' },
+    });
+    render(<App />);
+    await snapshot([agent]);
+    await user.click(screen.getByRole('tab', { name: 'Changes' }));
+    await screen.findByText('+wired up');
+    await user.click(screen.getByRole('button', { name: 'Commit...' }));
+    const dialog = screen.getByRole('dialog', { name: 'Commit changes in Alpha' });
+    await user.click(within(dialog).getByLabelText('Also open a pull request'));
+    await user.click(within(dialog).getByRole('button', { name: 'Commit and open PR' }));
+    expect(apiMock.commit).toHaveBeenCalledWith('a1', 'Update src/a.ts');
+    expect(await screen.findByText('Pull request opened')).toBeInTheDocument();
+    expect(apiMock.openPullRequest).toHaveBeenCalledWith('a1', 'Update src/a.ts', '');
+    await user.click(screen.getByRole('button', { name: 'Done' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 
   it('wires approval mode and archive from the Settings tab', async () => {
@@ -875,5 +932,41 @@ describe('App', () => {
       handlers().onEvent({ type: 'agentError', agentId: 'a1', message: 'process exited unexpectedly' });
     });
     expect(await screen.findByRole('alert')).toHaveTextContent('process exited unexpectedly');
+  });
+
+  it('fires a browser notification naming the agent when an approval is requested', async () => {
+    render(<App />);
+    await snapshot([makeAgent({ id: 'a1', name: 'Alpha' })]);
+    await act(async () => {
+      handlers().onEvent({ type: 'approvalRequested', approval: makeApproval({ agentId: 'a1' }) });
+    });
+    expect(notifyMock).toHaveBeenCalledWith('Approval needed', 'Alpha is waiting for a decision.');
+  });
+
+  it('falls back to a generic name when the approval is for an agent not in the roster', async () => {
+    render(<App />);
+    await snapshot([]);
+    await act(async () => {
+      handlers().onEvent({ type: 'approvalRequested', approval: makeApproval({ agentId: 'ghost' }) });
+    });
+    expect(notifyMock).toHaveBeenCalledWith('Approval needed', 'An agent is waiting for a decision.');
+  });
+
+  it('fires a browser notification when an active goal clears', async () => {
+    render(<App />);
+    await snapshot([makeAgent({ id: 'a1', name: 'Alpha', goal: { goal: 'Ship it', maxTurns: 5, turnsUsed: 1 } })]);
+    await act(async () => {
+      handlers().onEvent({ type: 'agentUpdated', agent: makeAgent({ id: 'a1', name: 'Alpha', goal: null }) });
+    });
+    expect(notifyMock).toHaveBeenCalledWith('Goal finished', "Alpha's autonomous goal loop stopped.");
+  });
+
+  it('does not notify for an agentUpdated that has nothing to do with a goal', async () => {
+    render(<App />);
+    await snapshot([makeAgent({ id: 'a1', name: 'Alpha' })]);
+    await act(async () => {
+      handlers().onEvent({ type: 'agentUpdated', agent: makeAgent({ id: 'a1', name: 'Alpha', status: 'working' }) });
+    });
+    expect(notifyMock).not.toHaveBeenCalled();
   });
 });

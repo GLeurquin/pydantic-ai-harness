@@ -16,14 +16,16 @@ use crate::acp::transport::RpcError;
 use crate::acp::{AcpClient, AcpEvent, PermissionRequest, SessionUpdate};
 use crate::approvals::{decide, ApprovalLedger, ApprovalOutcome, PolicyDecision};
 use crate::events::{Event, EventHub};
-use crate::github::{CiCheckState, FetchIssueError, FetchedIssue, GithubSettings, IssueRef, RedactedGithubSettings};
+use crate::github::{
+    CiCheckState, CreatedPullRequest, FetchIssueError, FetchedIssue, GithubSettings, IssueRef, RedactedGithubSettings,
+};
 use crate::model::{
     AgentStatus, AgentSummary, ApprovalMode, ApprovalView, CiTracking, FolderSummary, GoalConfig, ProjectSummary,
     SessionSummary, StopReason, ToolCallView, TranscriptItem,
 };
 use crate::models::{ModelProfile, ProfileEdit, RedactedProfile};
 use crate::store::{PersistedAgent, Store, StoreError};
-use crate::worktrees::{slugify, GitError, WorktreeDiff, WorktreeService};
+use crate::worktrees::{slugify, GitError, WorktreeDiff, WorktreeInfo, WorktreeService};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ManagerError {
@@ -1686,32 +1688,33 @@ impl AgentManager {
         Ok(self.store.load_transcript(agent_id, session_id).await?)
     }
 
+    /// Resolves clai2-web's own `session_id` ("main" / a side-session label) to the *ACP*
+    /// session id the agent process actually knows -- the only session identity
+    /// `session_config` ever hands it, so it's what `clai_agent.py` names its snapshot files
+    /// after (see `debug_context`, `context_usage`). `None` until the session's first model
+    /// request assigns one (see `AgentManager::new`'s roster reload, which resets it on restart
+    /// too); `Err` only for an unknown agent or session.
+    async fn resolve_acp_session_id(&self, agent_id: &str, session_id: &str) -> Result<Option<String>, ManagerError> {
+        let agents = self.agents.lock().await;
+        let entry = agents
+            .iter()
+            .find(|entry| entry.summary.id == agent_id)
+            .ok_or(ManagerError::AgentNotFound)?;
+        let session = entry.session(session_id).ok_or(ManagerError::SessionNotFound)?;
+        Ok(session.acp_session_id.clone())
+    }
+
     /// The exact post-compaction message list the agent process last sent to the model for
     /// this session, if it has made a model request yet. Opaque JSON: it's whatever shape
     /// `clai_agent.py` wrote via `pydantic_ai_harness.compaction.ReportModelRequest`
     /// (pydantic-ai's own `ModelMessagesTypeAdapter` serialization), passed through rather than
     /// modeled here.
-    ///
-    /// Keyed by the session's *ACP* session id, not `session_id` (clai2-web's own "main" /
-    /// side-session label): the agent process only ever sees the ACP-protocol id handed to it
-    /// by `session_config`, which has no notion of clai2-web's own naming, so that is what
-    /// `clai_agent.py` names the file after. `None` until the session's first model request
-    /// assigns one (see `AgentManager::new`'s roster reload, which resets it on restart too).
     pub async fn debug_context(
         &self,
         agent_id: &str,
         session_id: &str,
     ) -> Result<Option<serde_json::Value>, ManagerError> {
-        let acp_session_id = {
-            let agents = self.agents.lock().await;
-            let entry = agents
-                .iter()
-                .find(|entry| entry.summary.id == agent_id)
-                .ok_or(ManagerError::AgentNotFound)?;
-            let session = entry.session(session_id).ok_or(ManagerError::SessionNotFound)?;
-            session.acp_session_id.clone()
-        };
-        let Some(acp_session_id) = acp_session_id else {
+        let Some(acp_session_id) = self.resolve_acp_session_id(agent_id, session_id).await? else {
             return Ok(None);
         };
         let Some(raw) = self.store.read_debug_context(agent_id, &acp_session_id).await? else {
@@ -1722,16 +1725,86 @@ impl AgentManager {
         Ok(Some(value))
     }
 
-    pub async fn diff(&self, agent_id: &str) -> Result<WorktreeDiff, ManagerError> {
-        let worktree = {
-            let agents = self.agents.lock().await;
-            let entry = agents
-                .iter()
-                .find(|entry| entry.summary.id == agent_id)
-                .ok_or(ManagerError::AgentNotFound)?;
-            entry.summary.worktree.clone().ok_or(ManagerError::NoWorktree)?
+    /// How full the context was on the agent process's last model request for this session, if
+    /// it has made one yet. Opaque JSON (`usedTokens`/`windowTokens`/`resolved`/`fraction`)
+    /// written by `clai_agent.py` via `pydantic_ai_harness.compaction.ReportContextUsage`,
+    /// passed through rather than modeled here -- see `debug_context` for the identical
+    /// on-demand-snapshot and ACP-session-id-keyed design this mirrors.
+    pub async fn context_usage(
+        &self,
+        agent_id: &str,
+        session_id: &str,
+    ) -> Result<Option<serde_json::Value>, ManagerError> {
+        let Some(acp_session_id) = self.resolve_acp_session_id(agent_id, session_id).await? else {
+            return Ok(None);
         };
+        let Some(raw) = self.store.read_context_usage(agent_id, &acp_session_id).await? else {
+            return Ok(None);
+        };
+        let value = serde_json::from_str(&raw)
+            .map_err(|_err| ManagerError::Invalid("context usage file is corrupt".to_owned()))?;
+        Ok(Some(value))
+    }
+
+    pub async fn diff(&self, agent_id: &str) -> Result<WorktreeDiff, ManagerError> {
+        let worktree = self.agent_worktree(agent_id).await?;
         Ok(self.worktrees.diff(&worktree).await?)
+    }
+
+    /// The worktree of a live agent, or the not-found errors `diff`/`commit`/`open_pull_request`
+    /// all share: an unknown agent, or one with no worktree (created without `useWorktree`).
+    async fn agent_worktree(&self, agent_id: &str) -> Result<WorktreeInfo, ManagerError> {
+        let agents = self.agents.lock().await;
+        let entry = agents
+            .iter()
+            .find(|entry| entry.summary.id == agent_id)
+            .ok_or(ManagerError::AgentNotFound)?;
+        entry.summary.worktree.clone().ok_or(ManagerError::NoWorktree)
+    }
+
+    /// Stage and commit every change in the agent's worktree. Does not push -- see
+    /// `open_pull_request` for the push-and-open-a-PR flow.
+    pub async fn commit(&self, agent_id: &str, message: &str) -> Result<(), ManagerError> {
+        let message = message.trim();
+        if message.is_empty() {
+            return Err(ManagerError::Invalid("commit message cannot be blank".to_owned()));
+        }
+        let worktree = self.agent_worktree(agent_id).await?;
+        self.worktrees.commit(&worktree, message).await?;
+        Ok(())
+    }
+
+    /// Push the agent's branch and open a pull request from it into the worktree's base branch.
+    /// Requires a configured GitHub token and an `origin` remote that resolves to a GitHub
+    /// `owner/repo` -- the same requirements `fetch_github_issue`/CI tracking already have.
+    pub async fn open_pull_request(
+        &self,
+        agent_id: &str,
+        title: &str,
+        body: &str,
+    ) -> Result<CreatedPullRequest, ManagerError> {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(ManagerError::Invalid("pull request title cannot be blank".to_owned()));
+        }
+        let worktree = self.agent_worktree(agent_id).await?;
+        let token = self.github.lock().await.token.clone().ok_or(FetchIssueError::NoToken)?;
+        let remote_url = self.worktrees.remote_url(&worktree.repo_root, "origin").await?;
+        let (owner, repo) = crate::github::parse_github_remote(&remote_url)
+            .ok_or_else(|| ManagerError::Invalid(format!("origin remote {remote_url:?} is not a github.com URL")))?;
+        self.worktrees.push(&worktree).await?;
+        Ok(crate::github::create_pull_request(
+            &self.http,
+            &self.config.github_api_base_url,
+            &token,
+            &owner,
+            &repo,
+            title,
+            body,
+            &worktree.branch,
+            &worktree.base_branch,
+        )
+        .await?)
     }
 
     pub async fn pending_approvals(&self) -> Vec<ApprovalView> {

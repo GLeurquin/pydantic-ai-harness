@@ -152,6 +152,19 @@ struct SetPollIntervalBody {
     poll_interval_secs: u64,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CommitBody {
+    message: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PullRequestBody {
+    title: String,
+    body: String,
+}
+
 async fn health() -> Json<serde_json::Value> {
     Json(json!({"ok": true}))
 }
@@ -358,11 +371,37 @@ async fn debug_context(
     Ok(Json(json!(manager.debug_context(&agent_id, &session_id).await?)))
 }
 
+async fn context_usage(
+    State(manager): State<AppState>,
+    Path((agent_id, session_id)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, ManagerError> {
+    Ok(Json(json!(manager.context_usage(&agent_id, &session_id).await?)))
+}
+
 async fn diff(
     State(manager): State<AppState>,
     Path(agent_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ManagerError> {
     Ok(Json(json!(manager.diff(&agent_id).await?)))
+}
+
+async fn commit(
+    State(manager): State<AppState>,
+    Path(agent_id): Path<String>,
+    Json(body): Json<CommitBody>,
+) -> Result<Json<serde_json::Value>, ManagerError> {
+    manager.commit(&agent_id, &body.message).await?;
+    Ok(Json(json!({"ok": true})))
+}
+
+async fn open_pull_request(
+    State(manager): State<AppState>,
+    Path(agent_id): Path<String>,
+    Json(body): Json<PullRequestBody>,
+) -> Result<Json<serde_json::Value>, ManagerError> {
+    Ok(Json(json!(
+        manager.open_pull_request(&agent_id, &body.title, &body.body).await?
+    )))
 }
 
 async fn list_models(State(manager): State<AppState>) -> Json<serde_json::Value> {
@@ -497,6 +536,10 @@ pub fn build_router(manager: AppState) -> Router {
             "/api/agents/{agent_id}/sessions/{session_id}/debug-context",
             get(debug_context),
         )
+        .route(
+            "/api/agents/{agent_id}/sessions/{session_id}/context-usage",
+            get(context_usage),
+        )
         .route("/api/agents/{agent_id}/approval-mode", patch(set_approval_mode))
         .route("/api/agents/{agent_id}/name", patch(rename_agent))
         .route("/api/agents/{agent_id}/goal", post(set_goal).delete(clear_goal))
@@ -506,6 +549,8 @@ pub fn build_router(manager: AppState) -> Router {
         )
         .route("/api/agents/{agent_id}/approvals", get(agent_approvals))
         .route("/api/agents/{agent_id}/diff", get(diff))
+        .route("/api/agents/{agent_id}/commit", post(commit))
+        .route("/api/agents/{agent_id}/pull-request", post(open_pull_request))
         .route("/api/agents/{agent_id}/model", patch(set_agent_model))
         .route("/api/agents/{agent_id}/folder", patch(set_agent_folder))
         .route("/api/approvals", get(all_approvals))

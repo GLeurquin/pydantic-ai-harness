@@ -360,6 +360,17 @@
   color: var(--error);
 }
 
+.tabs-context {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.tabs-context.warning {
+  color: var(--warning);
+}
+
 /* Conversation */
 .conversation {
   display: flex;
@@ -725,6 +736,12 @@
 .diff-panel pre {
   font-size: 12px;
   line-height: 1.45;
+}
+
+.diff-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 8px;
 }
 
 .diff-meta {

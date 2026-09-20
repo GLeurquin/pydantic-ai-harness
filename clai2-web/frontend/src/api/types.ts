@@ -281,3 +281,24 @@ export interface DebugMessage {
 /** `null` means the agent process hasn't made a model request yet (or was never told where to
  * write), not an error -- see `debug_context` in the backend's `manager.rs`. */
 export type DebugContext = DebugMessage[] | null;
+
+/** A reading of how full an agent's context was on its last model request for a session, from
+ * `pydantic_ai_harness.compaction.ReportContextUsage`. Unlike `DebugMessage`, the backend parses
+ * this shape rather than passing it through opaque, so it follows the usual camelCase. */
+export interface ContextUsageReading {
+  usedTokens: number;
+  windowTokens: number;
+  /** `false` when `windowTokens` is a fallback guess rather than the model's real window. */
+  resolved: boolean;
+  fraction: number;
+}
+
+/** `null` means no model request has happened yet for this session -- see `context_usage` in
+ * the backend's `manager.rs`, which mirrors `debug_context`'s on-demand-snapshot design. */
+export type ContextUsage = ContextUsageReading | null;
+
+/** A pull request just opened via `POST /api/agents/{id}/pull-request`. */
+export interface CreatedPullRequest {
+  url: string;
+  number: number;
+}

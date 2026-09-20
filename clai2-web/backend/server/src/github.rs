@@ -102,6 +102,27 @@ impl IssueRef {
     }
 }
 
+/// Parse an `origin` remote URL into `(owner, repo)`, when it points at
+/// `github.com`. Covers the three forms git itself produces: HTTPS
+/// (`https://github.com/owner/repo(.git)?`), the SSH shorthand
+/// (`git@github.com:owner/repo(.git)?`), and full SSH URLs
+/// (`ssh://git@github.com/owner/repo(.git)?`). `None` for anything else
+/// (a non-GitHub host, a local path, a malformed URL) -- there is no owner/repo
+/// to open a pull request against.
+pub fn parse_github_remote(url: &str) -> Option<(String, String)> {
+    let rest = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("http://github.com/"))
+        .or_else(|| url.strip_prefix("git@github.com:"))
+        .or_else(|| url.strip_prefix("ssh://git@github.com/"))?;
+    let rest = rest.strip_suffix(".git").unwrap_or(rest).trim_end_matches('/');
+    let (owner, repo) = rest.split_once('/')?;
+    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
+        return None;
+    }
+    Some((owner.to_owned(), repo.to_owned()))
+}
+
 /// The subset of a fetched GitHub issue the UI needs to preview it and seed
 /// an agent's first prompt.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -152,6 +173,73 @@ async fn get_json(client: &reqwest::Client, url: &str, token: &str) -> Result<se
         });
     }
     Ok(response.json().await?)
+}
+
+/// POST `url` with the standard GitHub auth/accept headers and a JSON body, parsing the
+/// response the same way [`get_json`] does. Shared by every GitHub REST call this module makes
+/// that writes rather than reads.
+async fn post_json(
+    client: &reqwest::Client,
+    url: &str,
+    token: &str,
+    body: &serde_json::Value,
+) -> Result<serde_json::Value, FetchIssueError> {
+    let response = client
+        .post(url)
+        .bearer_auth(token)
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "clai2-web")
+        .json(body)
+        .send()
+        .await?;
+    let status = response.status();
+    if !status.is_success() {
+        let message = response.text().await.unwrap_or_default();
+        return Err(FetchIssueError::Github {
+            status: status.as_u16(),
+            message,
+        });
+    }
+    Ok(response.json().await?)
+}
+
+/// A pull request just opened via [`create_pull_request`].
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatedPullRequest {
+    /// The PR's web URL (`html_url`), for the UI to link to.
+    pub url: String,
+    pub number: u64,
+}
+
+/// Open a pull request from `head` into `base`. `base_url` is
+/// `https://api.github.com` in production; tests point it at a local server.
+#[allow(clippy::too_many_arguments)]
+pub async fn create_pull_request(
+    client: &reqwest::Client,
+    base_url: &str,
+    token: &str,
+    owner: &str,
+    repo: &str,
+    title: &str,
+    body: &str,
+    head: &str,
+    base: &str,
+) -> Result<CreatedPullRequest, FetchIssueError> {
+    let url = format!("{base_url}/repos/{owner}/{repo}/pulls");
+    let payload = serde_json::json!({"title": title, "body": body, "head": head, "base": base});
+    let response = post_json(client, &url, token, &payload).await?;
+    Ok(CreatedPullRequest {
+        url: response
+            .get("html_url")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        number: response
+            .get("number")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default(),
+    })
 }
 
 /// Fetch one issue. `base_url` is `https://api.github.com` in production;
@@ -697,5 +785,131 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, FetchIssueError::Github { status: 404, .. }));
+    }
+
+    #[test]
+    fn parses_every_form_of_github_remote_url() {
+        for url in [
+            "https://github.com/pydantic/pydantic-ai",
+            "https://github.com/pydantic/pydantic-ai.git",
+            "http://github.com/pydantic/pydantic-ai.git",
+            "git@github.com:pydantic/pydantic-ai.git",
+            "ssh://git@github.com/pydantic/pydantic-ai.git",
+            "https://github.com/pydantic/pydantic-ai/",
+        ] {
+            assert_eq!(
+                parse_github_remote(url),
+                Some(("pydantic".to_owned(), "pydantic-ai".to_owned())),
+                "failed to parse {url:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_a_non_github_or_malformed_remote_url() {
+        for url in [
+            "https://gitlab.com/pydantic/pydantic-ai.git",
+            "/local/path/to/repo",
+            "git@github.com:",
+            "https://github.com/onlyowner",
+            "https://github.com//pydantic-ai",
+            "https://github.com/pydantic/",
+        ] {
+            assert_eq!(parse_github_remote(url), None, "expected {url:?} to be rejected");
+        }
+    }
+
+    #[tokio::test]
+    async fn create_pull_request_returns_the_html_url_and_number() {
+        let app = axum::Router::new().route(
+            "/repos/pydantic/pydantic-ai/pulls",
+            axum::routing::post(|| async {
+                axum::Json(serde_json::json!({
+                    "html_url": "https://github.com/pydantic/pydantic-ai/pull/7",
+                    "number": 7,
+                }))
+            }),
+        );
+        let base_url = serve(app).await;
+        let client = reqwest::Client::new();
+        let created = create_pull_request(
+            &client,
+            &base_url,
+            "secret-token",
+            "pydantic",
+            "pydantic-ai",
+            "Fix the bug",
+            "Closes #1",
+            "clai2/agents/fix-bug",
+            "main",
+        )
+        .await
+        .unwrap();
+        assert_eq!(created.url, "https://github.com/pydantic/pydantic-ai/pull/7");
+        assert_eq!(created.number, 7);
+    }
+
+    #[tokio::test]
+    async fn create_pull_request_sends_the_title_body_head_and_base() {
+        let captured: Arc<std::sync::Mutex<Option<serde_json::Value>>> = Arc::new(std::sync::Mutex::new(None));
+        let captured_in_handler = Arc::clone(&captured);
+        let app = axum::Router::new().route(
+            "/repos/o/r/pulls",
+            axum::routing::post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+                let captured = Arc::clone(&captured_in_handler);
+                async move {
+                    *captured.lock().unwrap() = Some(body);
+                    axum::Json(serde_json::json!({"html_url": "https://github.com/o/r/pull/1", "number": 1}))
+                }
+            }),
+        );
+        let base_url = serve(app).await;
+        let client = reqwest::Client::new();
+        create_pull_request(
+            &client,
+            &base_url,
+            "secret-token",
+            "o",
+            "r",
+            "Fix the bug",
+            "Closes #1",
+            "clai2/agents/fix-bug",
+            "main",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            captured.lock().unwrap().take().unwrap(),
+            serde_json::json!({"title": "Fix the bug", "body": "Closes #1", "head": "clai2/agents/fix-bug", "base": "main"})
+        );
+    }
+
+    #[tokio::test]
+    async fn create_pull_request_surfaces_a_github_error() {
+        let app = axum::Router::new().route(
+            "/repos/o/r/pulls",
+            axum::routing::post(|| async {
+                (
+                    axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                    axum::Json(serde_json::json!({"message": "A pull request already exists for o:branch."})),
+                )
+            }),
+        );
+        let base_url = serve(app).await;
+        let client = reqwest::Client::new();
+        let err = create_pull_request(
+            &client,
+            &base_url,
+            "secret-token",
+            "o",
+            "r",
+            "Title",
+            "",
+            "branch",
+            "main",
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, FetchIssueError::Github { status: 422, .. }));
     }
 }

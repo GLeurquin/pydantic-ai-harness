@@ -201,6 +201,36 @@ impl WorktreeService {
             status,
         })
     }
+
+    /// Stage every change in the worktree (tracked and untracked) and commit it. Fails with
+    /// git's own "nothing to commit" message when the worktree is clean -- callers check
+    /// `diff`/`status` first if they want to avoid that round trip rather than surface it.
+    pub async fn commit(&self, info: &WorktreeInfo, message: &str) -> Result<(), GitError> {
+        git(&info.path, &["add", "-A"]).await?;
+        git(&info.path, &["commit", "-m", message]).await?;
+        Ok(())
+    }
+
+    /// Push the worktree's branch to `origin`, creating and tracking it there if it doesn't
+    /// exist yet. Idempotent: safe to call again after further commits.
+    pub async fn push(&self, info: &WorktreeInfo) -> Result<(), GitError> {
+        git(&info.path, &["push", "-u", "origin", &info.branch]).await?;
+        Ok(())
+    }
+
+    /// The URL configured for `remote` (e.g. `"origin"`) in `repo`.
+    ///
+    /// Reads the raw `remote.<name>.url` config value via `git config --get` rather than
+    /// `git remote get-url`, which applies `url.<base>.insteadOf` rewrites (e.g. a local
+    /// mirror or corporate proxy) -- we want the URL the user actually configured, since
+    /// that's what identifies the GitHub repo for API calls, not wherever the push bytes end
+    /// up going.
+    pub async fn remote_url(&self, repo_root: &Path, remote: &str) -> Result<String, GitError> {
+        Ok(git(repo_root, &["config", "--get", &format!("remote.{remote}.url")])
+            .await?
+            .trim()
+            .to_owned())
+    }
 }
 
 async fn apply_patch(worktree: &Path, patch: &str) -> Result<(), GitError> {
@@ -256,9 +286,14 @@ mod tests {
     use std::process::Command as StdCommand;
 
     fn git_sync(repo: &Path, args: &[&str]) {
+        git_sync_output(repo, args);
+    }
+
+    fn git_sync_output(repo: &Path, args: &[&str]) -> String {
         let output = StdCommand::new("git").arg("-C").arg(repo).args(args).output().unwrap();
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(output.status.success(), "git {args:?}: {stderr}");
+        String::from_utf8_lossy(&output.stdout).into_owned()
     }
 
     fn init_repo(repo: &Path) {
@@ -396,6 +431,97 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let service = WorktreeService::new(dir.path().join("worktrees"));
         let err = service.diff(&bogus_info(dir.path())).await.unwrap_err();
+        assert!(matches!(err, GitError::Command { .. }));
+    }
+
+    #[tokio::test]
+    async fn commit_stages_and_commits_tracked_and_untracked_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        init_repo(&repo);
+        let service = WorktreeService::new(dir.path().join("worktrees"));
+        let info = service.create(&repo, "main", "agent").await.unwrap();
+        std::fs::write(info.path.join("README.md"), "# demo\n\nedited\n").unwrap();
+        std::fs::write(info.path.join("new.txt"), "brand new\n").unwrap();
+
+        service.commit(&info, "agent's changes").await.unwrap();
+
+        let diff = service.diff(&info).await.unwrap();
+        assert!(diff.status.is_empty(), "expected a clean tree after commit: {diff:?}");
+        let log = git_sync_output(&info.path, &["log", "-1", "--format=%s"]);
+        assert_eq!(log.trim(), "agent's changes");
+    }
+
+    #[tokio::test]
+    async fn commit_with_nothing_to_commit_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        init_repo(&repo);
+        let service = WorktreeService::new(dir.path().join("worktrees"));
+        let info = service.create(&repo, "main", "clean").await.unwrap();
+        let err = service.commit(&info, "nothing changed").await.unwrap_err();
+        assert!(matches!(err, GitError::Command { .. }));
+    }
+
+    #[tokio::test]
+    async fn commit_of_non_git_worktree_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = WorktreeService::new(dir.path().join("worktrees"));
+        let err = service.commit(&bogus_info(dir.path()), "msg").await.unwrap_err();
+        assert!(matches!(err, GitError::Command { .. }));
+    }
+
+    #[tokio::test]
+    async fn push_sends_the_branch_to_a_bare_remote() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        init_repo(&repo);
+        let bare = dir.path().join("bare.git");
+        git_sync(dir.path(), &["init", "--bare", "-b", "main", bare.to_str().unwrap()]);
+        // Linked worktrees share the parent repo's remotes, so this reaches every worktree too.
+        git_sync(&repo, &["remote", "add", "origin", bare.to_str().unwrap()]);
+        let service = WorktreeService::new(dir.path().join("worktrees"));
+        let info = service.create(&repo, "main", "agent").await.unwrap();
+        std::fs::write(info.path.join("new.txt"), "content\n").unwrap();
+        service.commit(&info, "add file").await.unwrap();
+
+        service.push(&info).await.unwrap();
+
+        let branches = git_sync_output(&bare, &["branch", "--list", "clai2/agents/agent"]);
+        assert!(branches.contains("clai2/agents/agent"), "branches: {branches:?}");
+    }
+
+    #[tokio::test]
+    async fn push_with_no_remote_configured_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        init_repo(&repo);
+        let service = WorktreeService::new(dir.path().join("worktrees"));
+        let info = service.create(&repo, "main", "agent").await.unwrap();
+        let err = service.push(&info).await.unwrap_err();
+        assert!(matches!(err, GitError::Command { .. }));
+    }
+
+    #[tokio::test]
+    async fn remote_url_reports_the_configured_remote() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        init_repo(&repo);
+        git_sync(&repo, &["remote", "add", "origin", "https://github.com/o/r.git"]);
+        let service = WorktreeService::new(dir.path().join("worktrees"));
+        assert_eq!(
+            service.remote_url(&repo, "origin").await.unwrap(),
+            "https://github.com/o/r.git"
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_url_of_a_missing_remote_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        init_repo(&repo);
+        let service = WorktreeService::new(dir.path().join("worktrees"));
+        let err = service.remote_url(&repo, "origin").await.unwrap_err();
         assert!(matches!(err, GitError::Command { .. }));
     }
 

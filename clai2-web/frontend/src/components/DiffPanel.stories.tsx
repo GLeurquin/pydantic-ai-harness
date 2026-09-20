@@ -10,18 +10,18 @@ const loadError = (): Promise<WorktreeDiff> => Promise.reject(new Error('git dif
 
 export const MultiFileDiff: Story = () => (
   <div style={{ height: '80vh', display: 'flex', maxWidth: 860, border: '1px solid var(--border)' }}>
-    <DiffPanel agentId="agent-1" loadDiff={loadSample} />
+    <DiffPanel agentId="agent-1" loadDiff={loadSample} onCommit={() => undefined} />
   </div>
 );
 
 export const EmptyDiff: Story = () => (
   <div style={{ maxWidth: 860, border: '1px solid var(--border)' }}>
-    <DiffPanel agentId="agent-1" loadDiff={loadEmpty} />
+    <DiffPanel agentId="agent-1" loadDiff={loadEmpty} onCommit={() => undefined} />
   </div>
 );
 
 export const LoadError: Story = () => (
   <div style={{ maxWidth: 860, border: '1px solid var(--border)' }}>
-    <DiffPanel agentId="agent-1" loadDiff={loadError} />
+    <DiffPanel agentId="agent-1" loadDiff={loadError} onCommit={() => undefined} />
   </div>
 );

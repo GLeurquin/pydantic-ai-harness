@@ -234,11 +234,40 @@ describe('api', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/agents/a1/diff', JSON_HEADERS);
   });
 
+  it('commit POSTs the trimmed message to the commit endpoint', async () => {
+    const payload = { ok: true };
+    fetchMock.mockResolvedValue(okResponse(payload));
+    await expect(api.commit('a1', 'Update src/a.ts')).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith('/api/agents/a1/commit', {
+      ...JSON_HEADERS,
+      method: 'POST',
+      body: JSON.stringify({ message: 'Update src/a.ts' }),
+    });
+  });
+
+  it('openPullRequest POSTs the title and body to the pull-request endpoint', async () => {
+    const payload = { url: 'https://github.com/o/r/pull/9', number: 9 };
+    fetchMock.mockResolvedValue(okResponse(payload));
+    await expect(api.openPullRequest('a1', 'Add a file', 'Closes #1')).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith('/api/agents/a1/pull-request', {
+      ...JSON_HEADERS,
+      method: 'POST',
+      body: JSON.stringify({ title: 'Add a file', body: 'Closes #1' }),
+    });
+  });
+
   it('debugContext GETs the session debug context', async () => {
     const payload = [{ kind: 'request', parts: [{ part_kind: 'user-prompt', content: 'hi' }] }];
     fetchMock.mockResolvedValue(okResponse(payload));
     await expect(api.debugContext('a1', 's1')).resolves.toEqual(payload);
     expect(fetchMock).toHaveBeenCalledWith('/api/agents/a1/sessions/s1/debug-context', JSON_HEADERS);
+  });
+
+  it('contextUsage GETs the session context usage', async () => {
+    const payload = { usedTokens: 100, windowTokens: 200000, resolved: true, fraction: 0.0005 };
+    fetchMock.mockResolvedValue(okResponse(payload));
+    await expect(api.contextUsage('a1', 's1')).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith('/api/agents/a1/sessions/s1/context-usage', JSON_HEADERS);
   });
 
   it('listModels GETs /api/models', async () => {

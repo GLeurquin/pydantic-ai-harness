@@ -2,6 +2,7 @@ import { useState } from 'react';
 
 import type { AgentSummary, ApprovalView } from '../api/types';
 import { ApprovalBanner } from './ApprovalBanner';
+import { NotificationToggle } from './NotificationToggle';
 
 export interface HeaderProps {
   connected: boolean;
@@ -47,6 +48,7 @@ export function Header({
       <button onClick={onManageGithub} aria-label="GitHub settings">
         GitHub
       </button>
+      <NotificationToggle />
       <div className="inbox">
         <button onClick={() => setOpen(!open)} aria-expanded={open} aria-label="Approval inbox">
           Approvals

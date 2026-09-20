@@ -2,7 +2,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeAll, vi } from 'vitest';
 
-import type { AgentSummary, TranscriptItem, WorktreeDiff } from '../api/types';
+import type { AgentSummary, ContextUsage, TranscriptItem, WorktreeDiff } from '../api/types';
 import type { MainView } from '../state/store';
 import { MainPane } from './MainPane';
 
@@ -51,6 +51,11 @@ function renderPane(overrides: Partial<Parameters<typeof MainPane>[0]> = {}) {
     onFork: vi.fn(),
     onSideSession: vi.fn(),
     loadDiff: vi.fn<(agentId: string) => Promise<WorktreeDiff>>(() => new Promise<WorktreeDiff>(() => undefined)),
+    loadContextUsage: vi
+      .fn<(agentId: string, sessionId: string) => Promise<ContextUsage>>()
+      .mockResolvedValue(null),
+    diffVersion: 0,
+    onCommit: vi.fn(),
     models: [],
     folders: [],
     onSetApprovalMode: vi.fn(),

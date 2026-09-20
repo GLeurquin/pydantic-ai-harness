@@ -26,6 +26,10 @@ struct World {
 }
 
 async fn run(repo: &Path, args: &[&str]) {
+    run_capture(repo, args).await;
+}
+
+async fn run_capture(repo: &Path, args: &[&str]) -> String {
     let output = tokio::process::Command::new("git")
         .arg("-C")
         .arg(repo)
@@ -38,6 +42,7 @@ async fn run(repo: &Path, args: &[&str]) {
         "git {args:?} failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
 async fn init_repo(repo: &Path) {
@@ -1355,6 +1360,193 @@ async fn diff_reports_tracked_and_untracked_changes() {
     assert!(diff["diff"].as_str().unwrap().contains("+changed"));
     assert!(diff["untrackedDiff"].as_str().unwrap().contains("print('hi')"));
     assert!(diff["status"].as_str().unwrap().contains("new.py"));
+}
+
+#[tokio::test]
+async fn commit_stages_and_commits_worktree_changes() {
+    let world = world().await;
+    let agent = world.create_agent("committer", true, "always_ask").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let worktree_path = PathBuf::from(agent["worktree"]["path"].as_str().unwrap());
+    tokio::fs::write(worktree_path.join("new.txt"), "content\n")
+        .await
+        .unwrap();
+
+    let (status, body) = world
+        .post(
+            &format!("/api/agents/{agent_id}/commit"),
+            json!({"message": "add a file"}),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+
+    let (_, diff) = world.get(&format!("/api/agents/{agent_id}/diff")).await;
+    assert_eq!(diff["status"], "", "expected a clean tree after commit: {diff}");
+}
+
+#[tokio::test]
+async fn commit_with_a_blank_message_is_400() {
+    let world = world().await;
+    let agent = world.create_agent("committer", true, "always_ask").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let (status, _) = world
+        .post(&format!("/api/agents/{agent_id}/commit"), json!({"message": "   "}))
+        .await;
+    assert_eq!(status, 400);
+}
+
+#[tokio::test]
+async fn commit_without_a_worktree_is_400() {
+    let world = world().await;
+    let agent = world.create_agent("bare", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let (status, _) = world
+        .post(&format!("/api/agents/{agent_id}/commit"), json!({"message": "msg"}))
+        .await;
+    assert_eq!(status, 400);
+}
+
+#[tokio::test]
+async fn commit_with_nothing_to_commit_is_500() {
+    let world = world().await;
+    let agent = world.create_agent("clean", true, "always_ask").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let (status, body) = world
+        .post(
+            &format!("/api/agents/{agent_id}/commit"),
+            json!({"message": "nothing changed"}),
+        )
+        .await;
+    assert_eq!(status, 500, "{body}");
+}
+
+#[tokio::test]
+async fn pull_request_pushes_and_creates_a_pr_end_to_end() {
+    // A GitHub-shaped remote URL that `git push` transparently rewrites to a local bare
+    // repo (`url.<path>.insteadOf`, the same mechanism real-world mirrors/proxies use) --
+    // `git remote get-url` still reports the github.com URL, so the manager's own remote
+    // parsing exercises the real code path while the push stays fully hermetic.
+    let expected_head = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let expected_head_for_handler = expected_head.clone();
+    let app = axum::Router::new().route(
+        "/repos/o/r/pulls",
+        axum::routing::post(move |axum::Json(body): axum::Json<Value>| {
+            let expected_head = expected_head_for_handler.clone();
+            async move {
+                assert_eq!(body["head"], expected_head.lock().unwrap().clone());
+                assert_eq!(body["base"], "main");
+                axum::Json(json!({"html_url": "https://github.com/o/r/pull/9", "number": 9}))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let world = world_with_github(50, vec![STUB_AGENT.to_owned()], format!("http://{addr}")).await;
+    world.patch("/api/github", json!({"token": "ghp_secret"})).await;
+
+    let bare = world._dir.path().join("bare.git");
+    run(&world.repo, &["init", "--bare", "-b", "main", bare.to_str().unwrap()]).await;
+    run(&world.repo, &["remote", "add", "origin", "https://github.com/o/r.git"]).await;
+    run(
+        &world.repo,
+        &[
+            "config",
+            &format!("url.{}.insteadOf", bare.to_str().unwrap()),
+            "https://github.com/o/r.git",
+        ],
+    )
+    .await;
+
+    let agent = world.create_agent("pr-agent", true, "always_ask").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let branch = agent["worktree"]["branch"].as_str().unwrap().to_owned();
+    *expected_head.lock().unwrap() = branch.clone();
+    let worktree_path = PathBuf::from(agent["worktree"]["path"].as_str().unwrap());
+    tokio::fs::write(worktree_path.join("new.txt"), "content\n")
+        .await
+        .unwrap();
+    let (status, body) = world
+        .post(
+            &format!("/api/agents/{agent_id}/commit"),
+            json!({"message": "add a file"}),
+        )
+        .await;
+    assert_eq!(status, 200, "{body}");
+
+    let (status, pr) = world
+        .post(
+            &format!("/api/agents/{agent_id}/pull-request"),
+            json!({"title": "Add a file", "body": "Closes nothing"}),
+        )
+        .await;
+    assert_eq!(status, 200, "{pr}");
+    assert_eq!(pr["url"], "https://github.com/o/r/pull/9");
+    assert_eq!(pr["number"], 9);
+
+    let branches = run_capture(&bare, &["branch", "--list", &branch]).await;
+    assert!(branches.contains(&branch), "branches: {branches:?}");
+}
+
+#[tokio::test]
+async fn pull_request_with_a_blank_title_is_400() {
+    let world = world().await;
+    let agent = world.create_agent("pr-agent", true, "always_ask").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let (status, _) = world
+        .post(
+            &format!("/api/agents/{agent_id}/pull-request"),
+            json!({"title": "  ", "body": ""}),
+        )
+        .await;
+    assert_eq!(status, 400);
+}
+
+#[tokio::test]
+async fn pull_request_without_a_worktree_is_400() {
+    let world = world().await;
+    let agent = world.create_agent("bare", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let (status, _) = world
+        .post(
+            &format!("/api/agents/{agent_id}/pull-request"),
+            json!({"title": "Title", "body": ""}),
+        )
+        .await;
+    assert_eq!(status, 400);
+}
+
+#[tokio::test]
+async fn pull_request_without_a_github_token_is_400() {
+    let world = world().await;
+    let agent = world.create_agent("pr-agent", true, "always_ask").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let (status, body) = world
+        .post(
+            &format!("/api/agents/{agent_id}/pull-request"),
+            json!({"title": "Title", "body": ""}),
+        )
+        .await;
+    assert_eq!(status, 400, "{body}");
+}
+
+#[tokio::test]
+async fn pull_request_when_origin_is_not_a_github_url_is_400() {
+    let world = world().await;
+    world.patch("/api/github", json!({"token": "ghp_secret"})).await;
+    let agent = world.create_agent("pr-agent", true, "always_ask").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    run(&world.repo, &["remote", "add", "origin", "https://gitlab.com/o/r.git"]).await;
+
+    let (status, body) = world
+        .post(
+            &format!("/api/agents/{agent_id}/pull-request"),
+            json!({"title": "Title", "body": ""}),
+        )
+        .await;
+    assert_eq!(status, 400, "{body}");
 }
 
 #[tokio::test]
@@ -2948,6 +3140,106 @@ async fn debug_context_with_a_corrupt_snapshot_is_400() {
 
     let (status, _) = world
         .get(&format!("/api/agents/{agent_id}/sessions/main/debug-context"))
+        .await;
+    assert_eq!(status, 400);
+}
+
+#[tokio::test]
+async fn context_usage_for_unknown_agent_is_404() {
+    let world = world().await;
+    let (status, _) = world.get("/api/agents/ghost/sessions/main/context-usage").await;
+    assert_eq!(status, 404);
+}
+
+#[tokio::test]
+async fn context_usage_for_unknown_session_is_404() {
+    let world = world().await;
+    let agent = world.create_agent("solo", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let (status, _) = world
+        .get(&format!("/api/agents/{agent_id}/sessions/ghost/context-usage"))
+        .await;
+    assert_eq!(status, 404);
+}
+
+#[tokio::test]
+async fn context_usage_with_no_reading_yet_is_null() {
+    let world = world().await;
+    let agent = world.create_agent("solo", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let (status, body) = world
+        .get(&format!("/api/agents/{agent_id}/sessions/main/context-usage"))
+        .await;
+    assert_eq!(status, 200);
+    assert!(body.is_null(), "body: {body}");
+}
+
+#[tokio::test]
+async fn context_usage_passes_through_the_agent_process_reading() {
+    let world = world().await;
+    let agent = world.create_agent("solo", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap().to_owned();
+    let acp_session_id = establish_acp_session(&world, &agent_id).await;
+
+    // Stands in for `clai_agent.py`'s context-usage listener (a
+    // `pydantic_ai_harness.compaction.ReportContextUsage` capability plus an `@agent.on_event`
+    // handler), sharing debug-context's directory and ACP-session-id keying with its own suffix.
+    let snapshot_dir = world._dir.path().join("data/debug-context").join(&agent_id);
+    tokio::fs::create_dir_all(&snapshot_dir).await.unwrap();
+    let reading = json!({"usedTokens": 1234, "windowTokens": 200000, "resolved": true, "fraction": 0.00617});
+    tokio::fs::write(
+        snapshot_dir.join(format!("{acp_session_id}.context-usage.json")),
+        reading.to_string(),
+    )
+    .await
+    .unwrap();
+
+    let (status, body) = world
+        .get(&format!("/api/agents/{agent_id}/sessions/main/context-usage"))
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(body, reading);
+}
+
+#[tokio::test]
+async fn context_usage_is_keyed_by_the_acp_session_id_not_the_clai2_web_session_id() {
+    let world = world().await;
+    let agent = world.create_agent("solo", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap().to_owned();
+    establish_acp_session(&world, &agent_id).await;
+
+    let snapshot_dir = world._dir.path().join("data/debug-context").join(&agent_id);
+    tokio::fs::create_dir_all(&snapshot_dir).await.unwrap();
+    let wrongly_keyed = json!({"usedTokens": 1, "windowTokens": 2, "resolved": false, "fraction": 0.5});
+    tokio::fs::write(snapshot_dir.join("main.context-usage.json"), wrongly_keyed.to_string())
+        .await
+        .unwrap();
+
+    let (status, body) = world
+        .get(&format!("/api/agents/{agent_id}/sessions/main/context-usage"))
+        .await;
+    assert_eq!(status, 200);
+    assert!(body.is_null(), "body: {body}");
+}
+
+#[tokio::test]
+async fn context_usage_with_a_corrupt_reading_is_400() {
+    let world = world().await;
+    let agent = world.create_agent("solo", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap().to_owned();
+    let acp_session_id = establish_acp_session(&world, &agent_id).await;
+
+    let snapshot_dir = world._dir.path().join("data/debug-context").join(&agent_id);
+    tokio::fs::create_dir_all(&snapshot_dir).await.unwrap();
+    tokio::fs::write(
+        snapshot_dir.join(format!("{acp_session_id}.context-usage.json")),
+        b"not json",
+    )
+    .await
+    .unwrap();
+
+    let (status, _) = world
+        .get(&format!("/api/agents/{agent_id}/sessions/main/context-usage"))
         .await;
     assert_eq!(status, 400);
 }

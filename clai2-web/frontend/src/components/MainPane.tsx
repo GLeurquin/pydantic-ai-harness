@@ -1,6 +1,15 @@
-import type { AgentSummary, ApprovalView, FolderSummary, RedactedProfile, TranscriptItem, WorktreeDiff } from '../api/types';
+import type {
+  AgentSummary,
+  ApprovalView,
+  ContextUsage,
+  FolderSummary,
+  RedactedProfile,
+  TranscriptItem,
+  WorktreeDiff,
+} from '../api/types';
 import type { MainView } from '../state/store';
 import { Conversation } from './Conversation';
+import { ContextUsageBadge } from './ContextUsageBadge';
 import { DiffPanel } from './DiffPanel';
 import { SettingsPanel } from './SettingsPanel';
 import type { SettingsPanelProps } from './SettingsPanel';
@@ -17,6 +26,9 @@ export interface MainPaneProps {
   onFork: () => void;
   onSideSession: () => void;
   loadDiff: (agentId: string) => Promise<WorktreeDiff>;
+  loadContextUsage: (agentId: string, sessionId: string) => Promise<ContextUsage>;
+  diffVersion: number;
+  onCommit: (defaultMessage: string) => void;
   models: RedactedProfile[];
   folders: FolderSummary[];
   onSetApprovalMode: SettingsPanelProps['onSetApprovalMode'];
@@ -68,8 +80,15 @@ export function MainPane(props: MainPaneProps) {
         >
           Settings
         </button>
-        {agent.isStub || agent.goal || agent.ciTracking || (activeSession && activeSession.totalTokens > 0) ? (
+        {agent.isStub || agent.goal || agent.ciTracking || view.kind === 'session' ? (
           <div className="tabs-meta">
+            {view.kind === 'session' ? (
+              <ContextUsageBadge
+                agentId={agent.id}
+                sessionId={view.sessionId}
+                loadContextUsage={props.loadContextUsage}
+              />
+            ) : null}
             {agent.isStub ? (
               <span className="stub-tag" title="Running the bundled stub agent, not a real model">
                 STUB
@@ -110,7 +129,9 @@ export function MainPane(props: MainPaneProps) {
           onSideSession={props.onSideSession}
         />
       ) : null}
-      {view.kind === 'changes' ? <DiffPanel agentId={agent.id} loadDiff={props.loadDiff} /> : null}
+      {view.kind === 'changes' ? (
+        <DiffPanel key={props.diffVersion} agentId={agent.id} loadDiff={props.loadDiff} onCommit={props.onCommit} />
+      ) : null}
       {view.kind === 'settings' ? (
         <SettingsPanel
           agent={agent}

@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import { api } from './api/client';
-import type { CreateAgentRequest, ProfileEdit } from './api/types';
+import type { AgentSummary, CreateAgentRequest, ProfileEdit, ServerEvent } from './api/types';
 import { errorMessage } from './errors';
+import { notify } from './notify';
 import { CiTrackingDialog } from './components/CiTrackingDialog';
+import { CommitDialog } from './components/CommitDialog';
 import { DebugContextDialog } from './components/DebugContextDialog';
 import { FoldersDialog } from './components/FoldersDialog';
 import { GithubSettingsDialog } from './components/GithubSettingsDialog';
@@ -31,7 +33,8 @@ type Dialog =
   | 'ci-tracking'
   | 'projects'
   | 'folders'
-  | 'debug-context';
+  | 'debug-context'
+  | 'commit';
 
 /** Fire a write action; a rejection surfaces as a notification instead of
  * vanishing. The rest of the UI does not wait on it. */
@@ -39,17 +42,40 @@ function runAction(promise: Promise<unknown>): void {
   promise.catch((failure: unknown) => useAppStore.getState().notifyError(errorMessage(failure)));
 }
 
+/** Browser-notification side effect for a subset of server events, run against the state as
+ * it stood *before* this event applies (so an agentUpdated can tell whether the goal it just
+ * cleared was actually active). Kept outside the store: `notify()` reaches out to a genuine
+ * browser API, unlike `reduceEvent`'s pure state transitions. */
+function notifyOnServerEvent(event: ServerEvent, agentsBeforeUpdate: AgentSummary[]): void {
+  if (event.type === 'approvalRequested') {
+    const agentName = agentsBeforeUpdate.find((agent) => agent.id === event.approval.agentId)?.name ?? 'An agent';
+    notify('Approval needed', `${agentName} is waiting for a decision.`);
+    return;
+  }
+  if (event.type === 'agentUpdated') {
+    const previous = agentsBeforeUpdate.find((agent) => agent.id === event.agent.id);
+    if (previous?.goal && !event.agent.goal) {
+      notify('Goal finished', `${event.agent.name}'s autonomous goal loop stopped.`);
+    }
+  }
+}
+
 export function App() {
   const store = useAppStore();
   const [dialog, setDialog] = useState<Dialog>('none');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [debugContextSessionId, setDebugContextSessionId] = useState<string | null>(null);
+  const [commitDefaultMessage, setCommitDefaultMessage] = useState('');
+  const [diffVersion, setDiffVersion] = useState(0);
   const selected = store.agents.find((agent) => agent.id === store.selectedAgentId) ?? null;
 
   useEffect(() => {
     const connection = connectWs(wsUrl(window.location), {
       onSnapshot: useAppStore.getState().applySnapshot,
-      onEvent: useAppStore.getState().applyEvent,
+      onEvent: (event) => {
+        notifyOnServerEvent(event, useAppStore.getState().agents);
+        useAppStore.getState().applyEvent(event);
+      },
       onConnected: useAppStore.getState().setConnected,
     });
     void api.listModels().then(useAppStore.getState().setModels, () => undefined);
@@ -90,6 +116,8 @@ export function App() {
   const loadDiff = useCallback((agentId: string) => api.diff(agentId), []);
 
   const loadDebugContext = useCallback((agentId: string, sessionId: string) => api.debugContext(agentId, sessionId), []);
+
+  const loadContextUsage = useCallback((agentId: string, sessionId: string) => api.contextUsage(agentId, sessionId), []);
 
   const createAgent = async (request: CreateAgentRequest) => {
     const agent = await api.createAgent(request);
@@ -190,6 +218,12 @@ export function App() {
           onFork={() => setDialog('fork')}
           onSideSession={() => setDialog('side-session')}
           loadDiff={loadDiff}
+          loadContextUsage={loadContextUsage}
+          diffVersion={diffVersion}
+          onCommit={(defaultMessage) => {
+            setCommitDefaultMessage(defaultMessage);
+            setDialog('commit');
+          }}
           models={store.models}
           folders={store.folders}
           onSetApprovalMode={(mode) => runAction(api.setApprovalMode(selected.id, mode))}
@@ -302,6 +336,15 @@ export function App() {
           agentName={selected.name}
           sessionLabel={selected.sessions.find((session) => session.id === debugContextSessionId)?.label ?? debugContextSessionId}
           loadDebugContext={loadDebugContext}
+          onClose={() => setDialog('none')}
+        />
+      ) : null}
+      {dialog === 'commit' && selected ? (
+        <CommitDialog
+          agentName={selected.name}
+          defaultMessage={commitDefaultMessage}
+          onCommit={(message) => api.commit(selected.id, message).then(() => setDiffVersion((version) => version + 1))}
+          onOpenPullRequest={(title, body) => api.openPullRequest(selected.id, title, body)}
           onClose={() => setDialog('none')}
         />
       ) : null}
