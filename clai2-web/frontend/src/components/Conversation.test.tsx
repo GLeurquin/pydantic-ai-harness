@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeAll, vi } from 'vitest';
 
@@ -6,7 +6,7 @@ import type { AgentSummary, ApprovalView, StopReason, TranscriptItem } from '../
 import { Conversation } from './Conversation';
 
 beforeAll(() => {
-  Object.defineProperty(Element.prototype, 'scrollTo', { value: vi.fn(), writable: true });
+  Object.defineProperty(Element.prototype, 'scrollTo', { value: vi.fn(), writable: true, configurable: true });
 });
 
 function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
@@ -104,6 +104,98 @@ describe('Conversation', () => {
     const { container } = renderConversation({ items });
     expect(container.querySelector('.block-thought strong')).toHaveTextContent('failing');
     expect(container.querySelector('.block-assistant code')).toHaveTextContent('refresh()');
+  });
+
+  describe('virtualization', () => {
+    function manyUserMessages(count: number): TranscriptItem[] {
+      return Array.from({ length: count }, (_, index) => ({
+        type: 'userMessage' as const,
+        text: `message ${index}`,
+      }));
+    }
+
+    // Only these tests need scrollTo to actually behave like a browser's
+    // (move scrollTop, fire a 'scroll' event) so the virtualizer's
+    // scrollToIndex has something to react to; every other test in this
+    // file just needs the jsdom-missing method to exist, via the plain
+    // no-op stub in the outer beforeAll.
+    beforeEach(() => {
+      Object.defineProperty(Element.prototype, 'scrollTo', {
+        configurable: true,
+        value: function scrollTo(this: Element, options?: ScrollToOptions | number) {
+          if (typeof options === 'object' && options !== null) {
+            if (typeof options.top === 'number') {
+              this.scrollTop = options.top;
+            }
+            if (typeof options.left === 'number') {
+              this.scrollLeft = options.left;
+            }
+          }
+          // Fires async, like a real browser's -- firing it synchronously
+          // (within the same call stack as the scrollTo() call) is what a
+          // browser never does, and doing so here trips a React "nested
+          // flushSync" warning that isn't a real bug.
+          queueMicrotask(() => this.dispatchEvent(new Event('scroll')));
+        },
+      });
+    });
+
+    afterEach(async () => {
+      // A render in this describe block can leave a scroll-reconcile frame
+      // pending (see waitForLastBlock below): the virtualizer schedules one
+      // more frame to confirm a landing is stable before it stops. Letting
+      // that finish here, before the stub is swapped back to a plain no-op,
+      // keeps it from leaking a state update into whatever test runs next.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 60));
+      });
+      Object.defineProperty(Element.prototype, 'scrollTo', { value: vi.fn(), writable: true, configurable: true });
+    });
+
+    // Landing exactly on a distant index takes the virtualizer a few
+    // animation frames: the jump is an estimate until items between the old
+    // and new position are actually measured, same as a real browser.
+    async function waitForLastBlock(container: HTMLElement, text: string) {
+      await waitFor(() => expect(container.querySelector('.transcript-block:last-child')).toHaveTextContent(text));
+    }
+
+    it('mounts only a fraction of the blocks for a very long transcript', async () => {
+      const { container } = renderConversation({ items: manyUserMessages(500) });
+      await waitForLastBlock(container, 'message 499');
+      const mounted = container.querySelectorAll('.transcript-block').length;
+      expect(mounted).toBeGreaterThan(0);
+      expect(mounted).toBeLessThan(100);
+    });
+
+    it('stays scrolled to the newest block, which is mounted even in a long transcript', async () => {
+      const { container } = renderConversation({ items: manyUserMessages(500) });
+      await waitForLastBlock(container, 'message 499');
+    });
+
+    it('follows the tail as more blocks stream in', async () => {
+      const { container, rerender, props } = renderConversation({ items: manyUserMessages(500) });
+      await waitForLastBlock(container, 'message 499');
+      rerender(<Conversation {...props} items={manyUserMessages(501)} />);
+      await waitForLastBlock(container, 'message 500');
+    });
+
+    it('gives the scroll spacer a total height that grows with the block count', async () => {
+      const { container: small } = renderConversation({ items: manyUserMessages(5) });
+      const { container: large } = renderConversation({ items: manyUserMessages(500) });
+      await waitForLastBlock(large, 'message 499');
+      const smallHeight = Number((small.querySelector('.transcript-spacer') as HTMLElement).style.height.replace('px', ''));
+      const largeHeight = Number((large.querySelector('.transcript-spacer') as HTMLElement).style.height.replace('px', ''));
+      expect(smallHeight).toBeGreaterThan(0);
+      expect(largeHeight).toBeGreaterThan(smallHeight);
+    });
+
+    it('does not crash when switching to a session with far fewer blocks than the virtualizer last measured', async () => {
+      const { container, rerender, props } = renderConversation({ items: manyUserMessages(500) });
+      await waitForLastBlock(container, 'message 499');
+      rerender(<Conversation {...props} items={manyUserMessages(2)} />);
+      await waitFor(() => expect(container.querySelector('.transcript-block:last-child')).toHaveTextContent('message 1'));
+      expect(container.querySelectorAll('.transcript-block').length).toBe(2);
+    });
   });
 
   const STOP_CASES: [StopReason, string][] = [

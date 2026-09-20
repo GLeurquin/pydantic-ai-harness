@@ -359,13 +359,26 @@
   flex: 1;
   overflow-y: auto;
   padding: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+}
+
+/* Only the blocks near the viewport are mounted (see Conversation.tsx's
+   virtualizer); this spacer gives the scrollbar the full scroll range. */
+.transcript-spacer {
+  position: relative;
+  width: 100%;
+}
+
+.transcript-block {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  padding-bottom: 12px;
 }
 
 .block-user {
-  align-self: flex-end;
+  width: fit-content;
+  margin-left: auto;
   max-width: 70%;
   background: var(--bg-raised);
   border: 1px solid var(--accent);

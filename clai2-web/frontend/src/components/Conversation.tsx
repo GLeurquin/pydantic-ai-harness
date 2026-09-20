@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 
 import type { AgentSummary, ApprovalView, TranscriptItem } from '../api/types';
+import type { TranscriptBlock } from '../state/transcript';
 import { buildBlocks } from '../state/transcript';
 import { ApprovalBanner } from './ApprovalBanner';
 import { Markdown } from './Markdown';
@@ -26,6 +28,58 @@ const STOP_LABELS: Record<string, string> = {
   cancelled: 'cancelled',
 };
 
+/** A guess at a typical block's height in pixels, used only until the
+ * virtualizer measures the real one -- see `measureElement` below. Blocks
+ * vary wildly (a one-line user message vs. a large diff), so this is just a
+ * reasonable starting point for scroll math, not a target. */
+const ESTIMATED_BLOCK_HEIGHT = 96;
+
+function renderBlock(block: TranscriptBlock) {
+  switch (block.kind) {
+    case 'user':
+      return <div className="block-user">{block.text}</div>;
+    case 'assistant':
+      return (
+        <div className="block-assistant">
+          <Markdown text={block.text} />
+        </div>
+      );
+    case 'thought':
+      return (
+        <div className="block-thought">
+          <Markdown text={block.text} />
+        </div>
+      );
+    case 'tool':
+      return <ToolCallCard toolCall={block.toolCall} />;
+    case 'plan':
+      return (
+        <div className="plan-card">
+          {block.entries.map((entry, entryIndex) => (
+            <div key={entryIndex} className="plan-entry">
+              <span className="plan-status">[{entry.status}]</span>
+              <span>{entry.content}</span>
+            </div>
+          ))}
+        </div>
+      );
+    case 'turnEnd':
+      return (
+        <div className="block-turn-end">
+          {STOP_LABELS[block.stopReason]}
+          {block.usage ? (
+            <span className="turn-usage">
+              {' '}
+              &middot; {block.usage.inputTokens.toLocaleString()} in / {block.usage.outputTokens.toLocaleString()} out
+            </span>
+          ) : null}
+        </div>
+      );
+    case 'error':
+      return <div className="block-error">{block.message}</div>;
+  }
+}
+
 export function Conversation({
   agent,
   sessionId,
@@ -47,9 +101,21 @@ export function Conversation({
     (approval) => approval.agentId === agent.id && approval.sessionId === sessionId,
   );
 
+  // Only the blocks near the viewport are mounted, so a very long transcript
+  // stays cheap to render; `measureElement` corrects each block's estimated
+  // height once it's actually in the DOM.
+  const virtualizer = useVirtualizer({
+    count: blocks.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => ESTIMATED_BLOCK_HEIGHT,
+    overscan: 8,
+  });
+
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [items.length]);
+    if (blocks.length > 0) {
+      virtualizer.scrollToIndex(blocks.length - 1, { align: 'end' });
+    }
+  }, [blocks.length]);
 
   const submit = () => {
     const text = draft.trim();
@@ -63,59 +129,25 @@ export function Conversation({
   return (
     <div className="conversation">
       <div className="transcript" ref={scrollRef} aria-label="Transcript">
-        {blocks.map((block, index) => {
-          switch (block.kind) {
-            case 'user':
-              return (
-                <div key={index} className="block-user">
-                  {block.text}
-                </div>
-              );
-            case 'assistant':
-              return (
-                <div key={index} className="block-assistant">
-                  <Markdown text={block.text} />
-                </div>
-              );
-            case 'thought':
-              return (
-                <div key={index} className="block-thought">
-                  <Markdown text={block.text} />
-                </div>
-              );
-            case 'tool':
-              return <ToolCallCard key={index} toolCall={block.toolCall} />;
-            case 'plan':
-              return (
-                <div key={index} className="plan-card">
-                  {block.entries.map((entry, entryIndex) => (
-                    <div key={entryIndex} className="plan-entry">
-                      <span className="plan-status">[{entry.status}]</span>
-                      <span>{entry.content}</span>
-                    </div>
-                  ))}
-                </div>
-              );
-            case 'turnEnd':
-              return (
-                <div key={index} className="block-turn-end">
-                  {STOP_LABELS[block.stopReason]}
-                  {block.usage ? (
-                    <span className="turn-usage">
-                      {' '}
-                      &middot; {block.usage.inputTokens.toLocaleString()} in / {block.usage.outputTokens.toLocaleString()} out
-                    </span>
-                  ) : null}
-                </div>
-              );
-            case 'error':
-              return (
-                <div key={index} className="block-error">
-                  {block.message}
-                </div>
-              );
-          }
-        })}
+        <div className="transcript-spacer" style={{ height: virtualizer.getTotalSize() }}>
+          {virtualizer.getVirtualItems().map((virtualItem) => {
+            // getVirtualItems() is derived from the same `count: blocks.length`
+            // passed into useVirtualizer above on this same render, so its
+            // indices are always in range.
+            const block = blocks[virtualItem.index]!;
+            return (
+              <div
+                key={virtualItem.key}
+                ref={virtualizer.measureElement}
+                data-index={virtualItem.index}
+                className="transcript-block"
+                style={{ transform: `translateY(${virtualItem.start}px)` }}
+              >
+                {renderBlock(block)}
+              </div>
+            );
+          })}
+        </div>
       </div>
       {sessionApprovals.map((approval) => (
         <ApprovalBanner key={approval.id} approval={approval} onResolve={onResolveApproval} />
