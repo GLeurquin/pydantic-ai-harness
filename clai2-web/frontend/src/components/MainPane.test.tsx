@@ -30,6 +30,7 @@ function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
     lastError: null,
     goal: null,
     ciTracking: null,
+    folderId: null,
     ...overrides,
   };
 }
@@ -50,9 +51,12 @@ function renderPane(overrides: Partial<Parameters<typeof MainPane>[0]> = {}) {
     onSideSession: vi.fn(),
     loadDiff: vi.fn<(agentId: string) => Promise<WorktreeDiff>>(() => new Promise<WorktreeDiff>(() => undefined)),
     models: [],
+    folders: [],
     onSetApprovalMode: vi.fn(),
     onSetModel: vi.fn(),
     onManageModels: vi.fn(),
+    onSetFolder: vi.fn(),
+    onManageFolders: vi.fn(),
     onArchive: vi.fn(),
     onRename: vi.fn(),
     onSetGoal: vi.fn(),

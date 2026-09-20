@@ -25,7 +25,8 @@ impl IntoResponse for ManagerError {
             | ManagerError::SessionNotFound
             | ManagerError::ApprovalNotFound
             | ManagerError::ModelNotFound
-            | ManagerError::ProjectNotFound => StatusCode::NOT_FOUND,
+            | ManagerError::ProjectNotFound
+            | ManagerError::FolderNotFound => StatusCode::NOT_FOUND,
             ManagerError::CapReached(_)
             | ManagerError::ModelInUse
             | ManagerError::ProjectInUse
@@ -61,6 +62,18 @@ struct CreateAgentBody {
 struct CreateProjectBody {
     name: String,
     path: String,
+}
+
+#[derive(Deserialize)]
+struct CreateFolderBody {
+    name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetAgentFolderBody {
+    #[serde(default)]
+    folder_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -183,6 +196,34 @@ async fn delete_project(
 ) -> Result<Json<serde_json::Value>, ManagerError> {
     manager.remove_project(&project_id).await?;
     Ok(Json(json!({"ok": true})))
+}
+
+async fn list_folders(State(manager): State<AppState>) -> Json<serde_json::Value> {
+    Json(json!(manager.list_folders().await))
+}
+
+async fn create_folder(
+    State(manager): State<AppState>,
+    Json(body): Json<CreateFolderBody>,
+) -> Result<Json<serde_json::Value>, ManagerError> {
+    let folder = manager.add_folder(body.name).await?;
+    Ok(Json(json!(folder)))
+}
+
+async fn delete_folder(
+    State(manager): State<AppState>,
+    Path(folder_id): Path<String>,
+) -> Result<Json<serde_json::Value>, ManagerError> {
+    manager.remove_folder(&folder_id).await?;
+    Ok(Json(json!({"ok": true})))
+}
+
+async fn set_agent_folder(
+    State(manager): State<AppState>,
+    Path(agent_id): Path<String>,
+    Json(body): Json<SetAgentFolderBody>,
+) -> Result<Json<serde_json::Value>, ManagerError> {
+    Ok(Json(json!(manager.set_agent_folder(&agent_id, body.folder_id).await?)))
 }
 
 async fn get_agent(
@@ -404,6 +445,7 @@ async fn ws_connection(mut socket: WebSocket, manager: AppState) {
         "agents": manager.snapshot().await,
         "approvals": manager.pending_approvals().await,
         "projects": manager.list_projects().await,
+        "folders": manager.list_folders().await,
         "maxAgents": manager.max_agents(),
     });
     if socket.send(Message::Text(snapshot.to_string().into())).await.is_err() {
@@ -454,6 +496,7 @@ pub fn build_router(manager: AppState) -> Router {
         .route("/api/agents/{agent_id}/approvals", get(agent_approvals))
         .route("/api/agents/{agent_id}/diff", get(diff))
         .route("/api/agents/{agent_id}/model", patch(set_agent_model))
+        .route("/api/agents/{agent_id}/folder", patch(set_agent_folder))
         .route("/api/approvals", get(all_approvals))
         .route("/api/approvals/{approval_id}", post(resolve_approval))
         .route("/api/models", get(list_models).post(create_model))
@@ -466,6 +509,8 @@ pub fn build_router(manager: AppState) -> Router {
         .route("/api/github/poll-interval", patch(set_github_poll_interval))
         .route("/api/projects", get(list_projects).post(create_project))
         .route("/api/projects/{project_id}", delete(delete_project))
+        .route("/api/folders", get(list_folders).post(create_folder))
+        .route("/api/folders/{folder_id}", delete(delete_folder))
         .route("/api/ws", get(ws_upgrade))
         .with_state(manager)
 }

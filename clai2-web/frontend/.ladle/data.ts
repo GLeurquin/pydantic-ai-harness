@@ -62,6 +62,7 @@ export function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
     lastError: null,
     goal: null,
     ciTracking: null,
+    folderId: null,
     ...overrides,
   };
 }

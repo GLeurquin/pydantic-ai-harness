@@ -18,6 +18,13 @@ export interface ProjectSummary {
   repoRoot: string;
 }
 
+/** A user-defined group agents can be manually filed into, purely for
+ * organizing the sidebar. */
+export interface FolderSummary {
+  id: string;
+  name: string;
+}
+
 export interface SessionSummary {
   id: string;
   acpSessionId: string | null;
@@ -53,6 +60,7 @@ export interface AgentSummary {
   lastError: string | null;
   goal: GoalConfig | null;
   ciTracking: CiTracking | null;
+  folderId: string | null;
 }
 
 /** An autonomous goal an agent works toward turn-over-turn on its own. */
@@ -208,6 +216,8 @@ export type ServerEvent =
   | { type: 'agentRemoved'; agentId: string }
   | { type: 'projectAdded'; project: ProjectSummary }
   | { type: 'projectRemoved'; projectId: string }
+  | { type: 'folderAdded'; folder: FolderSummary }
+  | { type: 'folderRemoved'; folderId: string }
   | { type: 'userMessage'; agentId: string; sessionId: string; text: string }
   | { type: 'messageChunk'; agentId: string; sessionId: string; text: string }
   | { type: 'thoughtChunk'; agentId: string; sessionId: string; text: string }

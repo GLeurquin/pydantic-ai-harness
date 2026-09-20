@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
-import type { AgentStatus, AgentSummary } from '../api/types';
-import { filterByProject, groupAgents, liveCount, STATUS_LABELS } from './grouping';
+import type { AgentStatus, AgentSummary, FolderSummary } from '../api/types';
+import { filterByProject, groupAgents, groupByFolder, liveCount, STATUS_LABELS } from './grouping';
 
-function agent(id: string, name: string, status: AgentStatus, projectId = 'project-1'): AgentSummary {
+function agent(
+  id: string,
+  name: string,
+  status: AgentStatus,
+  projectId = 'project-1',
+  folderId: string | null = null,
+): AgentSummary {
   return {
     id,
     name,
@@ -20,7 +26,12 @@ function agent(id: string, name: string, status: AgentStatus, projectId = 'proje
     lastError: null,
     goal: null,
     ciTracking: null,
+    folderId,
   };
+}
+
+function folder(id: string, name: string): FolderSummary {
+  return { id, name };
 }
 
 describe('groupAgents', () => {
@@ -81,6 +92,68 @@ describe('groupAgents', () => {
   it('excludes agents whose name does not contain the filter', () => {
     const a = agent('1', 'alpha', 'error');
     expect(groupAgents([a], 'omega')).toEqual({ needsAttention: [], working: [], idle: [], archived: [] });
+  });
+
+  it('skips a non-archived agent filed into a folder', () => {
+    const filed = agent('1', 'filed', 'waiting_approval', 'project-1', 'f1');
+    const unfiled = agent('2', 'unfiled', 'idle');
+    expect(groupAgents([filed, unfiled], '')).toEqual({
+      needsAttention: [],
+      working: [],
+      idle: [unfiled],
+      archived: [],
+    });
+  });
+
+  it('keeps an archived agent in Archived even when it is filed into a folder', () => {
+    const filedArchived = agent('1', 'filed', 'archived', 'project-1', 'f1');
+    expect(groupAgents([filedArchived], '')).toEqual({
+      needsAttention: [],
+      working: [],
+      idle: [],
+      archived: [filedArchived],
+    });
+  });
+});
+
+describe('groupByFolder', () => {
+  it('groups agents by their folder, preserving folder order', () => {
+    const inBackend = agent('1', 'a', 'idle', 'project-1', 'f-backend');
+    const inFrontend = agent('2', 'b', 'idle', 'project-1', 'f-frontend');
+    const folders = [folder('f-backend', 'Backend'), folder('f-frontend', 'Frontend')];
+    expect(groupByFolder([inBackend, inFrontend], folders, '')).toEqual([
+      { folder: folders[0], agents: [inBackend] },
+      { folder: folders[1], agents: [inFrontend] },
+    ]);
+  });
+
+  it('omits folders with no matching agents', () => {
+    const inBackend = agent('1', 'a', 'idle', 'project-1', 'f-backend');
+    const folders = [folder('f-backend', 'Backend'), folder('f-empty', 'Empty')];
+    expect(groupByFolder([inBackend], folders, '')).toEqual([{ folder: folders[0], agents: [inBackend] }]);
+  });
+
+  it('excludes an archived agent even if it is filed into the folder', () => {
+    const archived = agent('1', 'a', 'archived', 'project-1', 'f-backend');
+    expect(groupByFolder([archived], [folder('f-backend', 'Backend')], '')).toEqual([]);
+  });
+
+  it('excludes agents with no folder or an unknown folder', () => {
+    const unfiled = agent('1', 'a', 'idle');
+    const otherFolder = agent('2', 'b', 'idle', 'project-1', 'f-other');
+    expect(groupByFolder([unfiled, otherFolder], [folder('f-backend', 'Backend')], '')).toEqual([]);
+  });
+
+  it('filters by case-insensitive substring of the name', () => {
+    const alpha = agent('1', 'Alpha One', 'idle', 'project-1', 'f1');
+    const beta = agent('2', 'beta', 'idle', 'project-1', 'f1');
+    expect(groupByFolder([alpha, beta], [folder('f1', 'Team')], 'aLpH')).toEqual([
+      { folder: folder('f1', 'Team'), agents: [alpha] },
+    ]);
+  });
+
+  it('returns no groups for no folders', () => {
+    expect(groupByFolder([agent('1', 'a', 'idle', 'project-1', 'f1')], [], '')).toEqual([]);
   });
 });
 

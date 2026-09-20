@@ -1,13 +1,16 @@
 import { useState } from 'react';
 
-import type { AgentSummary, ApprovalMode, RedactedProfile } from '../api/types';
+import type { AgentSummary, ApprovalMode, FolderSummary, RedactedProfile } from '../api/types';
 
 export interface SettingsPanelProps {
   agent: AgentSummary;
   models: RedactedProfile[];
+  folders: FolderSummary[];
   onSetApprovalMode: (mode: ApprovalMode) => void;
   onSetModel: (modelProfileId: string | null) => void;
   onManageModels: () => void;
+  onSetFolder: (folderId: string | null) => void;
+  onManageFolders: () => void;
   onArchive: (removeWorktree: boolean) => void;
   onRename: (name: string) => void;
   onSetGoal: () => void;
@@ -58,9 +61,12 @@ function NameField({ agent, onRename }: { agent: AgentSummary; onRename: (name: 
 export function SettingsPanel({
   agent,
   models,
+  folders,
   onSetApprovalMode,
   onSetModel,
   onManageModels,
+  onSetFolder,
+  onManageFolders,
   onArchive,
   onRename,
   onSetGoal,
@@ -97,6 +103,26 @@ export function SettingsPanel({
             ? 'Finish or cancel the current turn before switching models.'
             : 'Switching restarts the agent and replays the conversation to the new model.'}
         </p>
+      </section>
+
+      <section>
+        <h3>Folder</h3>
+        <div className="settings-row">
+          <select
+            value={agent.folderId ?? ''}
+            onChange={(change) => onSetFolder(change.target.value === '' ? null : change.target.value)}
+            aria-label="Folder"
+          >
+            <option value="">No folder</option>
+            {folders.map((folder) => (
+              <option key={folder.id} value={folder.id}>
+                {folder.name}
+              </option>
+            ))}
+          </select>
+          <button onClick={onManageFolders}>Manage folders</button>
+        </div>
+        <p className="hint">Purely organizational -- groups this agent in the sidebar.</p>
       </section>
 
       <section>

@@ -20,6 +20,7 @@ function agent(id: string, name = id): AgentSummary {
     lastError: null,
     goal: null,
     ciTracking: null,
+    folderId: null,
   };
 }
 
@@ -155,6 +156,29 @@ describe('reduceEvent', () => {
     });
   });
 
+  const folder1 = { id: 'f1', name: 'backend work' };
+  const folder2 = { id: 'f2', name: 'reviews' };
+
+  it('folderAdded appends a new folder', () => {
+    resetStore({ folders: [folder1] });
+    expect(reduceEvent(state(), { type: 'folderAdded', folder: folder2 })).toEqual({
+      folders: [folder1, folder2],
+    });
+  });
+
+  it('folderAdded with an existing id replaces that folder in place', () => {
+    resetStore({ folders: [folder1] });
+    const renamed = { ...folder1, name: 'renamed' };
+    expect(reduceEvent(state(), { type: 'folderAdded', folder: renamed })).toEqual({ folders: [renamed] });
+  });
+
+  it('folderRemoved filters the folder', () => {
+    resetStore({ folders: [folder1, folder2] });
+    expect(reduceEvent(state(), { type: 'folderRemoved', folderId: 'f1' })).toEqual({
+      folders: [folder2],
+    });
+  });
+
   const transcriptCases: ReadonlyArray<[string, ServerEvent, TranscriptItem]> = [
     ['userMessage', { type: 'userMessage', agentId: 'a1', sessionId: 's1', text: 'hi' }, { type: 'userMessage', text: 'hi' }],
     ['messageChunk', { type: 'messageChunk', agentId: 'a1', sessionId: 's1', text: 'chunk' }, { type: 'messageChunk', text: 'chunk' }],
@@ -257,7 +281,7 @@ describe('useAppStore actions', () => {
 
   it('applySnapshot keeps a selection that still exists', () => {
     resetStore({ agents: [agent('a1'), agent('a2')], selectedAgentId: 'a2' });
-    state().applySnapshot({ agents: [agent('a2'), agent('a3')], approvals: [approval('ap1')], projects: [], maxAgents: 100 });
+    state().applySnapshot({ agents: [agent('a2'), agent('a3')], approvals: [approval('ap1')], projects: [], folders: [], maxAgents: 100 });
     expect(state().agents).toEqual([agent('a2'), agent('a3')]);
     expect(state().approvals).toEqual([approval('ap1')]);
     expect(state().selectedAgentId).toBe('a2');
@@ -265,30 +289,36 @@ describe('useAppStore actions', () => {
 
   it('applySnapshot sets the project registry', () => {
     const project = { id: 'p1', name: 'demo', repoRoot: '/repo' };
-    state().applySnapshot({ agents: [], approvals: [], projects: [project], maxAgents: 100 });
+    state().applySnapshot({ agents: [], approvals: [], projects: [project], folders: [], maxAgents: 100 });
     expect(state().projects).toEqual([project]);
+  });
+
+  it('applySnapshot sets the folder registry', () => {
+    const folder = { id: 'f1', name: 'backend work' };
+    state().applySnapshot({ agents: [], approvals: [], projects: [], folders: [folder], maxAgents: 100 });
+    expect(state().folders).toEqual([folder]);
   });
 
   it('applySnapshot sets the configured max agent cap', () => {
     resetStore({ maxAgents: 100 });
-    state().applySnapshot({ agents: [], approvals: [], projects: [], maxAgents: 250 });
+    state().applySnapshot({ agents: [], approvals: [], projects: [], folders: [], maxAgents: 250 });
     expect(state().maxAgents).toBe(250);
   });
 
   it('applySnapshot falls back to the first agent when the selection is gone', () => {
     resetStore({ selectedAgentId: 'gone' });
-    state().applySnapshot({ agents: [agent('a1'), agent('a2')], approvals: [], projects: [], maxAgents: 100 });
+    state().applySnapshot({ agents: [agent('a1'), agent('a2')], approvals: [], projects: [], folders: [], maxAgents: 100 });
     expect(state().selectedAgentId).toBe('a1');
   });
 
   it('applySnapshot selects the first agent when nothing was selected', () => {
-    state().applySnapshot({ agents: [agent('a9')], approvals: [], projects: [], maxAgents: 100 });
+    state().applySnapshot({ agents: [agent('a9')], approvals: [], projects: [], folders: [], maxAgents: 100 });
     expect(state().selectedAgentId).toBe('a9');
   });
 
   it('applySnapshot sets a null selection when there are no agents', () => {
     resetStore({ agents: [agent('a1')], selectedAgentId: 'a1' });
-    state().applySnapshot({ agents: [], approvals: [], projects: [], maxAgents: 100 });
+    state().applySnapshot({ agents: [], approvals: [], projects: [], folders: [], maxAgents: 100 });
     expect(state().selectedAgentId).toBeNull();
     expect(state().agents).toEqual([]);
   });

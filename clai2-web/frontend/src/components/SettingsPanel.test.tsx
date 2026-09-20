@@ -2,7 +2,7 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
 
-import type { AgentSummary, RedactedProfile } from '../api/types';
+import type { AgentSummary, FolderSummary, RedactedProfile } from '../api/types';
 import { SettingsPanel } from './SettingsPanel';
 
 function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
@@ -22,6 +22,7 @@ function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
     lastError: null,
     goal: null,
     ciTracking: null,
+    folderId: null,
     ...overrides,
   };
 }
@@ -42,6 +43,10 @@ function makeProfile(overrides: Partial<RedactedProfile> = {}): RedactedProfile 
 }
 
 const models: RedactedProfile[] = [makeProfile(), makeProfile({ id: 'm2', label: 'GPT', provider: 'openai', model: 'gpt-6' })];
+const folders: FolderSummary[] = [
+  { id: 'f1', name: 'Q3 launch' },
+  { id: 'f2', name: 'On hold' },
+];
 
 function kvPairs(container: HTMLElement): [string, string][] {
   const dl = container.querySelector('.kv');
@@ -57,9 +62,12 @@ function renderSettings(props: Partial<Parameters<typeof SettingsPanel>[0]> = {}
   const defaults = {
     agent: makeAgent(),
     models,
+    folders,
     onSetApprovalMode: vi.fn(),
     onSetModel: vi.fn(),
     onManageModels: vi.fn(),
+    onSetFolder: vi.fn(),
+    onManageFolders: vi.fn(),
     onArchive: vi.fn(),
     onRename: vi.fn(),
     onSetGoal: vi.fn(),
@@ -315,5 +323,56 @@ describe('SettingsPanel', () => {
   it('disables the model select for an archived agent', () => {
     renderSettings({ agent: makeAgent({ status: 'archived' }) });
     expect(screen.getByLabelText('Model profile')).toBeDisabled();
+  });
+});
+
+describe('Folder', () => {
+  it('reflects the agent folder and lists No folder plus every folder', () => {
+    renderSettings({ agent: makeAgent({ folderId: 'f2' }) });
+    const select = screen.getByLabelText('Folder');
+    expect(select).toHaveValue('f2');
+    const options = within(select).getAllByRole('option');
+    expect(options.map((option) => [option.getAttribute('value'), option.textContent])).toEqual([
+      ['', 'No folder'],
+      ['f1', 'Q3 launch'],
+      ['f2', 'On hold'],
+    ]);
+  });
+
+  it('defaults the folder select to No folder when unfiled', () => {
+    renderSettings();
+    expect(screen.getByLabelText('Folder')).toHaveValue('');
+  });
+
+  it('fires onSetFolder with the chosen folder id', async () => {
+    const user = userEvent.setup();
+    const { props } = renderSettings();
+    await user.selectOptions(screen.getByLabelText('Folder'), 'f2');
+    expect(props.onSetFolder).toHaveBeenCalledTimes(1);
+    expect(props.onSetFolder).toHaveBeenCalledWith('f2');
+  });
+
+  it('fires onSetFolder with null when switching back to No folder', async () => {
+    const user = userEvent.setup();
+    const { props } = renderSettings({ agent: makeAgent({ folderId: 'f1' }) });
+    await user.selectOptions(screen.getByLabelText('Folder'), 'No folder');
+    expect(props.onSetFolder).toHaveBeenCalledWith(null);
+  });
+
+  it('fires onManageFolders from the Manage folders button', async () => {
+    const user = userEvent.setup();
+    const { props } = renderSettings();
+    await user.click(screen.getByRole('button', { name: 'Manage folders' }));
+    expect(props.onManageFolders).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays enabled while a turn is in flight, since filing is purely organizational', () => {
+    renderSettings({ agent: makeAgent({ status: 'working' }) });
+    expect(screen.getByLabelText('Folder')).toBeEnabled();
+  });
+
+  it('stays enabled for an archived agent', () => {
+    renderSettings({ agent: makeAgent({ status: 'archived' }) });
+    expect(screen.getByLabelText('Folder')).toBeEnabled();
   });
 });

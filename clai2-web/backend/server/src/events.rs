@@ -7,7 +7,9 @@
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
-use crate::model::{AgentSummary, ApprovalView, PlanEntry, ProjectSummary, StopReason, ToolCallView, TurnUsage};
+use crate::model::{
+    AgentSummary, ApprovalView, FolderSummary, PlanEntry, ProjectSummary, StopReason, ToolCallView, TurnUsage,
+};
 
 /// Everything the UI can observe, in one tagged union.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -27,6 +29,12 @@ pub enum Event {
     },
     ProjectRemoved {
         project_id: String,
+    },
+    FolderAdded {
+        folder: FolderSummary,
+    },
+    FolderRemoved {
+        folder_id: String,
     },
     UserMessage {
         agent_id: String,

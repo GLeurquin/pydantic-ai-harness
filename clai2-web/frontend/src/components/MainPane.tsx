@@ -1,4 +1,4 @@
-import type { AgentSummary, ApprovalView, RedactedProfile, TranscriptItem, WorktreeDiff } from '../api/types';
+import type { AgentSummary, ApprovalView, FolderSummary, RedactedProfile, TranscriptItem, WorktreeDiff } from '../api/types';
 import type { MainView } from '../state/store';
 import { Conversation } from './Conversation';
 import { DiffPanel } from './DiffPanel';
@@ -18,9 +18,12 @@ export interface MainPaneProps {
   onSideSession: () => void;
   loadDiff: (agentId: string) => Promise<WorktreeDiff>;
   models: RedactedProfile[];
+  folders: FolderSummary[];
   onSetApprovalMode: SettingsPanelProps['onSetApprovalMode'];
   onSetModel: SettingsPanelProps['onSetModel'];
   onManageModels: SettingsPanelProps['onManageModels'];
+  onSetFolder: SettingsPanelProps['onSetFolder'];
+  onManageFolders: SettingsPanelProps['onManageFolders'];
   onArchive: SettingsPanelProps['onArchive'];
   onRename: SettingsPanelProps['onRename'];
   onSetGoal: SettingsPanelProps['onSetGoal'];
@@ -106,9 +109,12 @@ export function MainPane(props: MainPaneProps) {
         <SettingsPanel
           agent={agent}
           models={props.models}
+          folders={props.folders}
           onSetApprovalMode={props.onSetApprovalMode}
           onSetModel={props.onSetModel}
           onManageModels={props.onManageModels}
+          onSetFolder={props.onSetFolder}
+          onManageFolders={props.onManageFolders}
           onArchive={props.onArchive}
           onRename={props.onRename}
           onSetGoal={props.onSetGoal}

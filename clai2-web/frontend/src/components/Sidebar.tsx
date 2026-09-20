@@ -1,13 +1,14 @@
 import { useState } from 'react';
 
-import type { AgentSummary, ProjectSummary } from '../api/types';
-import { filterByProject, groupAgents, liveCount } from '../state/grouping';
+import type { AgentSummary, FolderSummary, ProjectSummary } from '../api/types';
+import { filterByProject, groupAgents, groupByFolder, liveCount } from '../state/grouping';
 import type { ProjectFilter } from '../state/store';
 import { AgentRow } from './AgentRow';
 
 export interface SidebarProps {
   agents: AgentSummary[];
   projects: ProjectSummary[];
+  folders: FolderSummary[];
   selectedProjectId: ProjectFilter;
   selectedAgentId: string | null;
   maxAgents: number;
@@ -46,9 +47,41 @@ function saveCollapsedGroups(collapsed: Record<string, boolean>): void {
   }
 }
 
+/** One collapsible section, shared by the status groups and folder groups --
+ * empty groups render nothing, matching the "only non-empty groups" rule
+ * `groupAgents`/`groupByFolder` already apply. */
+function renderSection(
+  key: string,
+  title: string,
+  sectionAgents: AgentSummary[],
+  collapsedGroups: Record<string, boolean>,
+  toggleGroup: (key: string) => void,
+  selectedAgentId: string | null,
+  onSelect: (agentId: string) => void,
+) {
+  if (sectionAgents.length === 0) {
+    return null;
+  }
+  const collapsed = collapsedGroups[key] ?? false;
+  return (
+    <section key={key} aria-label={title}>
+      <button type="button" className="sidebar-group-title" onClick={() => toggleGroup(key)} aria-expanded={!collapsed}>
+        <span className="sidebar-group-arrow">{collapsed ? '▸' : '▾'}</span>
+        {title}
+      </button>
+      {collapsed
+        ? null
+        : sectionAgents.map((agent) => (
+            <AgentRow key={agent.id} agent={agent} selected={agent.id === selectedAgentId} onSelect={onSelect} />
+          ))}
+    </section>
+  );
+}
+
 export function Sidebar({
   agents,
   projects,
+  folders,
   selectedProjectId,
   selectedAgentId,
   maxAgents,
@@ -59,7 +92,9 @@ export function Sidebar({
 }: SidebarProps) {
   const [filter, setFilter] = useState('');
   const [collapsedGroups, setCollapsedGroups] = useState(loadCollapsedGroups);
-  const groups = groupAgents(filterByProject(agents, selectedProjectId), filter);
+  const projectAgents = filterByProject(agents, selectedProjectId);
+  const groups = groupAgents(projectAgents, filter);
+  const folderGroups = groupByFolder(projectAgents, folders, filter);
   const live = liveCount(agents);
   const atCapacity = live >= maxAgents;
 
@@ -100,30 +135,20 @@ export function Sidebar({
           />
         </div>
       </div>
-      {GROUP_TITLES.map(([key, title]) => {
-        if (groups[key].length === 0) {
-          return null;
-        }
-        const collapsed = collapsedGroups[key] ?? false;
-        return (
-          <section key={key} aria-label={title}>
-            <button
-              type="button"
-              className="sidebar-group-title"
-              onClick={() => toggleGroup(key)}
-              aria-expanded={!collapsed}
-            >
-              <span className="sidebar-group-arrow">{collapsed ? '▸' : '▾'}</span>
-              {title}
-            </button>
-            {collapsed
-              ? null
-              : groups[key].map((agent) => (
-                  <AgentRow key={agent.id} agent={agent} selected={agent.id === selectedAgentId} onSelect={onSelect} />
-                ))}
-          </section>
-        );
-      })}
+      {GROUP_TITLES.map(([key, title]) =>
+        renderSection(key, title, groups[key], collapsedGroups, toggleGroup, selectedAgentId, onSelect),
+      )}
+      {folderGroups.map((group) =>
+        renderSection(
+          `folder:${group.folder.id}`,
+          group.folder.name,
+          group.agents,
+          collapsedGroups,
+          toggleGroup,
+          selectedAgentId,
+          onSelect,
+        ),
+      )}
       <div className="capacity">
         {live}/{maxAgents} agents
       </div>

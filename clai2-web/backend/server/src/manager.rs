@@ -18,8 +18,8 @@ use crate::approvals::{decide, ApprovalLedger, ApprovalOutcome, PolicyDecision};
 use crate::events::{Event, EventHub};
 use crate::github::{CiCheckState, FetchIssueError, FetchedIssue, GithubSettings, IssueRef, RedactedGithubSettings};
 use crate::model::{
-    AgentStatus, AgentSummary, ApprovalMode, ApprovalView, CiTracking, GoalConfig, ProjectSummary, SessionSummary,
-    StopReason, ToolCallView, TranscriptItem,
+    AgentStatus, AgentSummary, ApprovalMode, ApprovalView, CiTracking, FolderSummary, GoalConfig, ProjectSummary,
+    SessionSummary, StopReason, ToolCallView, TranscriptItem,
 };
 use crate::models::{ModelProfile, ProfileEdit, RedactedProfile};
 use crate::store::{PersistedAgent, Store, StoreError};
@@ -49,6 +49,8 @@ pub enum ManagerError {
     ProjectNotFound,
     #[error("project is in use by a live agent")]
     ProjectInUse,
+    #[error("folder not found")]
+    FolderNotFound,
     #[error("invalid request: {0}")]
     Invalid(String),
     #[error(transparent)]
@@ -160,6 +162,7 @@ pub struct AgentManager {
     agents: Mutex<Vec<AgentEntry>>,
     models: Mutex<Vec<ModelProfile>>,
     projects: Mutex<Vec<ProjectSummary>>,
+    folders: Mutex<Vec<FolderSummary>>,
     github: Mutex<GithubSettings>,
     http: reqwest::Client,
     /// Serializes process spawns and ACP session opens, so two concurrent
@@ -258,6 +261,7 @@ impl AgentManager {
         }
         let persisted = store.load_roster().await?;
         let models = store.load_models().await?;
+        let folders = store.load_folders().await?;
         let github = store.load_github_settings().await?;
         // Roster files predating the project registry have no project_id
         // (defaults to empty on deserialize); backfill them to the bootstrap
@@ -316,6 +320,7 @@ impl AgentManager {
             agents: Mutex::new(agents),
             models: Mutex::new(models),
             projects: Mutex::new(projects),
+            folders: Mutex::new(folders),
             github: Mutex::new(github),
             http: reqwest::Client::new(),
             spawn_lock: Mutex::new(()),
@@ -435,6 +440,98 @@ impl AgentManager {
         Ok(())
     }
 
+    pub async fn list_folders(&self) -> Vec<FolderSummary> {
+        self.folders.lock().await.clone()
+    }
+
+    async fn persist_folders(&self) -> Result<(), ManagerError> {
+        let folders = self.folders.lock().await.clone();
+        self.store.save_folders(&folders).await?;
+        Ok(())
+    }
+
+    /// Create a folder: a user-defined group agents can be manually filed
+    /// into, purely for organizing the sidebar.
+    pub async fn add_folder(&self, name: String) -> Result<FolderSummary, ManagerError> {
+        let name = name.trim().to_owned();
+        if name.is_empty() {
+            return Err(ManagerError::Invalid("folder name must not be empty".to_owned()));
+        }
+        let folder = FolderSummary {
+            id: Uuid::new_v4().to_string(),
+            name,
+        };
+        {
+            let mut folders = self.folders.lock().await;
+            folders.push(folder.clone());
+        }
+        self.persist_folders().await?;
+        self.hub.publish(Event::FolderAdded { folder: folder.clone() });
+        Ok(folder)
+    }
+
+    /// Remove a folder. Unlike a project, a folder has no bearing on where an
+    /// agent runs, so agents filed into it are unfiled rather than blocking
+    /// the removal.
+    pub async fn remove_folder(&self, folder_id: &str) -> Result<(), ManagerError> {
+        let removed = {
+            let mut folders = self.folders.lock().await;
+            let before = folders.len();
+            folders.retain(|folder| folder.id != folder_id);
+            before != folders.len()
+        };
+        if !removed {
+            return Err(ManagerError::FolderNotFound);
+        }
+        let affected: Vec<String> = {
+            let mut agents = self.agents.lock().await;
+            agents
+                .iter_mut()
+                .filter(|entry| entry.summary.folder_id.as_deref() == Some(folder_id))
+                .map(|entry| {
+                    entry.summary.folder_id = None;
+                    entry.summary.id.clone()
+                })
+                .collect()
+        };
+        self.persist_folders().await?;
+        if !affected.is_empty() {
+            self.persist_roster().await?;
+        }
+        for agent_id in &affected {
+            self.publish_agent(agent_id).await;
+        }
+        self.hub.publish(Event::FolderRemoved {
+            folder_id: folder_id.to_owned(),
+        });
+        Ok(())
+    }
+
+    /// File an agent into a folder, or clear it with `folder_id: None`.
+    pub async fn set_agent_folder(
+        &self,
+        agent_id: &str,
+        folder_id: Option<String>,
+    ) -> Result<AgentSummary, ManagerError> {
+        if let Some(folder_id) = &folder_id {
+            let exists = self.folders.lock().await.iter().any(|folder| &folder.id == folder_id);
+            if !exists {
+                return Err(ManagerError::FolderNotFound);
+            }
+        }
+        {
+            let mut agents = self.agents.lock().await;
+            let entry = agents
+                .iter_mut()
+                .find(|entry| entry.summary.id == agent_id)
+                .ok_or(ManagerError::AgentNotFound)?;
+            entry.summary.folder_id = folder_id;
+        }
+        self.publish_agent(agent_id).await;
+        self.persist_roster().await?;
+        self.agent(agent_id).await
+    }
+
     async fn persist_roster(&self) -> Result<(), ManagerError> {
         let persisted: Vec<PersistedAgent> = {
             let agents = self.agents.lock().await;
@@ -525,6 +622,7 @@ impl AgentManager {
             last_error: None,
             goal: None,
             ci_tracking: None,
+            folder_id: None,
         };
         let agent = self.finish_creation(summary, None).await?;
         // Best-effort: the agent already exists either way, so a failure to
@@ -1067,6 +1165,7 @@ impl AgentManager {
             last_error: None,
             goal: None,
             ci_tracking: None,
+            folder_id: parent_summary.folder_id.clone(),
         };
         let mut needs_replay = HashSet::new();
         needs_replay.insert("main".to_owned());

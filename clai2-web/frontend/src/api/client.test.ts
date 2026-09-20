@@ -157,6 +157,52 @@ describe('api', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/projects/p1', { ...JSON_HEADERS, method: 'DELETE' });
   });
 
+  it('listFolders GETs /api/folders', async () => {
+    const payload = [{ id: 'f1', name: 'backend work' }];
+    fetchMock.mockResolvedValue(okResponse(payload));
+    await expect(api.listFolders()).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith('/api/folders', JSON_HEADERS);
+  });
+
+  it('createFolder POSTs the folder name', async () => {
+    const payload = { id: 'f1', name: 'backend work' };
+    fetchMock.mockResolvedValue(okResponse(payload));
+    await expect(api.createFolder('backend work')).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith('/api/folders', {
+      ...JSON_HEADERS,
+      method: 'POST',
+      body: JSON.stringify({ name: 'backend work' }),
+    });
+  });
+
+  it('deleteFolder DELETEs the folder', async () => {
+    fetchMock.mockResolvedValue(okResponse({ ok: true }));
+    await expect(api.deleteFolder('f1')).resolves.toEqual({ ok: true });
+    expect(fetchMock).toHaveBeenCalledWith('/api/folders/f1', { ...JSON_HEADERS, method: 'DELETE' });
+  });
+
+  it('setAgentFolder PATCHes the chosen folder id', async () => {
+    const payload = { id: 'a1' };
+    fetchMock.mockResolvedValue(okResponse(payload));
+    await expect(api.setAgentFolder('a1', 'f1')).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith('/api/agents/a1/folder', {
+      ...JSON_HEADERS,
+      method: 'PATCH',
+      body: JSON.stringify({ folderId: 'f1' }),
+    });
+  });
+
+  it('setAgentFolder PATCHes a null folder id to clear it', async () => {
+    const payload = { id: 'a1' };
+    fetchMock.mockResolvedValue(okResponse(payload));
+    await expect(api.setAgentFolder('a1', null)).resolves.toEqual(payload);
+    expect(fetchMock).toHaveBeenCalledWith('/api/agents/a1/folder', {
+      ...JSON_HEADERS,
+      method: 'PATCH',
+      body: JSON.stringify({ folderId: null }),
+    });
+  });
+
   it('pendingApprovals GETs /api/approvals', async () => {
     const payload = [{ id: 'ap1' }];
     fetchMock.mockResolvedValue(okResponse(payload));

@@ -4,6 +4,7 @@ import { api } from './api/client';
 import type { CreateAgentRequest, ProfileEdit } from './api/types';
 import { errorMessage } from './errors';
 import { CiTrackingDialog } from './components/CiTrackingDialog';
+import { FoldersDialog } from './components/FoldersDialog';
 import { GithubSettingsDialog } from './components/GithubSettingsDialog';
 import { GoalDialog } from './components/GoalDialog';
 import { Header } from './components/Header';
@@ -18,7 +19,17 @@ import { transcriptKey } from './state/transcript';
 import { useAppStore } from './state/store';
 import { connectWs, wsUrl } from './ws';
 
-type Dialog = 'none' | 'new-agent' | 'fork' | 'side-session' | 'models' | 'goal' | 'github' | 'ci-tracking' | 'projects';
+type Dialog =
+  | 'none'
+  | 'new-agent'
+  | 'fork'
+  | 'side-session'
+  | 'models'
+  | 'goal'
+  | 'github'
+  | 'ci-tracking'
+  | 'projects'
+  | 'folders';
 
 /** Fire a write action; a rejection surfaces as a notification instead of
  * vanishing. The rest of the UI does not wait on it. */
@@ -92,6 +103,17 @@ export function App() {
     useAppStore.getState().applyEvent({ type: 'projectRemoved', projectId });
   };
 
+  const createFolder = async (name: string) => {
+    const folder = await api.createFolder(name);
+    useAppStore.getState().applyEvent({ type: 'folderAdded', folder });
+    return folder;
+  };
+
+  const deleteFolder = async (folderId: string) => {
+    await api.deleteFolder(folderId);
+    useAppStore.getState().applyEvent({ type: 'folderRemoved', folderId });
+  };
+
   const createModel = async (body: ProfileEdit) => {
     const created = await api.createModel(body);
     useAppStore.getState().setModels([...useAppStore.getState().models, created]);
@@ -138,6 +160,7 @@ export function App() {
       <Sidebar
         agents={store.agents}
         projects={store.projects}
+        folders={store.folders}
         selectedProjectId={store.selectedProjectId}
         selectedAgentId={store.selectedAgentId}
         maxAgents={store.maxAgents}
@@ -163,9 +186,12 @@ export function App() {
           onSideSession={() => setDialog('side-session')}
           loadDiff={loadDiff}
           models={store.models}
+          folders={store.folders}
           onSetApprovalMode={(mode) => runAction(api.setApprovalMode(selected.id, mode))}
           onSetModel={(modelProfileId) => runAction(api.setAgentModel(selected.id, modelProfileId))}
           onManageModels={() => setDialog('models')}
+          onSetFolder={(folderId) => runAction(api.setAgentFolder(selected.id, folderId))}
+          onManageFolders={() => setDialog('folders')}
           onArchive={(removeWorktree) => runAction(api.archiveAgent(selected.id, removeWorktree))}
           onRename={(name) => runAction(api.rename(selected.id, name))}
           onSetGoal={() => setDialog('goal')}
@@ -197,6 +223,14 @@ export function App() {
           projects={store.projects}
           onCreateProject={createProject}
           onDeleteProject={deleteProject}
+          onClose={() => setDialog('none')}
+        />
+      ) : null}
+      {dialog === 'folders' ? (
+        <FoldersDialog
+          folders={store.folders}
+          onCreateFolder={createFolder}
+          onDeleteFolder={deleteFolder}
           onClose={() => setDialog('none')}
         />
       ) : null}

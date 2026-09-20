@@ -9,9 +9,12 @@ export const AlwaysAskWithWorktree: Story = () => (
   <SettingsPanel
     agent={makeAgent({ approvalMode: 'always_ask', worktree: makeWorktree(), modelProfileId: 'profile-1' })}
     models={sampleProfiles}
+    folders={[]}
     onSetApprovalMode={noop}
     onSetModel={noop}
     onManageModels={noop}
+    onSetFolder={noop}
+    onManageFolders={noop}
     onArchive={noop}
     onRename={noop}
     onSetGoal={noop}
@@ -25,9 +28,12 @@ export const AutoModeWarning: Story = () => (
   <SettingsPanel
     agent={makeAgent({ approvalMode: 'auto', forkedFrom: 'triage-issues' })}
     models={sampleProfiles}
+    folders={[]}
     onSetApprovalMode={noop}
     onSetModel={noop}
     onManageModels={noop}
+    onSetFolder={noop}
+    onManageFolders={noop}
     onArchive={noop}
     onRename={noop}
     onSetGoal={noop}
@@ -41,9 +47,12 @@ export const WithActiveGoal: Story = () => (
   <SettingsPanel
     agent={makeAgent({ goal: { goal: 'Fix the failing auth tests and open a PR', maxTurns: 10, turnsUsed: 3 } })}
     models={sampleProfiles}
+    folders={[]}
     onSetApprovalMode={noop}
     onSetModel={noop}
     onManageModels={noop}
+    onSetFolder={noop}
+    onManageFolders={noop}
     onArchive={noop}
     onRename={noop}
     onSetGoal={noop}
@@ -57,9 +66,12 @@ export const WithFailingCi: Story = () => (
   <SettingsPanel
     agent={makeAgent({ ciTracking: { prRef: 'pydantic/pydantic-ai#123', lastState: 'failure' } })}
     models={sampleProfiles}
+    folders={[]}
     onSetApprovalMode={noop}
     onSetModel={noop}
     onManageModels={noop}
+    onSetFolder={noop}
+    onManageFolders={noop}
     onArchive={noop}
     onRename={noop}
     onSetGoal={noop}
@@ -77,9 +89,12 @@ export const ArchivedAgent: Story = () => (
       lastError: 'agent process exited with code 1',
     })}
     models={sampleProfiles}
+    folders={[]}
     onSetApprovalMode={noop}
     onSetModel={noop}
     onManageModels={noop}
+    onSetFolder={noop}
+    onManageFolders={noop}
     onArchive={noop}
     onRename={noop}
     onSetGoal={noop}

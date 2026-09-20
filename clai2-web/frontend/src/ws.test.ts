@@ -56,20 +56,23 @@ describe('parseMessage', () => {
     expect(parseMessage('{"agents": []}')).toBeNull();
   });
 
-  it('parses a snapshot with agents, approvals, projects, and maxAgents', () => {
+  it('parses a snapshot with agents, approvals, projects, folders, and maxAgents', () => {
     const agents = [{ id: 'a1' }];
     const approvals = [{ id: 'ap1' }];
     const projects = [{ id: 'p1' }];
-    expect(parseMessage(JSON.stringify({ type: 'snapshot', agents, approvals, projects, maxAgents: 250 }))).toEqual({
+    const folders = [{ id: 'f1' }];
+    expect(
+      parseMessage(JSON.stringify({ type: 'snapshot', agents, approvals, projects, folders, maxAgents: 250 })),
+    ).toEqual({
       kind: 'snapshot',
-      snapshot: { agents, approvals, projects, maxAgents: 250 },
+      snapshot: { agents, approvals, projects, folders, maxAgents: 250 },
     });
   });
 
   it('defaults missing snapshot fields', () => {
     expect(parseMessage('{"type": "snapshot"}')).toEqual({
       kind: 'snapshot',
-      snapshot: { agents: [], approvals: [], projects: [], maxAgents: 100 },
+      snapshot: { agents: [], approvals: [], projects: [], folders: [], maxAgents: 100 },
     });
   });
 
@@ -130,6 +133,7 @@ describe('connectWs', () => {
       agents: [{ id: 'a1' }],
       approvals: [],
       projects: [],
+      folders: [],
       maxAgents: 100,
     });
     expect(handlers.onEvent).not.toHaveBeenCalled();

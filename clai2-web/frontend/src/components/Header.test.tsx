@@ -22,6 +22,7 @@ function makeAgent(id: string, name: string): AgentSummary {
     lastError: null,
     goal: null,
     ciTracking: null,
+    folderId: null,
   };
 }
 

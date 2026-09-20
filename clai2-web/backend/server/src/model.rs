@@ -20,6 +20,16 @@ pub struct ProjectSummary {
     pub repo_root: PathBuf,
 }
 
+/// A user-defined group agents can be manually filed into, purely for
+/// organizing the sidebar -- unlike [`ProjectSummary`], it has no bearing on
+/// where an agent runs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderSummary {
+    pub id: String,
+    pub name: String,
+}
+
 /// How permission requests from an agent are answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -119,6 +129,11 @@ pub struct AgentSummary {
     /// picks back up on its next tick.
     #[serde(default)]
     pub ci_tracking: Option<CiTracking>,
+    /// A user-defined folder this agent has been manually filed into (see
+    /// [`FolderSummary`]), if any. Purely organizational: absent from roster
+    /// files persisted before folders existed.
+    #[serde(default)]
+    pub folder_id: Option<String>,
 }
 
 /// A goal an agent works toward turn-over-turn without a human re-prompting

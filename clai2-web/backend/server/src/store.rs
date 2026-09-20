@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
 use crate::github::GithubSettings;
-use crate::model::{AgentSummary, ProjectSummary, TranscriptItem};
+use crate::model::{AgentSummary, FolderSummary, ProjectSummary, TranscriptItem};
 use crate::models::ModelProfile;
 
 /// Restrict a file to owner read/write on Unix; a no-op elsewhere.
@@ -76,6 +76,10 @@ impl Store {
 
     fn projects_path(&self) -> PathBuf {
         self.data_dir.join("projects.json")
+    }
+
+    fn folders_path(&self) -> PathBuf {
+        self.data_dir.join("folders.json")
     }
 
     fn transcript_path(&self, agent_id: &str, session_id: &str) -> PathBuf {
@@ -184,6 +188,28 @@ impl Store {
         Ok(())
     }
 
+    pub async fn load_folders(&self) -> Result<Vec<FolderSummary>, StoreError> {
+        let path = self.folders_path();
+        match tokio::fs::read(&path).await {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|source| StoreError::Corrupt { path, source }),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(vec![]),
+            Err(source) => Err(StoreError::Io { path, source }),
+        }
+    }
+
+    /// Rewrite the folder registry atomically (write to a sibling temp file, rename).
+    pub async fn save_folders(&self, folders: &[FolderSummary]) -> Result<(), StoreError> {
+        tokio::fs::create_dir_all(&self.data_dir)
+            .await
+            .map_err(io_err(&self.data_dir))?;
+        let path = self.folders_path();
+        let tmp = self.data_dir.join("folders.json.tmp");
+        let bytes = serde_json::to_vec_pretty(folders).map_err(corrupt_err(&path))?;
+        tokio::fs::write(&tmp, bytes).await.map_err(io_err(&tmp))?;
+        tokio::fs::rename(&tmp, &path).await.map_err(io_err(&path))?;
+        Ok(())
+    }
+
     /// Write a Vertex service-account credentials file for one agent, owner-only,
     /// and return its path.
     pub async fn write_credentials(&self, agent_id: &str, contents: &str) -> Result<PathBuf, StoreError> {
@@ -271,6 +297,7 @@ mod tests {
                 last_error: None,
                 goal: None,
                 ci_tracking: None,
+                folder_id: None,
             },
             command: vec!["stub-agent".to_owned()],
         }
@@ -312,6 +339,33 @@ mod tests {
             .unwrap();
         let store = Store::new(dir.path().to_owned());
         assert!(matches!(store.load_projects().await, Err(StoreError::Corrupt { .. })));
+    }
+
+    fn folder(id: &str) -> FolderSummary {
+        FolderSummary {
+            id: id.to_owned(),
+            name: "demo folder".to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn folders_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path().to_owned());
+        assert!(store.load_folders().await.unwrap().is_empty());
+        store.save_folders(&[folder("f1")]).await.unwrap();
+        let loaded = store.load_folders().await.unwrap();
+        assert_eq!(loaded, vec![folder("f1")]);
+    }
+
+    #[tokio::test]
+    async fn corrupt_folders_reports_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::write(dir.path().join("folders.json"), b"{not json")
+            .await
+            .unwrap();
+        let store = Store::new(dir.path().to_owned());
+        assert!(matches!(store.load_folders().await, Err(StoreError::Corrupt { .. })));
     }
 
     #[tokio::test]

@@ -41,9 +41,12 @@ function Frame({ agent, initialView }: { agent: AgentSummary; initialView: MainV
         onSideSession={noop}
         loadDiff={loadDiff}
         models={sampleProfiles}
+        folders={[]}
         onSetApprovalMode={noop}
         onSetModel={noop}
         onManageModels={noop}
+        onSetFolder={noop}
+        onManageFolders={noop}
         onArchive={noop}
         onRename={noop}
         onSetGoal={noop}

@@ -5,6 +5,7 @@ import { create } from 'zustand';
 import type {
   AgentSummary,
   ApprovalView,
+  FolderSummary,
   ProjectSummary,
   RedactedGithubSettings,
   RedactedProfile,
@@ -18,6 +19,7 @@ export interface Snapshot {
   agents: AgentSummary[];
   approvals: ApprovalView[];
   projects: ProjectSummary[];
+  folders: FolderSummary[];
   maxAgents: number;
 }
 
@@ -33,6 +35,7 @@ export interface AppState {
   models: RedactedProfile[];
   githubSettings: RedactedGithubSettings;
   projects: ProjectSummary[];
+  folders: FolderSummary[];
   selectedProjectId: ProjectFilter;
   maxAgents: number;
   notifications: Notification[];
@@ -73,6 +76,16 @@ function upsertProject(projects: ProjectSummary[], project: ProjectSummary): Pro
   return next;
 }
 
+function upsertFolder(folders: FolderSummary[], folder: FolderSummary): FolderSummary[] {
+  const index = folders.findIndex((existing) => existing.id === folder.id);
+  if (index < 0) {
+    return [...folders, folder];
+  }
+  const next = folders.slice();
+  next[index] = folder;
+  return next;
+}
+
 function withAppended(
   transcripts: Record<string, TranscriptItem[]>,
   agentId: string,
@@ -101,6 +114,10 @@ export function reduceEvent(state: AppState, event: ServerEvent): Partial<AppSta
         projects: state.projects.filter((project) => project.id !== event.projectId),
         selectedProjectId: state.selectedProjectId === event.projectId ? 'all' : state.selectedProjectId,
       };
+    case 'folderAdded':
+      return { folders: upsertFolder(state.folders, event.folder) };
+    case 'folderRemoved':
+      return { folders: state.folders.filter((folder) => folder.id !== event.folderId) };
     case 'userMessage':
       return {
         transcripts: withAppended(state.transcripts, event.agentId, event.sessionId, {
@@ -166,6 +183,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   models: [],
   githubSettings: { hasToken: false, pollIntervalSecs: 300 },
   projects: [],
+  folders: [],
   selectedProjectId: 'all',
   maxAgents: 100,
   notifications: [],
@@ -179,6 +197,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       agents: snapshot.agents,
       approvals: snapshot.approvals,
       projects: snapshot.projects,
+      folders: snapshot.folders,
       maxAgents: snapshot.maxAgents,
       selectedAgentId:
         state.selectedAgentId && snapshot.agents.some((agent) => agent.id === state.selectedAgentId)

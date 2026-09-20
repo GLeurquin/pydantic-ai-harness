@@ -2,7 +2,7 @@ import type { Story } from '@ladle/react';
 import type { ReactNode } from 'react';
 
 import { makeAgent, makeProject, makeWorktree } from '../../.ladle/data';
-import type { AgentSummary } from '../api/types';
+import type { AgentSummary, FolderSummary } from '../api/types';
 import { Sidebar } from './Sidebar';
 
 const noop = () => undefined;
@@ -26,6 +26,18 @@ const agents: AgentSummary[] = [
   makeAgent({ id: 'a8', name: 'spike-caching', status: 'archived' }),
 ];
 
+const folders: FolderSummary[] = [
+  { id: 'f1', name: 'Q3 launch' },
+  { id: 'f2', name: 'On hold' },
+];
+
+const agentsWithFolders: AgentSummary[] = [
+  ...agents,
+  makeAgent({ id: 'a9', name: 'ship-billing', status: 'idle', folderId: 'f1' }),
+  makeAgent({ id: 'a10', name: 'ship-onboarding', status: 'idle', folderId: 'f1' }),
+  makeAgent({ id: 'a11', name: 'paused-migration', status: 'idle', folderId: 'f2' }),
+];
+
 function Frame({ children }: { children: ReactNode }) {
   return <div style={{ width: 288, height: '80vh', display: 'flex', border: '1px solid var(--border)' }}>{children}</div>;
 }
@@ -35,6 +47,7 @@ export const AllGroups: Story = () => (
     <Sidebar
       agents={agents}
       projects={projects}
+      folders={[]}
       selectedProjectId="all"
       selectedAgentId="a3"
       maxAgents={50}
@@ -51,9 +64,27 @@ export const AtCapacity: Story = () => (
     <Sidebar
       agents={agents}
       projects={projects}
+      folders={[]}
       selectedProjectId="all"
       selectedAgentId="a1"
       maxAgents={6}
+      open={true}
+      onSelect={noop}
+      onSelectProject={noop}
+      onNewAgent={noop}
+    />
+  </Frame>
+);
+
+export const WithFolders: Story = () => (
+  <Frame>
+    <Sidebar
+      agents={agentsWithFolders}
+      projects={projects}
+      folders={folders}
+      selectedProjectId="all"
+      selectedAgentId="a3"
+      maxAgents={50}
       open={true}
       onSelect={noop}
       onSelectProject={noop}

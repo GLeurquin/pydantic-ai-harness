@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeAll, beforeEach, vi } from 'vitest';
 
 import { App } from './App';
-import type { AgentSummary, ApprovalView, ProjectSummary, RedactedProfile, TranscriptItem } from './api/types';
+import type { AgentSummary, ApprovalView, FolderSummary, ProjectSummary, RedactedProfile, TranscriptItem } from './api/types';
 import { useAppStore } from './state/store';
 import type { WsHandlers } from './ws';
 
@@ -21,6 +21,10 @@ const apiMock = vi.hoisted(() => ({
   listProjects: vi.fn(),
   createProject: vi.fn(),
   deleteProject: vi.fn(),
+  listFolders: vi.fn(),
+  createFolder: vi.fn(),
+  deleteFolder: vi.fn(),
+  setAgentFolder: vi.fn(),
   pendingApprovals: vi.fn(),
   resolveApproval: vi.fn(),
   transcript: vi.fn(),
@@ -79,6 +83,7 @@ function makeAgent(overrides: Partial<AgentSummary> = {}): AgentSummary {
     lastError: null,
     goal: null,
     ciTracking: null,
+    folderId: null,
     ...overrides,
   };
 }
@@ -125,9 +130,10 @@ async function snapshot(
   approvals: ApprovalView[] = [],
   projects: ProjectSummary[] = [makeProject()],
   maxAgents = 100,
+  folders: FolderSummary[] = [],
 ) {
   await act(async () => {
-    handlers().onSnapshot({ agents, approvals, projects, maxAgents });
+    handlers().onSnapshot({ agents, approvals, projects, folders, maxAgents });
   });
 }
 
@@ -159,6 +165,7 @@ beforeEach(() => {
   apiMock.rename.mockResolvedValue(makeAgent());
   apiMock.archiveAgent.mockResolvedValue(makeAgent({ status: 'archived' }));
   apiMock.setAgentModel.mockResolvedValue(makeAgent());
+  apiMock.setAgentFolder.mockResolvedValue(makeAgent());
   apiMock.setGoal.mockResolvedValue(makeAgent());
   apiMock.clearGoal.mockResolvedValue({ ok: true });
   apiMock.listModels.mockResolvedValue([]);
@@ -555,6 +562,40 @@ describe('App', () => {
     await user.click(screen.getByRole('tab', { name: 'Settings' }));
     await user.click(screen.getByRole('button', { name: 'Manage profiles' }));
     expect(await screen.findByRole('dialog', { name: 'Model profiles' })).toBeInTheDocument();
+  });
+
+  it('files the selected agent into a folder from the Settings tab', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await snapshot([makeAgent()], [], [makeProject()], 100, [{ id: 'f1', name: 'backend work' }]);
+    await user.click(screen.getByRole('tab', { name: 'Settings' }));
+    await user.selectOptions(screen.getByLabelText('Folder'), 'f1');
+    expect(apiMock.setAgentFolder).toHaveBeenCalledWith('a1', 'f1');
+  });
+
+  it('opens the folders dialog from the Settings tab, adds and removes a folder, and closes it', async () => {
+    const user = userEvent.setup();
+    const folder = { id: 'f9', name: 'brand-new' };
+    apiMock.createFolder.mockResolvedValue(folder);
+    apiMock.deleteFolder.mockResolvedValue({ ok: true });
+    render(<App />);
+    await snapshot([makeAgent()]);
+
+    await user.click(screen.getByRole('tab', { name: 'Settings' }));
+    await user.click(screen.getByRole('button', { name: 'Manage folders' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Folders' });
+
+    await user.click(within(dialog).getByRole('button', { name: 'New folder' }));
+    await user.type(within(dialog).getByPlaceholderText('Q3 launch'), 'brand-new');
+    await user.click(within(dialog).getByRole('button', { name: 'Add folder' }));
+    expect(apiMock.createFolder).toHaveBeenCalledWith('brand-new');
+    expect(await within(dialog).findByText('brand-new')).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole('button', { name: 'Remove' }));
+    expect(apiMock.deleteFolder).toHaveBeenCalledWith('f9');
+
+    await user.click(within(dialog).getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Folders' })).toBeNull());
   });
 
   it('opens the profiles dialog from the new-agent dialog', async () => {

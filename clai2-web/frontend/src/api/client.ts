@@ -6,6 +6,7 @@ import type {
   CreateAgentRequest,
   CreateProjectRequest,
   FetchedIssue,
+  FolderSummary,
   ForkAgentRequest,
   ApprovalMode,
   ProfileEdit,
@@ -90,6 +91,19 @@ export const api = {
 
   deleteProject: (projectId: string) =>
     request<{ ok: boolean }>(`/api/projects/${projectId}`, { method: 'DELETE' }),
+
+  listFolders: () => request<FolderSummary[]>('/api/folders'),
+
+  createFolder: (name: string) => request<FolderSummary>('/api/folders', { method: 'POST', body: JSON.stringify({ name }) }),
+
+  deleteFolder: (folderId: string) =>
+    request<{ ok: boolean }>(`/api/folders/${folderId}`, { method: 'DELETE' }),
+
+  setAgentFolder: (agentId: string, folderId: string | null) =>
+    request<AgentSummary>(`/api/agents/${agentId}/folder`, {
+      method: 'PATCH',
+      body: JSON.stringify({ folderId }),
+    }),
 
   pendingApprovals: () => request<ApprovalView[]>('/api/approvals'),
 

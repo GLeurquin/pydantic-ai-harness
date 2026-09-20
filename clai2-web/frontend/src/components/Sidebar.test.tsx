@@ -2,10 +2,16 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { vi } from 'vitest';
 
-import type { AgentStatus, AgentSummary, ProjectSummary } from '../api/types';
+import type { AgentStatus, AgentSummary, FolderSummary, ProjectSummary } from '../api/types';
 import { Sidebar } from './Sidebar';
 
-function makeAgent(id: string, name: string, status: AgentStatus, projectId = 'p1'): AgentSummary {
+function makeAgent(
+  id: string,
+  name: string,
+  status: AgentStatus,
+  projectId = 'p1',
+  folderId: string | null = null,
+): AgentSummary {
   return {
     id,
     name,
@@ -22,6 +28,7 @@ function makeAgent(id: string, name: string, status: AgentStatus, projectId = 'p
     lastError: null,
     goal: null,
     ciTracking: null,
+    folderId,
   };
 }
 
@@ -32,6 +39,7 @@ const projects: ProjectSummary[] = [
 
 const baseProps = {
   projects,
+  folders: [],
   selectedProjectId: 'all' as const,
   maxAgents: 50,
   open: false,
@@ -75,6 +83,35 @@ describe('Sidebar', () => {
     );
     const titles = Array.from(container.querySelectorAll('.sidebar-group-title')).map((node) => node.textContent);
     expect(titles).toEqual(['▾Idle']);
+  });
+
+  it('renders non-empty folders as sections after the status groups, in folder order', () => {
+    const folders: FolderSummary[] = [
+      { id: 'f1', name: 'Q3 launch' },
+      { id: 'f2', name: 'Empty folder' },
+      { id: 'f3', name: 'On hold' },
+    ];
+    const agents = [
+      makeAgent('a1', 'Idler', 'idle'),
+      makeAgent('a2', 'Filed one', 'idle', 'p1', 'f1'),
+      makeAgent('a3', 'Filed two', 'working', 'p1', 'f3'),
+    ];
+    const { container } = render(<Sidebar {...baseProps} agents={agents} folders={folders} selectedAgentId={null} />);
+    const titles = Array.from(container.querySelectorAll('.sidebar-group-title')).map((node) => node.textContent);
+    expect(titles).toEqual(['▾Idle', '▾Q3 launch', '▾On hold']);
+    expect(screen.getByRole('region', { name: 'Q3 launch' })).toHaveTextContent('Filed one');
+    expect(screen.getByRole('region', { name: 'On hold' })).toHaveTextContent('Filed two');
+  });
+
+  it('collapses a folder section independently of the status groups', async () => {
+    const user = userEvent.setup();
+    const folders: FolderSummary[] = [{ id: 'f1', name: 'Q3 launch' }];
+    const agents = [makeAgent('a1', 'Idler', 'idle'), makeAgent('a2', 'Filed', 'idle', 'p1', 'f1')];
+    render(<Sidebar {...baseProps} agents={agents} folders={folders} selectedAgentId={null} />);
+    expect(screen.getByText('Idler')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '▾ Q3 launch' }));
+    expect(screen.queryByText('Filed')).toBeNull();
+    expect(screen.getByText('Idler')).toBeInTheDocument();
   });
 
   it('collapses and expands a group from its title, persisting across remounts', async () => {

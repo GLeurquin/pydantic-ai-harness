@@ -2036,6 +2036,148 @@ async fn ws_snapshot_includes_projects() {
 }
 
 #[tokio::test]
+async fn creating_and_listing_a_folder() {
+    let world = world().await;
+    let (status, folders) = world.get("/api/folders").await;
+    assert_eq!(status, 200);
+    assert_eq!(folders.as_array().unwrap().len(), 0);
+
+    let (status, folder) = world.post("/api/folders", json!({"name": "backend work"})).await;
+    assert_eq!(status, 200, "body: {folder}");
+    assert_eq!(folder["name"], "backend work");
+    assert!(folder["id"].as_str().is_some());
+
+    let (_, folders) = world.get("/api/folders").await;
+    assert_eq!(folders.as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn create_folder_rejects_blank_name() {
+    let world = world().await;
+    let (status, body) = world.post("/api/folders", json!({"name": "  "})).await;
+    assert_eq!(status, 400);
+    assert!(body["error"].as_str().unwrap().contains("name"));
+}
+
+#[tokio::test]
+async fn setting_and_clearing_an_agents_folder_round_trips() {
+    let world = world().await;
+    let agent = world.create_agent("filer", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    assert!(agent["folderId"].is_null());
+
+    let (_, folder) = world.post("/api/folders", json!({"name": "review"})).await;
+    let folder_id = folder["id"].as_str().unwrap();
+
+    let (status, updated) = world
+        .patch(
+            &format!("/api/agents/{agent_id}/folder"),
+            json!({"folderId": folder_id}),
+        )
+        .await;
+    assert_eq!(status, 200, "body: {updated}");
+    assert_eq!(updated["folderId"], folder_id);
+
+    let (status, cleared) = world
+        .patch(&format!("/api/agents/{agent_id}/folder"), json!({"folderId": null}))
+        .await;
+    assert_eq!(status, 200, "body: {cleared}");
+    assert!(cleared["folderId"].is_null());
+}
+
+#[tokio::test]
+async fn setting_an_agents_folder_to_an_unknown_folder_is_404() {
+    let world = world().await;
+    let agent = world.create_agent("filer", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let (status, _) = world
+        .patch(&format!("/api/agents/{agent_id}/folder"), json!({"folderId": "ghost"}))
+        .await;
+    assert_eq!(status, 404);
+}
+
+#[tokio::test]
+async fn setting_the_folder_of_an_unknown_agent_is_404() {
+    let world = world().await;
+    let (status, _) = world.patch("/api/agents/ghost/folder", json!({"folderId": null})).await;
+    assert_eq!(status, 404);
+}
+
+#[tokio::test]
+async fn deleting_a_folder_unfiles_its_agents_instead_of_blocking() {
+    let world = world().await;
+    let (_, folder) = world.post("/api/folders", json!({"name": "temp"})).await;
+    let folder_id = folder["id"].as_str().unwrap().to_owned();
+    let agent = world.create_agent("filed", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    world
+        .patch(
+            &format!("/api/agents/{agent_id}/folder"),
+            json!({"folderId": folder_id}),
+        )
+        .await;
+
+    let response = world
+        .http
+        .delete(format!("{}/api/folders/{folder_id}", world.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+
+    let (_, folders) = world.get("/api/folders").await;
+    assert_eq!(folders.as_array().unwrap().len(), 0);
+    let (_, agent) = world.get(&format!("/api/agents/{agent_id}")).await;
+    assert!(agent["folderId"].is_null());
+}
+
+#[tokio::test]
+async fn deleting_an_unknown_folder_is_404() {
+    let world = world().await;
+    let response = world
+        .http
+        .delete(format!("{}/api/folders/ghost", world.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 404);
+}
+
+#[tokio::test]
+async fn forking_stays_in_the_parents_folder() {
+    let world = world().await;
+    let agent = world.create_agent("parent", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let (_, folder) = world.post("/api/folders", json!({"name": "team"})).await;
+    let folder_id = folder["id"].as_str().unwrap();
+    world
+        .patch(
+            &format!("/api/agents/{agent_id}/folder"),
+            json!({"folderId": folder_id}),
+        )
+        .await;
+
+    let (status, fork) = world
+        .post(&format!("/api/agents/{agent_id}/fork"), json!({"name": "child"}))
+        .await;
+    assert_eq!(status, 200, "body: {fork}");
+    assert_eq!(fork["folderId"], folder_id);
+}
+
+#[tokio::test]
+async fn ws_snapshot_includes_folders() {
+    let world = world().await;
+    world.post("/api/folders", json!({"name": "backend work"})).await;
+    let (stream, _) = tokio_tungstenite::connect_async(&world.ws_url).await.unwrap();
+    let mut ws = Ws { stream };
+    let snapshot = ws.next_event().await;
+    let folders = snapshot["folders"].as_array().unwrap();
+    assert_eq!(folders.len(), 1);
+    assert_eq!(folders[0]["name"], "backend work");
+    ws.close().await;
+}
+
+#[tokio::test]
 async fn ws_snapshot_reports_the_configured_max_agents() {
     let world = world_with(7, vec![STUB_AGENT.to_owned()]).await;
     let (stream, _) = tokio_tungstenite::connect_async(&world.ws_url).await.unwrap();
