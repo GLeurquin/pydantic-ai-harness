@@ -97,9 +97,10 @@ function MessageView({ message, index }: { message: DebugMessage; index: number 
 }
 
 /** The exact messages the agent process last sent to the model for one session, read on demand
- * from the snapshot file `clai_agent.py`'s `DebugContextWriter` capability writes on every model
- * request. A stale read just means no request has happened yet since the last one -- this is a
- * point-in-time snapshot, not a live view. */
+ * from the snapshot file `clai_agent.py` writes on every model request (via
+ * `pydantic_ai_harness.compaction.ReportModelRequest` and an `@agent.on_event` listener). A stale
+ * read just means no request has happened yet since the last one -- this is a point-in-time
+ * snapshot, not a live view. */
 export function DebugContextDialog({
   agentId,
   sessionId,

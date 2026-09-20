@@ -254,9 +254,9 @@ export interface WorktreeDiff {
 }
 
 /** One part of a `DebugMessage`, in `pydantic_ai.messages.ModelMessagesTypeAdapter`'s own
- * snake_case wire format -- this is the raw shape `clai_agent.py`'s `DebugContextWriter`
- * capability serializes, passed through by the backend unchanged, so it does not follow this
- * file's usual camelCase convention. `part_kind` is a fixed set on the Python side
+ * snake_case wire format -- this is the raw shape `clai_agent.py` serializes (from a
+ * `ReportModelRequest`-emitted event), passed through by the backend unchanged, so it does not
+ * follow this file's usual camelCase convention. `part_kind` is a fixed set on the Python side
  * ('system-prompt' | 'user-prompt' | 'text' | 'thinking' | 'tool-call' | 'tool-return' | ...)
  * but is left as `string` here since new kinds can appear without a backend change. */
 export interface DebugMessagePart {

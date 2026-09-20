@@ -2810,8 +2810,9 @@ async fn debug_context_passes_through_the_agent_process_snapshot() {
     let agent = world.create_agent("solo", false, "auto").await;
     let agent_id = agent["id"].as_str().unwrap().to_owned();
 
-    // Stands in for `clai_agent.py`'s `DebugContextWriter` capability, which
-    // writes exactly this file shape -- opaque JSON passed straight through.
+    // Stands in for `clai_agent.py`'s debug-context listener (a
+    // `pydantic_ai_harness.compaction.ReportModelRequest` capability plus an `@agent.on_event`
+    // handler), which writes exactly this file shape -- opaque JSON passed straight through.
     let snapshot_dir = world._dir.path().join("data/debug-context").join(&agent_id);
     tokio::fs::create_dir_all(&snapshot_dir).await.unwrap();
     let snapshot = json!([{"kind": "request", "parts": [{"part_kind": "user-prompt", "content": "hi"}]}]);

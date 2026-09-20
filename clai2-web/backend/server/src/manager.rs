@@ -1662,8 +1662,9 @@ impl AgentManager {
 
     /// The exact post-compaction message list the agent process last sent to the model for
     /// this session, if it has made a model request yet. Opaque JSON: it's whatever shape
-    /// `clai_agent.py`'s `DebugContextWriter` capability wrote (pydantic-ai's own
-    /// `ModelMessagesTypeAdapter` serialization), passed through rather than modeled here.
+    /// `clai_agent.py` wrote via `pydantic_ai_harness.compaction.ReportModelRequest`
+    /// (pydantic-ai's own `ModelMessagesTypeAdapter` serialization), passed through rather than
+    /// modeled here.
     pub async fn debug_context(
         &self,
         agent_id: &str,
