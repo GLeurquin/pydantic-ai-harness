@@ -24,6 +24,7 @@ from __future__ import annotations
 import os
 import sys
 import warnings
+from dataclasses import dataclass
 from pathlib import Path
 
 os.environ.setdefault('PYDANTIC_AI_NO_BANNER', '1')
@@ -31,10 +32,13 @@ os.environ.setdefault('PYDANTIC_AI_NO_BANNER', '1')
 import google.auth
 from google import genai
 from pydantic_ai import Agent
+from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.exceptions import FallbackExceptionGroup, ModelAPIError, UsageLimitExceeded
-from pydantic_ai.models import Model, infer_model
+from pydantic_ai.messages import ModelMessagesTypeAdapter
+from pydantic_ai.models import Model, ModelRequestContext, infer_model
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.providers.google import GoogleProvider
+from pydantic_ai.tools import RunContext
 
 from pydantic_ai_harness import Coder
 from pydantic_ai_harness.compaction import FallbackCompaction, SlidingWindowCompaction, SummarizingCompaction
@@ -43,7 +47,7 @@ from pydantic_ai_harness.repo_context import RepoContext
 
 warnings.filterwarnings('ignore', category=HarnessExperimentalWarning)
 
-from pydantic_ai_harness.experimental.acp import run_acp_stdio_sync  # noqa: E402
+from pydantic_ai_harness.experimental.acp import AcpSession, AcpSessionConfig, run_acp_stdio_sync  # noqa: E402
 
 _DEFAULT_MODEL = 'google-vertex:gemini-2.5-pro'
 """Used when no model profile is selected (`CLAI_MODEL` unset)."""
@@ -80,7 +84,7 @@ def build_model() -> Model:
     return infer_model(clai_model)
 
 
-def _compaction() -> FallbackCompaction[None]:
+def _compaction() -> FallbackCompaction[ClaiDeps]:
     """Summarize, and truncate when the summary fails or the run is still over budget.
 
     Mirrors `pydantic_clai2.compaction.build_chain`'s default chain: compact
@@ -88,12 +92,50 @@ def _compaction() -> FallbackCompaction[None]:
     recent ~50k tokens from being touched either way.
     """
     protected_tokens = 50_000
-    sliding: SlidingWindowCompaction[None] = SlidingWindowCompaction(max_messages=1, keep_tokens=protected_tokens)
-    summarizer: SummarizingCompaction[None] = SummarizingCompaction(max_messages=1, keep_tokens=protected_tokens)
+    sliding: SlidingWindowCompaction[ClaiDeps] = SlidingWindowCompaction(max_messages=1, keep_tokens=protected_tokens)
+    summarizer: SummarizingCompaction[ClaiDeps] = SummarizingCompaction(max_messages=1, keep_tokens=protected_tokens)
     return FallbackCompaction(
         fallback_chain=[summarizer, sliding],
         max_fraction=0.85,
         fallback_on=(ModelAPIError, FallbackExceptionGroup, UsageLimitExceeded),
+    )
+
+
+@dataclass(frozen=True, kw_only=True)
+class ClaiDeps:
+    """Identifies the running agent process and ACP session to `DebugContextWriter`."""
+
+    agent_id: str
+    session_id: str
+
+
+class DebugContextWriter(AbstractCapability[ClaiDeps]):
+    """Snapshot the exact post-compaction messages sent to the model, for clai2-web's debug view.
+
+    Written to `<CLAI_DEBUG_CONTEXT_DIR>/<agent_id>/<session_id>.json` on every model request, so
+    clai2-web's backend can read it on demand (`GET .../debug-context`) rather than the agent
+    pushing updates -- a stale read just means no model request has happened yet since the last
+    one. The file is whatever shape `pydantic_ai.messages.ModelMessagesTypeAdapter` serializes to;
+    the backend passes it through as opaque JSON.
+    """
+
+    async def before_model_request(
+        self, ctx: RunContext[ClaiDeps], request_context: ModelRequestContext
+    ) -> ModelRequestContext:
+        """Write the outgoing messages to this session's snapshot file, unchanged."""
+        directory = Path(os.environ['CLAI_DEBUG_CONTEXT_DIR']) / ctx.deps.agent_id
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f'{ctx.deps.session_id}.json').write_bytes(
+            ModelMessagesTypeAdapter.dump_json(request_context.messages)
+        )
+        return request_context
+
+
+def session_config(session: AcpSession) -> AcpSessionConfig[ClaiDeps]:
+    """Give each ACP session the identity `DebugContextWriter` needs to name its snapshot file."""
+    return AcpSessionConfig(
+        deps=ClaiDeps(agent_id=os.environ['CLAI_AGENT_ID'], session_id=session.session_id),
+        capabilities=[DebugContextWriter()],
     )
 
 
@@ -110,11 +152,12 @@ def mark_goal_complete(summary: str) -> str:
     return f'Goal marked complete: {summary}'
 
 
-def build_agent() -> Agent[None, str]:
+def build_agent() -> Agent[ClaiDeps, str]:
     """Build a coding agent from harness capabilities, with the model chosen by `CLAI_MODEL`."""
     workspace = Path.cwd()
     return Agent(
         build_model(),
+        deps_type=ClaiDeps,
         capabilities=[
             Coder(unrestricted_filesystem=True),
             RepoContext(workspace_dir=workspace),
@@ -125,4 +168,10 @@ def build_agent() -> Agent[None, str]:
 
 
 if __name__ == '__main__':
-    run_acp_stdio_sync(build_agent())
+    # `deps` here is only the fallback for a session that skips `session_config`, which never
+    # happens with `PydanticAIACPAgent` -- it's always used, so this value never runs.
+    run_acp_stdio_sync(
+        build_agent(),
+        deps=ClaiDeps(agent_id='unset', session_id='unset'),
+        session_config=session_config,
+    )

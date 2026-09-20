@@ -654,8 +654,18 @@ impl AgentManager {
         agent_id: &str,
         model_profile_id: Option<&str>,
     ) -> Result<Vec<(String, String)>, ManagerError> {
+        // Always set, regardless of model profile: lets the agent process
+        // report its own agent id and where to write its post-compaction
+        // debug snapshots (see manager.rs's `debug_context`).
+        let mut env = vec![
+            ("CLAI_AGENT_ID".to_owned(), agent_id.to_owned()),
+            (
+                "CLAI_DEBUG_CONTEXT_DIR".to_owned(),
+                self.store.debug_context_dir().to_string_lossy().into_owned(),
+            ),
+        ];
         let Some(id) = model_profile_id else {
-            return Ok(Vec::new());
+            return Ok(env);
         };
         let profile = {
             let models = self.models.lock().await;
@@ -664,9 +674,9 @@ impl AgentManager {
         let Some(profile) = profile else {
             // The profile was deleted after the agent referenced it; run with
             // no overlay rather than refusing to start.
-            return Ok(Vec::new());
+            return Ok(env);
         };
-        let mut env = profile.base_env();
+        env.extend(profile.base_env());
         if let Some(credentials) = profile.credentials() {
             let path = self.store.write_credentials(agent_id, credentials).await?;
             env.push((
@@ -1648,6 +1658,31 @@ impl AgentManager {
             entry.session(session_id).ok_or(ManagerError::SessionNotFound)?;
         }
         Ok(self.store.load_transcript(agent_id, session_id).await?)
+    }
+
+    /// The exact post-compaction message list the agent process last sent to the model for
+    /// this session, if it has made a model request yet. Opaque JSON: it's whatever shape
+    /// `clai_agent.py`'s `DebugContextWriter` capability wrote (pydantic-ai's own
+    /// `ModelMessagesTypeAdapter` serialization), passed through rather than modeled here.
+    pub async fn debug_context(
+        &self,
+        agent_id: &str,
+        session_id: &str,
+    ) -> Result<Option<serde_json::Value>, ManagerError> {
+        {
+            let agents = self.agents.lock().await;
+            let entry = agents
+                .iter()
+                .find(|entry| entry.summary.id == agent_id)
+                .ok_or(ManagerError::AgentNotFound)?;
+            entry.session(session_id).ok_or(ManagerError::SessionNotFound)?;
+        }
+        let Some(raw) = self.store.read_debug_context(agent_id, session_id).await? else {
+            return Ok(None);
+        };
+        let value = serde_json::from_str(&raw)
+            .map_err(|_err| ManagerError::Invalid("debug context file is corrupt".to_owned()))?;
+        Ok(Some(value))
     }
 
     pub async fn diff(&self, agent_id: &str) -> Result<WorktreeDiff, ManagerError> {

@@ -53,6 +53,7 @@ function Frame({ agent, initialView }: { agent: AgentSummary; initialView: MainV
         onClearGoal={noop}
         onSetCiTracking={noop}
         onClearCiTracking={noop}
+        onViewDebugContext={noop}
       />
     </div>
   );

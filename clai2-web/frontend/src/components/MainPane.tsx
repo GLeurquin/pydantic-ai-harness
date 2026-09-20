@@ -30,6 +30,7 @@ export interface MainPaneProps {
   onClearGoal: SettingsPanelProps['onClearGoal'];
   onSetCiTracking: SettingsPanelProps['onSetCiTracking'];
   onClearCiTracking: SettingsPanelProps['onClearCiTracking'];
+  onViewDebugContext: SettingsPanelProps['onViewDebugContext'];
 }
 
 export function MainPane(props: MainPaneProps) {
@@ -121,6 +122,7 @@ export function MainPane(props: MainPaneProps) {
           onClearGoal={props.onClearGoal}
           onSetCiTracking={props.onSetCiTracking}
           onClearCiTracking={props.onClearCiTracking}
+          onViewDebugContext={props.onViewDebugContext}
         />
       ) : null}
     </main>

@@ -149,6 +149,19 @@ test('tracking and stopping a PR round-trips through the settings tab', async ({
   await expect(page.getByText('pydantic/pydantic-ai#1')).not.toBeVisible();
 });
 
+test('viewing the debug context from the settings tab round-trips through the real backend', async ({ page }) => {
+  await createAgent(page, { worktree: false });
+  await page.getByRole('tab', { name: 'Settings' }).click();
+  await page.getByRole('button', { name: 'View' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Debug context' });
+  // The stub agent never runs pydantic_ai's capability machinery, so it never writes a
+  // snapshot -- this exercises the real REST round trip (agent found, session found, no
+  // file yet) rather than the snapshot's own content, which the frontend unit tests cover.
+  await expect(dialog.getByText(/No snapshot yet/)).toBeVisible();
+  await dialog.getByRole('button', { name: 'Close' }).click();
+  await expect(dialog).not.toBeVisible();
+});
+
 test('forking carries the conversation into a new worktree agent', async ({ page }) => {
   const name = await createAgent(page, { worktree: true });
   await send(page, 'remember: the sky is teal');

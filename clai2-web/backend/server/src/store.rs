@@ -231,6 +231,28 @@ impl Store {
         }
     }
 
+    /// Directory the agent process is told (via `CLAI_DEBUG_CONTEXT_DIR`) to write its
+    /// post-compaction message snapshots into, one file per session. The process creates
+    /// its own agent-id subdirectory; nothing here needs to.
+    pub fn debug_context_dir(&self) -> PathBuf {
+        self.data_dir.join("debug-context")
+    }
+
+    /// Read the most recent post-compaction message snapshot for one session, if the agent
+    /// process has written one. `None` (not an error) means it hasn't made a model request
+    /// yet, or was never told where to write.
+    pub async fn read_debug_context(&self, agent_id: &str, session_id: &str) -> Result<Option<String>, StoreError> {
+        let path = self
+            .debug_context_dir()
+            .join(agent_id)
+            .join(format!("{session_id}.json"));
+        match tokio::fs::read_to_string(&path).await {
+            Ok(contents) => Ok(Some(contents)),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(source) => Err(StoreError::Io { path, source }),
+        }
+    }
+
     pub async fn append_transcript(
         &self,
         agent_id: &str,

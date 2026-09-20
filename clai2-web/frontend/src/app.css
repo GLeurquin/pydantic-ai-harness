@@ -895,6 +895,58 @@
   border: none;
 }
 
+.debug-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.debug-message {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-sunken);
+}
+
+.debug-message-header {
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.debug-part {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.debug-part:last-child {
+  border-bottom: none;
+}
+
+.debug-part-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+
+.debug-part-content {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+}
+
+.debug-raw {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  overflow-x: auto;
+}
+
 .model-list {
   list-style: none;
   margin: 0;

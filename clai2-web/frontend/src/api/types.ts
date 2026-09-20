@@ -252,3 +252,28 @@ export interface WorktreeDiff {
   untrackedDiff: string;
   status: string;
 }
+
+/** One part of a `DebugMessage`, in `pydantic_ai.messages.ModelMessagesTypeAdapter`'s own
+ * snake_case wire format -- this is the raw shape `clai_agent.py`'s `DebugContextWriter`
+ * capability serializes, passed through by the backend unchanged, so it does not follow this
+ * file's usual camelCase convention. `part_kind` is a fixed set on the Python side
+ * ('system-prompt' | 'user-prompt' | 'text' | 'thinking' | 'tool-call' | 'tool-return' | ...)
+ * but is left as `string` here since new kinds can appear without a backend change. */
+export interface DebugMessagePart {
+  part_kind: string;
+  content?: unknown;
+  tool_name?: string;
+  args?: unknown;
+  [key: string]: unknown;
+}
+
+/** One request or response message, in the same raw wire format as `DebugMessagePart`. */
+export interface DebugMessage {
+  kind: string;
+  parts: DebugMessagePart[];
+  [key: string]: unknown;
+}
+
+/** `null` means the agent process hasn't made a model request yet (or was never told where to
+ * write), not an error -- see `debug_context` in the backend's `manager.rs`. */
+export type DebugContext = DebugMessage[] | null;

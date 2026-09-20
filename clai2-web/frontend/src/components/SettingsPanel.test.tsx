@@ -74,6 +74,7 @@ function renderSettings(props: Partial<Parameters<typeof SettingsPanel>[0]> = {}
     onClearGoal: vi.fn(),
     onSetCiTracking: vi.fn(),
     onClearCiTracking: vi.fn(),
+    onViewDebugContext: vi.fn(),
   };
   const merged = { ...defaults, ...props };
   return { ...render(<SettingsPanel {...merged} />), props: merged };
@@ -374,5 +375,60 @@ describe('Folder', () => {
   it('stays enabled for an archived agent', () => {
     renderSettings({ agent: makeAgent({ status: 'archived' }) });
     expect(screen.getByLabelText('Folder')).toBeEnabled();
+  });
+});
+
+describe('Debug context', () => {
+  const twoSessions = [
+    { id: 'main', acpSessionId: null, label: 'Main', isMain: true, totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0 },
+    { id: 'side', acpSessionId: null, label: 'Side chat', isMain: false, totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0 },
+  ];
+
+  it('defaults the session picker to the main session and fires onViewDebugContext with it', async () => {
+    const user = userEvent.setup();
+    const { props } = renderSettings({ agent: makeAgent({ sessions: twoSessions }) });
+    expect(screen.getByLabelText('Session')).toHaveValue('main');
+    await user.click(screen.getByRole('button', { name: 'View' }));
+    expect(props.onViewDebugContext).toHaveBeenCalledTimes(1);
+    expect(props.onViewDebugContext).toHaveBeenCalledWith('main');
+  });
+
+  it('lists every session and fires onViewDebugContext with the picked one', async () => {
+    const user = userEvent.setup();
+    const { props } = renderSettings({ agent: makeAgent({ sessions: twoSessions }) });
+    const select = screen.getByLabelText('Session');
+    const options = within(select).getAllByRole('option');
+    expect(options.map((option) => [option.getAttribute('value'), option.textContent])).toEqual([
+      ['main', 'Main'],
+      ['side', 'Side chat'],
+    ]);
+    await user.selectOptions(select, 'side');
+    await user.click(screen.getByRole('button', { name: 'View' }));
+    expect(props.onViewDebugContext).toHaveBeenCalledWith('side');
+  });
+
+  it('resets the picked session when the selected agent changes', () => {
+    const { rerender } = renderSettings({ agent: makeAgent({ id: 'a1', sessions: twoSessions }) });
+    expect(screen.getByLabelText('Session')).toHaveValue('main');
+    rerender(
+      <SettingsPanel
+        agent={makeAgent({ id: 'a2', sessions: [twoSessions[1]!] })}
+        models={models}
+        folders={folders}
+        onSetApprovalMode={vi.fn()}
+        onSetModel={vi.fn()}
+        onManageModels={vi.fn()}
+        onSetFolder={vi.fn()}
+        onManageFolders={vi.fn()}
+        onArchive={vi.fn()}
+        onRename={vi.fn()}
+        onSetGoal={vi.fn()}
+        onClearGoal={vi.fn()}
+        onSetCiTracking={vi.fn()}
+        onClearCiTracking={vi.fn()}
+        onViewDebugContext={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText('Session')).toHaveValue('side');
   });
 });

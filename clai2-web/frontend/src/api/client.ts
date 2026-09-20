@@ -5,6 +5,7 @@ import type {
   ApprovalView,
   CreateAgentRequest,
   CreateProjectRequest,
+  DebugContext,
   FetchedIssue,
   FolderSummary,
   ForkAgentRequest,
@@ -117,6 +118,9 @@ export const api = {
     request<TranscriptItem[]>(`/api/agents/${agentId}/sessions/${sessionId}/transcript`),
 
   diff: (agentId: string) => request<WorktreeDiff>(`/api/agents/${agentId}/diff`),
+
+  debugContext: (agentId: string, sessionId: string) =>
+    request<DebugContext>(`/api/agents/${agentId}/sessions/${sessionId}/debug-context`),
 
   listModels: () => request<RedactedProfile[]>('/api/models'),
 

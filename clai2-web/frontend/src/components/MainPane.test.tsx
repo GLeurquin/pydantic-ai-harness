@@ -63,6 +63,7 @@ function renderPane(overrides: Partial<Parameters<typeof MainPane>[0]> = {}) {
     onClearGoal: vi.fn(),
     onSetCiTracking: vi.fn(),
     onClearCiTracking: vi.fn(),
+    onViewDebugContext: vi.fn(),
     ...overrides,
   };
   return { ...render(<MainPane {...props} />), props };

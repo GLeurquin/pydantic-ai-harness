@@ -17,6 +17,7 @@ export interface SettingsPanelProps {
   onClearGoal: () => void;
   onSetCiTracking: () => void;
   onClearCiTracking: () => void;
+  onViewDebugContext: (sessionId: string) => void;
 }
 
 const CI_STATE_LABELS: Record<string, string> = {
@@ -58,6 +59,38 @@ function NameField({ agent, onRename }: { agent: AgentSummary; onRename: (name: 
   );
 }
 
+/** Keyed by `agent.id` in `SettingsPanel` (prefixed to stay distinct from `NameField`'s own
+ * `agent.id` key, a React sibling-key collision otherwise), so the picked session resets when
+ * the selected agent changes instead of pointing at another agent's session id. */
+function DebugContextSection({
+  agent,
+  onViewDebugContext,
+}: {
+  agent: AgentSummary;
+  onViewDebugContext: (sessionId: string) => void;
+}) {
+  // Every agent is created with a main session (manager.rs's `create_agent`/`fork`) and
+  // sessions are only ever added, never removed, so `agent.sessions` is never empty.
+  const mainSession = agent.sessions.find((session) => session.isMain) ?? agent.sessions[0]!;
+  const [sessionId, setSessionId] = useState(mainSession.id);
+  return (
+    <section>
+      <h3>Debug context</h3>
+      <p className="hint">See the exact messages the agent last sent to the model, after compaction.</p>
+      <div className="settings-row">
+        <select value={sessionId} onChange={(change) => setSessionId(change.target.value)} aria-label="Session">
+          {agent.sessions.map((session) => (
+            <option key={session.id} value={session.id}>
+              {session.label}
+            </option>
+          ))}
+        </select>
+        <button onClick={() => onViewDebugContext(sessionId)}>View</button>
+      </div>
+    </section>
+  );
+}
+
 export function SettingsPanel({
   agent,
   models,
@@ -73,6 +106,7 @@ export function SettingsPanel({
   onClearGoal,
   onSetCiTracking,
   onClearCiTracking,
+  onViewDebugContext,
 }: SettingsPanelProps) {
   const archived = agent.status === 'archived';
   const busy = agent.status === 'working' || agent.status === 'waiting_approval';
@@ -198,6 +232,8 @@ export function SettingsPanel({
           </>
         )}
       </section>
+
+      <DebugContextSection key={`debug-${agent.id}`} agent={agent} onViewDebugContext={onViewDebugContext} />
 
       <section>
         <h3>Workspace</h3>

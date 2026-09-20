@@ -29,6 +29,7 @@ const apiMock = vi.hoisted(() => ({
   resolveApproval: vi.fn(),
   transcript: vi.fn(),
   diff: vi.fn(),
+  debugContext: vi.fn(),
   listModels: vi.fn(),
   createModel: vi.fn(),
   updateModel: vi.fn(),
@@ -571,6 +572,60 @@ describe('App', () => {
     await user.click(screen.getByRole('tab', { name: 'Settings' }));
     await user.selectOptions(screen.getByLabelText('Folder'), 'f1');
     expect(apiMock.setAgentFolder).toHaveBeenCalledWith('a1', 'f1');
+  });
+
+  it('views the debug context for a session from the Settings tab, then closes it', async () => {
+    const user = userEvent.setup();
+    apiMock.debugContext.mockResolvedValue([{ kind: 'request', parts: [{ part_kind: 'user-prompt', content: 'hi' }] }]);
+    render(<App />);
+    await snapshot([makeAgent()]);
+    await user.click(screen.getByRole('tab', { name: 'Settings' }));
+    await user.click(screen.getByRole('button', { name: 'View' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Debug context' });
+    expect(apiMock.debugContext).toHaveBeenCalledWith('a1', 'main');
+    expect(await within(dialog).findByText('hi')).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole('button', { name: 'Close' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Debug context' })).toBeNull());
+  });
+
+  it('picks the debug context session label from the agent when picking a non-main session', async () => {
+    const user = userEvent.setup();
+    apiMock.debugContext.mockResolvedValue(null);
+    render(<App />);
+    const twoSessions = [
+      { id: 'main', acpSessionId: null, label: 'Main', isMain: true, totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0 },
+      { id: 'side', acpSessionId: null, label: 'Side chat', isMain: false, totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0 },
+    ];
+    await snapshot([makeAgent({ sessions: twoSessions })]);
+    await user.click(screen.getByRole('tab', { name: 'Settings' }));
+    await user.selectOptions(screen.getByLabelText('Session'), 'side');
+    await user.click(screen.getByRole('button', { name: 'View' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Debug context' });
+    expect(apiMock.debugContext).toHaveBeenCalledWith('a1', 'side');
+    expect(within(dialog).getByText(/for .Side chat./)).toBeInTheDocument();
+  });
+
+  it('falls back to the raw session id as the label if the picked session no longer belongs to the selected agent', async () => {
+    const user = userEvent.setup();
+    apiMock.debugContext.mockResolvedValue(null);
+    render(<App />);
+    const withSide = [
+      { id: 'main', acpSessionId: null, label: 'Main', isMain: true, totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0 },
+      { id: 'side-x', acpSessionId: null, label: 'Side X', isMain: false, totalInputTokens: 0, totalOutputTokens: 0, totalTokens: 0 },
+    ];
+    await snapshot([makeAgent({ sessions: withSide }), makeAgent({ id: 'a2', name: 'Beta' })]);
+    await user.click(screen.getByRole('tab', { name: 'Settings' }));
+    await user.selectOptions(screen.getByLabelText('Session'), 'side-x');
+    await user.click(screen.getByRole('button', { name: 'View' }));
+    await screen.findByRole('dialog', { name: 'Debug context' });
+
+    // Switching agents doesn't close the open dialog; agent Beta has no session
+    // called "side-x", so the label falls back to the raw id instead of crashing.
+    const sidebar = screen.getByRole('navigation', { name: 'Agents' });
+    await user.click(within(sidebar).getByText('Beta'));
+    const dialog = screen.getByRole('dialog', { name: 'Debug context' });
+    expect(within(dialog).getByText(/for .side-x./)).toBeInTheDocument();
   });
 
   it('opens the folders dialog from the Settings tab, adds and removes a folder, and closes it', async () => {

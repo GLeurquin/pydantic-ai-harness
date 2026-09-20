@@ -351,6 +351,13 @@ async fn transcript(
     Ok(Json(json!(manager.transcript(&agent_id, &session_id).await?)))
 }
 
+async fn debug_context(
+    State(manager): State<AppState>,
+    Path((agent_id, session_id)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, ManagerError> {
+    Ok(Json(json!(manager.debug_context(&agent_id, &session_id).await?)))
+}
+
 async fn diff(
     State(manager): State<AppState>,
     Path(agent_id): Path<String>,
@@ -485,6 +492,10 @@ pub fn build_router(manager: AppState) -> Router {
         .route(
             "/api/agents/{agent_id}/sessions/{session_id}/transcript",
             get(transcript),
+        )
+        .route(
+            "/api/agents/{agent_id}/sessions/{session_id}/debug-context",
+            get(debug_context),
         )
         .route("/api/agents/{agent_id}/approval-mode", patch(set_approval_mode))
         .route("/api/agents/{agent_id}/name", patch(rename_agent))

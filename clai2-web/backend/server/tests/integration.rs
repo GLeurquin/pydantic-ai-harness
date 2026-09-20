@@ -2744,3 +2744,102 @@ async fn agent_referencing_a_deleted_model_starts_with_an_empty_overlay() {
     assert!(echo.starts_with("env CLAI_MODEL="), "echo: {echo}");
     assert!(!echo.contains("gpt-6"), "echo: {echo}");
 }
+
+#[tokio::test]
+async fn agent_process_is_told_its_own_id_and_debug_context_dir() {
+    let world = world().await;
+    let agent = world.create_agent("solo", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap().to_owned();
+
+    let mut ws = world.ws().await;
+    world.prompt(&agent_id, "main", "env:CLAI_AGENT_ID").await;
+    let events = ws.collect_until(|event| event["type"] == "turnEnded").await;
+    let chunks = events_of_type(&events, "messageChunk");
+    assert!(
+        chunks
+            .iter()
+            .any(|chunk| chunk["text"] == format!("env CLAI_AGENT_ID={agent_id}")),
+        "chunks: {chunks:?}"
+    );
+
+    world.prompt(&agent_id, "main", "env:CLAI_DEBUG_CONTEXT_DIR").await;
+    let events = ws.collect_until(|event| event["type"] == "turnEnded").await;
+    let chunks = events_of_type(&events, "messageChunk");
+    assert!(
+        chunks
+            .iter()
+            .any(|chunk| chunk["text"].as_str().unwrap_or_default().ends_with("debug-context")),
+        "chunks: {chunks:?}"
+    );
+    ws.close().await;
+}
+
+#[tokio::test]
+async fn debug_context_for_unknown_agent_is_404() {
+    let world = world().await;
+    let (status, _) = world.get("/api/agents/ghost/sessions/main/debug-context").await;
+    assert_eq!(status, 404);
+}
+
+#[tokio::test]
+async fn debug_context_for_unknown_session_is_404() {
+    let world = world().await;
+    let agent = world.create_agent("solo", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let (status, _) = world
+        .get(&format!("/api/agents/{agent_id}/sessions/ghost/debug-context"))
+        .await;
+    assert_eq!(status, 404);
+}
+
+#[tokio::test]
+async fn debug_context_with_no_snapshot_yet_is_null() {
+    let world = world().await;
+    let agent = world.create_agent("solo", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let (status, body) = world
+        .get(&format!("/api/agents/{agent_id}/sessions/main/debug-context"))
+        .await;
+    assert_eq!(status, 200);
+    assert!(body.is_null(), "body: {body}");
+}
+
+#[tokio::test]
+async fn debug_context_passes_through_the_agent_process_snapshot() {
+    let world = world().await;
+    let agent = world.create_agent("solo", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap().to_owned();
+
+    // Stands in for `clai_agent.py`'s `DebugContextWriter` capability, which
+    // writes exactly this file shape -- opaque JSON passed straight through.
+    let snapshot_dir = world._dir.path().join("data/debug-context").join(&agent_id);
+    tokio::fs::create_dir_all(&snapshot_dir).await.unwrap();
+    let snapshot = json!([{"kind": "request", "parts": [{"part_kind": "user-prompt", "content": "hi"}]}]);
+    tokio::fs::write(snapshot_dir.join("main.json"), snapshot.to_string())
+        .await
+        .unwrap();
+
+    let (status, body) = world
+        .get(&format!("/api/agents/{agent_id}/sessions/main/debug-context"))
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(body, snapshot);
+}
+
+#[tokio::test]
+async fn debug_context_with_a_corrupt_snapshot_is_400() {
+    let world = world().await;
+    let agent = world.create_agent("solo", false, "auto").await;
+    let agent_id = agent["id"].as_str().unwrap().to_owned();
+
+    let snapshot_dir = world._dir.path().join("data/debug-context").join(&agent_id);
+    tokio::fs::create_dir_all(&snapshot_dir).await.unwrap();
+    tokio::fs::write(snapshot_dir.join("main.json"), b"not json")
+        .await
+        .unwrap();
+
+    let (status, _) = world
+        .get(&format!("/api/agents/{agent_id}/sessions/main/debug-context"))
+        .await;
+    assert_eq!(status, 400);
+}

@@ -4,6 +4,7 @@ import { api } from './api/client';
 import type { CreateAgentRequest, ProfileEdit } from './api/types';
 import { errorMessage } from './errors';
 import { CiTrackingDialog } from './components/CiTrackingDialog';
+import { DebugContextDialog } from './components/DebugContextDialog';
 import { FoldersDialog } from './components/FoldersDialog';
 import { GithubSettingsDialog } from './components/GithubSettingsDialog';
 import { GoalDialog } from './components/GoalDialog';
@@ -29,7 +30,8 @@ type Dialog =
   | 'github'
   | 'ci-tracking'
   | 'projects'
-  | 'folders';
+  | 'folders'
+  | 'debug-context';
 
 /** Fire a write action; a rejection surfaces as a notification instead of
  * vanishing. The rest of the UI does not wait on it. */
@@ -41,6 +43,7 @@ export function App() {
   const store = useAppStore();
   const [dialog, setDialog] = useState<Dialog>('none');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [debugContextSessionId, setDebugContextSessionId] = useState<string | null>(null);
   const selected = store.agents.find((agent) => agent.id === store.selectedAgentId) ?? null;
 
   useEffect(() => {
@@ -85,6 +88,8 @@ export function App() {
   }, []);
 
   const loadDiff = useCallback((agentId: string) => api.diff(agentId), []);
+
+  const loadDebugContext = useCallback((agentId: string, sessionId: string) => api.debugContext(agentId, sessionId), []);
 
   const createAgent = async (request: CreateAgentRequest) => {
     const agent = await api.createAgent(request);
@@ -198,6 +203,10 @@ export function App() {
           onClearGoal={() => runAction(api.clearGoal(selected.id))}
           onSetCiTracking={() => setDialog('ci-tracking')}
           onClearCiTracking={() => runAction(api.clearCiTracking(selected.id))}
+          onViewDebugContext={(sessionId) => {
+            setDebugContextSessionId(sessionId);
+            setDialog('debug-context');
+          }}
         />
       ) : (
         <main className="main">
@@ -283,6 +292,16 @@ export function App() {
           // Same WS-only race avoidance as the goal dialog above: don't
           // manually apply the response, rely on the broadcast update.
           onSubmit={(prRef) => api.setCiTracking(selected.id, prRef).then(() => undefined)}
+          onClose={() => setDialog('none')}
+        />
+      ) : null}
+      {dialog === 'debug-context' && selected && debugContextSessionId ? (
+        <DebugContextDialog
+          agentId={selected.id}
+          sessionId={debugContextSessionId}
+          agentName={selected.name}
+          sessionLabel={selected.sessions.find((session) => session.id === debugContextSessionId)?.label ?? debugContextSessionId}
+          loadDebugContext={loadDebugContext}
           onClose={() => setDialog('none')}
         />
       ) : null}

@@ -21,6 +21,7 @@ export const AlwaysAskWithWorktree: Story = () => (
     onClearGoal={noop}
     onSetCiTracking={noop}
     onClearCiTracking={noop}
+    onViewDebugContext={noop}
   />
 );
 
@@ -40,6 +41,7 @@ export const AutoModeWarning: Story = () => (
     onClearGoal={noop}
     onSetCiTracking={noop}
     onClearCiTracking={noop}
+    onViewDebugContext={noop}
   />
 );
 
@@ -59,6 +61,7 @@ export const WithActiveGoal: Story = () => (
     onClearGoal={noop}
     onSetCiTracking={noop}
     onClearCiTracking={noop}
+    onViewDebugContext={noop}
   />
 );
 
@@ -78,6 +81,7 @@ export const WithFailingCi: Story = () => (
     onClearGoal={noop}
     onSetCiTracking={noop}
     onClearCiTracking={noop}
+    onViewDebugContext={noop}
   />
 );
 
@@ -101,5 +105,6 @@ export const ArchivedAgent: Story = () => (
     onClearGoal={noop}
     onSetCiTracking={noop}
     onClearCiTracking={noop}
+    onViewDebugContext={noop}
   />
 );
