@@ -40,8 +40,9 @@ text. Long code lines wrap to the terminal width.
 ## Word deletion
 
 Option+Backspace (Alt+Backspace) deletes the word before the cursor, like Ctrl-W,
-including trailing spaces. Text after the cursor is preserved. Your terminal
-must send Option as Alt/Meta for this shortcut.
+including trailing whitespace. Spaces, tabs, and newlines separate words. Text
+after the cursor is preserved. Your terminal must send Option as Alt/Meta for
+this shortcut; legacy and modified-key encodings are supported.
 
 ## Interrupting a turn
 
