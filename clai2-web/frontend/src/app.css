@@ -729,6 +729,9 @@
   flex-direction: column;
   gap: 20px;
   max-width: 640px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .settings h3 {
