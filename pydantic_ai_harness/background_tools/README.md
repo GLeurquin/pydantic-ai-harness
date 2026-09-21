@@ -130,7 +130,7 @@ cancellation can keep cleanup open.
 
 ## Limitations
 
-- **Streaming**: `run_stream()` waits for live background tasks before it returns, then drops their results because it does not take the extra model turn required for delivery. Use `agent.run()` or a driven `agent.iter()` loop when result delivery is required.
+- **Output streaming**: `run_stream()` and `run_stream_sync()` do not deliver results from background tools that are still running when the streamed response begins. The response may therefore only acknowledge that the work is still running. Use `run_stream_events()`, `run()`, `run_sync()`, or a fully driven `agent.iter()` when the final output must include background results.
 - **Realtime**: Realtime sessions already execute tools concurrently. Selected tools stay on the
   realtime session's native tool-result path, so their original result content is preserved and
   they do not return the background acknowledgment.
