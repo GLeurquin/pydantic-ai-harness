@@ -74,9 +74,9 @@ async def resume(ref: WorkspaceRef) -> str:
     return result.output
 ```
 
-For SDK operations, retain a `ModalWorkspaceBackend` and await its `workspace` property to get the typed `modal.Sandbox`. You can also construct the backend with an existing native handle using `ModalWorkspaceBackend(workspace=native)`. Supply either a native handle or `ref=`, not both.
+For SDK operations, retain a `ModalWorkspaceBackend` and call `await backend.get_client()` to get the typed `modal.Sandbox`. The first call creates or attaches to the container; later calls return the same object. You can also construct the backend with an existing native handle using `ModalWorkspaceBackend(workspace=native)`. Supply either a native handle or `ref=`, not both.
 
-The application owns termination and SDK detachment. This example explicitly acquires a container and cleans it up after the run:
+Pydantic AI does not terminate the container or detach the SDK handle; both are the application's job. This example explicitly acquires a container and cleans it up after the run:
 
 ```python
 from pydantic_ai import Agent, RunContext
@@ -90,7 +90,7 @@ async def working_directory(ctx: RunContext[None]) -> str:
 
 async def run_with_cleanup() -> str:
     backend = ModalWorkspaceBackend(image='python:3.12-slim')
-    native = await backend.workspace
+    native = await backend.get_client()
     try:
         result = await agent.run('What is the working directory?', workspace=backend)
         return result.output
@@ -101,7 +101,7 @@ async def run_with_cleanup() -> str:
             await native.detach.aio()
 ```
 
-## Lifetimes and durable execution
+## Lifetimes and cleanup
 
 `sandbox_timeout` is the lifetime of a newly created container, in seconds; it defaults to 300. Finishing an agent run does not terminate it. Creation settings such as the image, environment, and working directory do not reconfigure a container attached by reference.
 
@@ -109,7 +109,7 @@ Pass a finite `timeout` to bound a command. Modal applies whole seconds, so frac
 
 Modal has no per-command kill operation. Cancelling a call stops waiting locally; the command may continue until its server deadline or the container's lifetime ends. Cancelling creation can leave a container whose ID the caller did not receive; its server lifetime still applies.
 
-Durable applications own reference persistence, creation coordination, and restoring a workspace inside their activities. The capability does not make remote operations replay-safe or recreate application wrappers automatically. Apply your workspace policies when restoring the backend, then access it through `ctx.workspace` in tools.
+Pydantic AI does not terminate containers. Terminating them, and choosing a `sandbox_timeout` that reaps the ones you lose track of, is the application's job. `ModalWorkspace.get_workspace` performs no I/O, so a backend can be rebuilt from a `WorkspaceRef` wherever the run continues, including under a durable execution engine; the reference carries no credentials, so each worker needs its own Modal configuration. See [Workspaces](https://pydantic.dev/docs/ai/core-concepts/workspace/) for how a run selects and restores its workspace.
 
 The capability emits no additional telemetry spans. Core agent and tool spans cover the calls made through tools; provider-specific diagnostics remain available through Modal.
 

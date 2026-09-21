@@ -19,7 +19,7 @@ import importlib
 import math
 import posixpath
 import time
-from collections.abc import AsyncGenerator, Awaitable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
@@ -108,7 +108,8 @@ class ModalWorkspaceBackend(WorkspaceBackend, SupportsCommands, SupportsFilesyst
     """A Modal sandbox implementing Pydantic AI's ``WorkspaceBackend`` protocol.
 
     Construction performs no I/O. The first operation creates or attaches to a sandbox, and the
-    native handle is available through `workspace` for application-owned SDK lifecycle.
+    typed `modal.Sandbox` is available through `get_client()`. The backend does not terminate the
+    sandbox; terminating it is the application's job.
 
     Modal applies whole-second command deadlines. Cancelling ``run()`` stops the local wait while
     the command may continue until its deadline or the sandbox lifetime ends.
@@ -160,17 +161,14 @@ class ModalWorkspaceBackend(WorkspaceBackend, SupportsCommands, SupportsFilesyst
         self._created_timeout: int | None = None
         self._lock = anyio.Lock()
 
-    @property
-    def workspace(self) -> Awaitable[modal.Sandbox]:
-        return self._create_or_attach()
-
-    async def _create_or_attach(self) -> modal.Sandbox:
-        """Acquire the native Modal sandbox on first use, once, and record its identity.
+    async def get_client(self) -> modal.Sandbox:
+        """Return the typed `modal.Sandbox`, creating or attaching to it on first use.
 
         The only place `_workspace` is read, so nothing can reach an unacquired handle:
         it stays optional and every other method comes through here. The lock serializes
         concurrent first uses -- two callers each creating a sandbox would leave the loser
-        billed and unreferenced.
+        billed and unreferenced. Attaching by `ref` to a sandbox that no longer exists raises
+        `WorkspaceUnavailableError`; it does not create a replacement.
         """
         async with self._lock:
             if (workspace := self._workspace) is not None:
@@ -207,39 +205,39 @@ class ModalWorkspaceBackend(WorkspaceBackend, SupportsCommands, SupportsFilesyst
             raise await self._operation_error(e, f'Could not access {path!r} in the workspace') from e
 
     async def read_bytes(self, path: str) -> bytes:
-        workspace = await self.workspace
+        workspace = await self.get_client()
         async with self._translated_filesystem_error(path):
             return await workspace.filesystem.read_bytes.aio(path)
 
     async def write_bytes(self, path: str, data: bytes) -> None:
         # Modal takes the data first, creates missing parents, and replaces existing contents.
-        workspace = await self.workspace
+        workspace = await self.get_client()
         async with self._translated_filesystem_error(path):
             await workspace.filesystem.write_bytes.aio(data, path)
 
     async def stat(self, path: str) -> FileEntry:
-        workspace = await self.workspace
+        workspace = await self.get_client()
         async with self._translated_filesystem_error(path):
             return _file_entry(await workspace.filesystem.stat.aio(path), path)
 
     async def list_dir(self, path: str) -> Sequence[FileEntry]:
-        workspace = await self.workspace
+        workspace = await self.get_client()
         async with self._translated_filesystem_error(path):
             entries = await workspace.filesystem.list_files.aio(path)
         return [_file_entry(entry, posixpath.join(path, entry.name)) for entry in entries]
 
     async def make_dir(self, path: str) -> None:
-        workspace = await self.workspace
+        workspace = await self.get_client()
         async with self._translated_filesystem_error(path):
             await workspace.filesystem.make_directory.aio(path)
 
     async def remove(self, path: str) -> None:
-        workspace = await self.workspace
+        workspace = await self.get_client()
         async with self._translated_filesystem_error(path):
             await workspace.filesystem.remove.aio(path, recursive=True)
 
     async def exists(self, path: str) -> bool:
-        workspace = await self.workspace
+        workspace = await self.get_client()
         import modal
 
         try:
@@ -350,7 +348,7 @@ class ModalWorkspaceBackend(WorkspaceBackend, SupportsCommands, SupportsFilesyst
         call_started_at = time.monotonic()
         try:
             with anyio.fail_after(timeout):
-                workspace = await self.workspace
+                workspace = await self.get_client()
         except TimeoutError as error:
             raise WorkspaceTimeoutError('Timed out before the command could start.', timeout=timeout) from error
         import modal
@@ -456,7 +454,7 @@ class ModalWorkspaceBackend(WorkspaceBackend, SupportsCommands, SupportsFilesyst
         import modal
 
         try:
-            workspace = await self.workspace
+            workspace = await self.get_client()
             finished = await workspace.poll.aio()
         except modal.exception.AuthError:
             return WorkspaceUnavailableError(_AUTH_MESSAGE)

@@ -25,7 +25,7 @@ pytestmark = pytest.mark.anyio(backends=['asyncio'])
 
 async def started(**settings: Any) -> ModalWorkspaceBackend:
     backend = ModalWorkspaceBackend(**settings)
-    await backend.workspace
+    await backend.get_client()
     return backend
 
 
@@ -290,6 +290,16 @@ class TestWorkingDir:
 
 
 class TestCreate:
+    @pytest.mark.parametrize('operation', ['run', 'write_bytes'])
+    async def test_ref_is_recorded_by_the_first_operation(self, fake_modal: FakeModal, operation: str) -> None:
+        backend = ModalWorkspaceBackend()
+        assert backend.ref is None
+        if operation == 'run':
+            await backend.run(['true'])
+        else:
+            await backend.write_bytes('/tmp/file', b'data')
+        assert backend.ref == WorkspaceRef(provider='modal', id=fake_modal.sandboxes[0].object_id)
+
     async def test_creates_from_config(self, fake_modal: FakeModal) -> None:
         backend = await started(
             image='ubuntu:22.04',
@@ -344,11 +354,23 @@ class TestConnect:
         fake_modal.attach_poll_result = 0
         with pytest.raises(WorkspaceUnavailableError, match='no longer running'):
             await started(ref=WorkspaceRef(provider='modal', id='sb-gone'))
+        assert not fake_modal.create_kwargs
 
     async def test_connect_to_an_unknown_id_fails(self, fake_modal: FakeModal) -> None:
         fake_modal.attach_error = fake_modal.unavailable_type('not found')
         with pytest.raises(WorkspaceUnavailableError, match="'sb-nope'"):
             await started(ref=WorkspaceRef(provider='modal', id='sb-nope'))
+        assert not fake_modal.create_kwargs
+
+    async def test_an_operation_on_a_gone_sandbox_does_not_create_a_replacement(self, fake_modal: FakeModal) -> None:
+        fake_modal.attach_error = fake_modal.unavailable_type('not found')
+        backend = ModalWorkspaceBackend(ref=WorkspaceRef(provider='modal', id='sb-nope'))
+        for _ in range(2):
+            with pytest.raises(WorkspaceUnavailableError, match="'sb-nope'"):
+                await backend.run(['true'])
+        assert backend.ref == WorkspaceRef(provider='modal', id='sb-nope')
+        assert not fake_modal.create_kwargs
+        assert not fake_modal.sandboxes
 
 
 class TestFilesystem:
