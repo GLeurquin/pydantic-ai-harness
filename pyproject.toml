@@ -146,7 +146,7 @@ lint = [
 
 [tool.uv.sources]
 # Draft stack dependency on pydantic/pydantic-ai#6492. Before merge, replace this pin with the released version containing workspace support.
-pydantic-ai-slim = { git = "https://github.com/pydantic/pydantic-ai.git", subdirectory = "pydantic_ai_slim", rev = "86fc089dcf0041051e6f1ba0cb4b8d39030aa8c1" }
+pydantic-ai-slim = { git = "https://github.com/pydantic/pydantic-ai.git", subdirectory = "pydantic_ai_slim", rev = "196090e0b8a6ade1c1a090caf89a498fb008d1ae" }
 
 [tool.hatch.version]
 source = 'uv-dynamic-versioning'
