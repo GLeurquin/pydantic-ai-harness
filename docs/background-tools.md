@@ -58,7 +58,8 @@ BackgroundTools(tools=lambda ctx, td: td.name.startswith('research_'))
 
 Set the `background` metadata key to `'optional'` instead of `True`. The tool gains a
 `run_in_background` argument, and a call runs in the background only when the model passes
-`true`. A tool that `tools` selects always runs in the background, whatever its metadata.
+`true`. Optional mode always uses the `background` metadata key, even when `tools` uses another
+selector. A tool that `tools` selects always runs in the background, whatever its metadata.
 Sequential tools and realtime sessions cannot run tools in the background, so they do not
 get the argument. A tool that already has a `run_in_background` parameter is rejected.
 
@@ -107,8 +108,9 @@ The task ID matches the acknowledgment. The follow-up is user content, not anoth
 content. Application-only `ToolReturn.metadata` and deferred tool names from `ToolReturn.tools` are
 not carried into the follow-up. Retries and deferred calls are reported as text failures. Expected
 tool errors include their message. For unexpected exceptions, the model sees only the exception
-type because messages may contain private details. Running out of retries, or raising `CancelledError`, ends the run, as it would for a sequential tool. Call
-`ctx.cancel()` when a background tool needs to stop the run and all live background tasks.
+type because messages may contain private details. Running out of retries, or raising
+`CancelledError`, ends the run, as it would for a sequential tool. Call `ctx.cancel()` when a
+background tool needs to stop the run and all live background tasks.
 
 ## Execution behavior
 
@@ -128,7 +130,7 @@ cancellation can keep cleanup open.
 
 ## Limitations
 
-- **Output streaming**: `run_stream()` and `run_stream_sync()` do not deliver results from background tools that are still running when the streamed response begins. The response may therefore only acknowledge that the work is still running. Use `run_stream_events()`, `run()`, `run_sync()`, or a fully driven `agent.iter()` when the final output must include background results.
+- **Output streaming**: `run_stream()` and `run_stream_sync()` wait for background tools that are still running when the streamed response begins, but do not deliver their results. The response may therefore only acknowledge that the work is still running. Use `run_stream_events()`, `run()`, `run_sync()`, or a fully driven `agent.iter()` when the final output must include background results.
 - **Realtime**: Realtime sessions already execute tools concurrently. Selected tools stay on the
   realtime session's native tool-result path, so their original result content is preserved and
   they do not return the background acknowledgment.

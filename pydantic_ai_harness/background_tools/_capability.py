@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import math
 from collections.abc import Iterator, Sequence
@@ -41,9 +40,9 @@ if TYPE_CHECKING:
 
 
 _INSTRUCTIONS = """\
-Some tools return right away and deliver their result later as a follow-up message. \
-Pass `run_in_background=true` to a tool that accepts it when you want to keep working \
-and get its result later.\
+Some tools reply that a call is running in the background. This means that exact call is pending. \
+Do not repeat or poll it. Its result will arrive automatically in a later message. Continue only \
+with independent work. If none remains, end your response; the run will resume when the result arrives.\
 """
 
 _RUN_IN_BACKGROUND = 'run_in_background'
@@ -168,8 +167,9 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
 
     A tool with `metadata={'background': 'optional'}` that this selector does not match gains an
     optional boolean `run_in_background` argument, which the tool function never receives; a call
-    runs in the background only when the model passes `true`. Tools that cannot run in the
-    background in this run (sequential tools, sequential runs, realtime sessions) are left unchanged.
+    runs in the background only when the model passes `true`. Optional mode always uses the
+    `background` metadata key, regardless of this selector. Tools that cannot run in the background
+    in this run (sequential tools, sequential runs, realtime sessions) are left unchanged.
     """
 
     id: str | None = 'background_tools'
@@ -243,7 +243,8 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
             return args
         # The tool's validator rejects unknown arguments, so the flag is removed and checked here.
         stripped: dict[str, Any] = {**parsed}
-        if not isinstance(stripped.pop(_RUN_IN_BACKGROUND, False), bool):
+        flag = stripped.pop(_RUN_IN_BACKGROUND, False)
+        if flag is not None and not isinstance(flag, bool):
             raise ModelRetry(f'`{_RUN_IN_BACKGROUND}` must be true or false.')
         return stripped
 
@@ -273,10 +274,10 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
                     result = await handler(args)
                 except (ApprovalRequired, CallDeferred, ToolRetryError, ToolFailedError) as e:
                     outcome = (f"Background tool '{tool_name}' (task {task_id}) failed: {_format_background_error(e)}",)
-                except asyncio.CancelledError as e:
-                    if self._task_group.cancel_scope.cancel_called:
-                        raise
-                    # The tool raised this itself: it ends the run, as it would for a sequential tool.
+                except anyio.get_cancelled_exc_class() as e:
+                    # Propagate cancellation delivered by any enclosing scope. If none is pending,
+                    # the tool raised this itself and it ends the run like a sequential tool.
+                    await anyio.lowlevel.checkpoint_if_cancelled()
                     outcome = e
                 except UnexpectedModelBehavior as e:
                     # The retry budget ran out: it ends the run, as it would for a sequential tool.
@@ -291,16 +292,16 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
                 self._send.send_nowait(outcome)
             finally:
                 self._live -= 1
-                # Core counts a tool call when its handler returns, so the slot was held while the task ran.
+                # Core counts a successful call when the tool body returns, replacing this reservation.
                 ctx.usage.tool_calls -= 1
 
         ctx.usage.tool_calls += 1
         self._live += 1
         self._task_group.start_soon(_run, name=f'background tool {tool_name} ({task_id})')
         return (
-            f"Tool '{tool_name}' is running in background (task {task_id}). "
-            f'If this run remains active, you will receive the result automatically when it completes. '
-            f'Continue with other work in the meantime.'
+            f"Tool '{tool_name}' is running in background (task {task_id}). This call is pending. "
+            'Do not repeat or poll it; its result will arrive automatically. '
+            'Continue independent work, or end your response.'
         )
 
     async def after_node_run(

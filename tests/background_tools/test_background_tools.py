@@ -11,7 +11,7 @@ from typing import Any
 
 import anyio
 import pytest
-from pydantic_ai import Agent, CancellationToken, RunCancelled, UsageLimits
+from pydantic_ai import Agent, AgentRunResultEvent, CancellationToken, RunCancelled, UsageLimits
 from pydantic_ai.exceptions import (
     ApprovalRequired,
     CallDeferred,
@@ -181,6 +181,11 @@ class TestBackgroundTools:
         assert isinstance(ack, str)
         match = re.search(r'\(task (?P<task_id>[^)]+)\)', ack)
         assert match is not None
+        assert ack == (
+            f"Tool 'slow_research' is running in background (task {match['task_id']}). This call is pending. "
+            'Do not repeat or poll it; its result will arrive automatically. '
+            'Continue independent work, or end your response.'
+        )
         follow_up = next(
             part.content
             for part in parts
@@ -294,6 +299,31 @@ class TestBackgroundTools:
 
         assert started == 1
 
+    async def test_pending_background_call_leaves_capacity_for_another_call(self) -> None:
+        def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            if _follow_up_seen(messages, "Background tool 'slow'"):
+                return ModelResponse(parts=[TextPart(content='done')])
+            if _ack_seen(messages):
+                return ModelResponse(parts=[ToolCallPart(tool_name='ordinary', args='{}')])
+            return ModelResponse(parts=[ToolCallPart(tool_name='slow', args='{}')])
+
+        release = asyncio.Event()
+        agent = Agent(FunctionModel(model_fn), capabilities=[BackgroundTools()])
+
+        @agent.tool_plain(metadata={'background': True})
+        async def slow() -> str:  # pyright: ignore[reportUnusedFunction]
+            await release.wait()
+            return 'slow result'
+
+        @agent.tool_plain
+        async def ordinary() -> str:  # pyright: ignore[reportUnusedFunction]
+            release.set()
+            return 'ordinary result'
+
+        result = await agent.run('go', usage_limits=UsageLimits(tool_calls_limit=2))
+
+        assert result.usage.tool_calls == 2
+
     async def test_sequential_tool_stays_on_normal_execution_path(self) -> None:
         sequential_active = False
         overlapped = False
@@ -378,6 +408,45 @@ class TestBackgroundTools:
             assert await asyncio.wait_for(output, timeout=5) == 'final answer'
 
         assert not _follow_up_seen(stream_result.all_messages(), 'late result')
+
+    async def test_run_stream_events_delivers_background_result(self) -> None:
+        async def model_fn(
+            messages: list[ModelMessage], info: AgentInfo
+        ) -> AsyncIterator[str | dict[int, DeltaToolCall]]:
+            if _follow_up_seen(messages, "Background tool 'slow'"):
+                yield 'done'
+            elif _ack_seen(messages):
+                yield 'waiting'
+            else:
+                yield {0: DeltaToolCall(name='slow', json_args='{}')}
+
+        agent = Agent(FunctionModel(stream_function=model_fn), capabilities=[BackgroundTools()])
+
+        @agent.tool_plain(metadata={'background': True})
+        async def slow() -> str:  # pyright: ignore[reportUnusedFunction]
+            return 'value'
+
+        output = None
+        async with agent.run_stream_events('go') as events:
+            async for event in events:
+                if isinstance(event, AgentRunResultEvent):
+                    output = event.result.output
+
+        assert output == 'done'
+
+    async def test_iter_delivers_background_result(self) -> None:
+        agent = Agent(_model_calling('slow'), capabilities=[BackgroundTools()])
+
+        @agent.tool_plain(metadata={'background': True})
+        async def slow() -> str:  # pyright: ignore[reportUnusedFunction]
+            return 'value'
+
+        async with agent.iter('go') as run:
+            async for _ in run:
+                pass
+
+        result = run.result
+        assert result is not None and result.output == 'done'
 
     async def test_unmarked_tool_runs_normally(self) -> None:
         def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -582,7 +651,7 @@ class TestBackgroundTools:
 
         assert _follow_up_seen(result.all_messages(), 'completed.\nResult: [1,2]')
 
-    async def test_instructions_mention_follow_up_delivery(self) -> None:
+    async def test_instructions_explain_pending_calls(self) -> None:
         seen: list[str | None] = []
 
         def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -592,7 +661,11 @@ class TestBackgroundTools:
         agent = Agent(FunctionModel(model_fn), capabilities=[BackgroundTools()])
         await agent.run('go')
 
-        assert 'follow-up message' in (seen[0] or '')
+        assert seen == [
+            'Some tools reply that a call is running in the background. This means that exact call is pending. '
+            'Do not repeat or poll it. Its result will arrive automatically in a later message. Continue only '
+            'with independent work. If none remains, end your response; the run will resume when the result arrives.'
+        ]
 
     async def test_concurrent_runs_do_not_share_tasks(self) -> None:
         release = {'first': asyncio.Event(), 'second': asyncio.Event()}
@@ -1059,6 +1132,22 @@ class TestBackgroundTools:
             for message in result.all_messages()
             for part in message.parts
         )
+
+    async def test_null_background_flag_runs_tool_inline(self) -> None:
+        def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            if any(isinstance(part, ToolReturnPart) for message in messages for part in message.parts):
+                return ModelResponse(parts=[TextPart(content='done')])
+            return ModelResponse(parts=[ToolCallPart(tool_name='research', args={'run_in_background': None})])
+
+        agent = Agent(FunctionModel(model_fn), capabilities=[BackgroundTools()])
+
+        @agent.tool_plain(metadata={'background': 'optional'}, strict=True)
+        async def research() -> str:  # pyright: ignore[reportUnusedFunction]
+            return 'researched'
+
+        result = await agent.run('go')
+
+        assert result.output == 'done'
 
     async def test_always_background_selector_wins_over_optional_metadata(self) -> None:
         seen: list[ToolDefinition] = []
