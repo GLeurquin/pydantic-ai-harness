@@ -1,11 +1,12 @@
 """Steering uses core delivery; only explicit follow-ups start another turn."""
 
+from collections.abc import AsyncIterable
 from io import StringIO
 from pathlib import Path
 
 import anyio
 import pytest
-from pydantic_ai import Agent, AgentRunResult, RunContext
+from pydantic_ai import Agent, AgentRunResult, AgentStreamEvent, RunContext
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import BinaryContent, ModelRequest, UserPromptPart
 from pydantic_ai.models import Model
@@ -20,7 +21,8 @@ from pydantic_clai2.project_settings import ProjectSettings
 from pydantic_clai2.settings_store import SettingsStore
 
 
-async def test_enter_during_run_teardown_queues_follow_up() -> None:
+@pytest.mark.parametrize('supplied_handler', [False, True])
+async def test_enter_during_run_teardown_queues_follow_up(supplied_handler: bool) -> None:
     finishing, release = anyio.Event(), anyio.Event()
 
     class PauseAfterRun(AbstractCapability[None]):
@@ -29,7 +31,21 @@ async def test_enter_during_run_teardown_queues_follow_up() -> None:
             await release.wait()
             return result
 
-    session = Session(Agent(TestModel(), deps_type=type(None), capabilities=[PauseAfterRun()]), deps=None)
+    async def handler(ctx: RunContext[None], events: AsyncIterable[AgentStreamEvent]) -> None:
+        async for _ in events:
+            pass
+        finishing.set()
+        await release.wait()
+
+    session = Session(
+        Agent(
+            TestModel(),
+            deps_type=type(None),
+            capabilities=[PauseAfterRun()],
+            event_stream_handler=handler if supplied_handler else None,
+        ),
+        deps=None,
+    )
     async with editor() as (live, _, _):
         live.steer = session.steer
         async with anyio.create_task_group() as tasks:
