@@ -70,9 +70,9 @@ async def resume(ref: WorkspaceRef) -> str:
     return result.output
 ```
 
-Retain an `E2BWorkspaceBackend` and await its `workspace` property to get the typed `e2b.AsyncSandbox`. An existing native handle can be supplied with `E2BWorkspaceBackend(workspace=native)`. Supply either a native handle or `ref=`, not both.
+Retain an `E2BWorkspaceBackend` and call `await backend.get_client()` to get the typed `e2b.AsyncSandbox`. The first call creates or attaches to the environment; later calls return the same object. An existing native handle can be supplied with `E2BWorkspaceBackend(workspace=native)`. Supply either a native handle or `ref=`, not both.
 
-Applications own remote cleanup. This example explicitly acquires a workspace and kills it after the run:
+Pydantic AI does not kill the environment; that is the application's job. This example explicitly acquires a workspace and kills it after the run:
 
 ```python
 from pydantic_ai import Agent, RunContext
@@ -86,7 +86,7 @@ async def working_directory(ctx: RunContext[None]) -> str:
 
 async def run_with_cleanup() -> str:
     backend = E2BWorkspaceBackend()
-    native = await backend.workspace
+    native = await backend.get_client()
     try:
         result = await agent.run('What is the working directory?', workspace=backend)
         return result.output
@@ -94,7 +94,7 @@ async def run_with_cleanup() -> str:
         await native.kill()
 ```
 
-## Lifetimes and durable execution
+## Lifetimes and cleanup
 
 `sandbox_timeout` controls the lifetime of a newly created environment and defaults to 300 seconds. Finishing an agent run does not kill it. E2B's `connect` resumes a paused environment and applies its default 300-second connection lifetime, which can extend a shorter remaining lifetime.
 
@@ -104,7 +104,9 @@ E2B runs commands through `/bin/bash -l -c`. Argument lists are shell-quoted, an
 
 Command `timeout` covers acquisition, startup, and waiting for completion. On timeout, cancellation, or a result-reading failure, the backend attempts to kill the command's PID with a bounded cleanup request. Before the SDK returns a command handle, there is no PID to kill; killing a parent process also does not guarantee termination of detached children. Commands buffer complete output, and timeout errors include output collected by the SDK.
 
-Cancelling creation can leave an environment whose ID the caller did not receive; the configured server lifetime still applies. Durable applications own creation coordination, reference persistence, and workspace restoration inside their activities. The capability does not make remote operations replay-safe or restore application wrappers automatically. Apply workspace policies when restoring the backend, then use `ctx.workspace` in tools.
+Cancelling creation can leave an environment whose ID the caller did not receive; the configured server lifetime still applies.
+
+Pydantic AI does not kill environments. Killing them, and choosing a `sandbox_timeout` that reaps the ones you lose track of, is the application's job. `E2BWorkspace.get_workspace` performs no I/O, so a backend can be rebuilt from a `WorkspaceRef` wherever the run continues, including under a durable execution engine; the reference carries no credentials, so each worker needs its own `E2B_API_KEY`. See [Workspaces](https://pydantic.dev/docs/ai/core-concepts/workspace/) for how a run selects and restores its workspace.
 
 The capability emits no additional telemetry spans. Core agent and tool spans cover calls made through tools; provider-specific diagnostics remain available through E2B.
 
