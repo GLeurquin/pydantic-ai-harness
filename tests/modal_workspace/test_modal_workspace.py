@@ -30,7 +30,7 @@ pytestmark = pytest.mark.anyio(backends=['asyncio'])
 async def test_backend_acquires_fresh_workspace_and_records_ref(fake_modal: FakeModal) -> None:
     backend = ModalWorkspaceBackend()
     assert not fake_modal.sandboxes
-    native = await backend.workspace
+    native = await backend.get_client()
     assert native is fake_modal.sandboxes[0]
     assert backend.ref == WorkspaceRef(provider='modal', id=native.object_id)
 
@@ -38,12 +38,12 @@ async def test_backend_acquires_fresh_workspace_and_records_ref(fake_modal: Fake
 async def test_missing_modal_extra_has_install_hint(fake_modal: FakeModal, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, 'modal', None)
     with pytest.raises(WorkspaceError, match=r'pydantic-ai-harness\[modal\]'):
-        await ModalWorkspaceBackend().workspace
+        await ModalWorkspaceBackend().get_client()
 
 
 async def test_backend_attaches_explicit_ref_without_create(fake_modal: FakeModal) -> None:
     backend = ModalWorkspaceBackend(ref=WorkspaceRef(provider='modal', id='existing'))
-    await backend.workspace
+    await backend.get_client()
     assert fake_modal.attach_ids == ['existing']
     assert not fake_modal.create_kwargs
 
@@ -53,28 +53,28 @@ async def test_attach_failures_keep_reference_and_do_not_create(fake_modal: Fake
     fake_modal.attach_error = fake_modal.auth_type('bad') if error_kind == 'auth' else fake_modal.error_type('failed')
     backend = ModalWorkspaceBackend(ref=WorkspaceRef(provider='modal', id='existing'))
     with pytest.raises(WorkspaceUnavailableError if error_kind == 'auth' else WorkspaceError) as exc_info:
-        await backend.workspace
+        await backend.get_client()
     assert backend.ref == WorkspaceRef(provider='modal', id='existing')
     assert not fake_modal.create_kwargs
     assert exc_info.value.__cause__ is fake_modal.attach_error
 
 
 async def test_native_workspace_identity_is_immediate(fake_modal: FakeModal) -> None:
-    native = await ModalWorkspaceBackend().workspace
+    native = await ModalWorkspaceBackend().get_client()
     backend = ModalWorkspaceBackend(workspace=native)
     assert backend.ref == WorkspaceRef(provider='modal', id=native.object_id)
-    assert await backend.workspace is native
+    assert await backend.get_client() is native
 
 
 async def test_native_workspace_and_ref_conflict(fake_modal: FakeModal) -> None:
-    native = await ModalWorkspaceBackend().workspace
+    native = await ModalWorkspaceBackend().get_client()
     with pytest.raises(ValueError, match='either `workspace` or `ref`'):
         ModalWorkspaceBackend(workspace=native, ref=WorkspaceRef(provider='modal', id='other'))
 
 
 async def test_filesystem_directory_error_uses_builtin_exception(fake_modal: FakeModal) -> None:
     backend = ModalWorkspaceBackend()
-    await backend.workspace
+    await backend.get_client()
     fake_modal.sandboxes[0].directories.add('/directory')
     with pytest.raises(IsADirectoryError, match='Is a directory'):
         await backend.read_bytes('/directory')
@@ -82,7 +82,7 @@ async def test_filesystem_directory_error_uses_builtin_exception(fake_modal: Fak
 
 async def test_filesystem_not_directory_error_uses_builtin_exception(fake_modal: FakeModal) -> None:
     backend = ModalWorkspaceBackend()
-    await backend.workspace
+    await backend.get_client()
     fake_modal.sandboxes[0].fs_error = fake_modal.module.exception.SandboxFilesystemNotADirectoryError('file')
     with pytest.raises(NotADirectoryError, match='Not a directory'):
         await backend.read_bytes('/file/child')
@@ -102,7 +102,7 @@ async def test_create_timeout_is_bounded(fake_modal: FakeModal, monkeypatch: pyt
     monkeypatch.setattr('pydantic_ai_harness.modal_workspace._backend._CREATE_TIMEOUT', 0.01)
     backend = ModalWorkspaceBackend()
     with pytest.raises(WorkspaceError, match='control plane'):
-        await backend.workspace
+        await backend.get_client()
     assert backend.ref is None
     assert not fake_modal.sandboxes
 
@@ -236,9 +236,9 @@ async def test_failed_acquisition_can_retry(fake_modal: FakeModal) -> None:
     backend = ModalWorkspaceBackend()
     fake_modal.create_error = fake_modal.error_type('temporary')
     with pytest.raises(WorkspaceError):
-        await backend.workspace
+        await backend.get_client()
     fake_modal.create_error = None
-    await backend.workspace
+    await backend.get_client()
     assert fake_modal.owned_creates == 1
 
 
@@ -247,7 +247,7 @@ async def test_cancelled_acquisition_can_retry(fake_modal: FakeModal) -> None:
     fake_modal.create_gate = anyio.Event()
 
     async def acquire() -> None:
-        await backend.workspace
+        await backend.get_client()
 
     with anyio.CancelScope() as scope:
         async with anyio.create_task_group() as tg:
@@ -257,7 +257,7 @@ async def test_cancelled_acquisition_can_retry(fake_modal: FakeModal) -> None:
             scope.cancel()
             fake_modal.create_gate.set()
     fake_modal.create_gate = None
-    await backend.workspace
+    await backend.get_client()
     assert fake_modal.owned_creates == 1
 
 
