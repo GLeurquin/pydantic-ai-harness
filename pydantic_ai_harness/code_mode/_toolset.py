@@ -320,9 +320,13 @@ class _MontyRunState:
     ) -> AsyncMontySession:
         """Return the run's live REPL session, spawning or dialing its pool on first use."""
         if self.pool is None:
-            self.portal = open_monty_portal(self._pool_stack, in_temporal_workflow=in_temporal_workflow)
-            pool = AsyncMonty() if self.monty_sandbox_url is None else AsyncMontyWebsocket(self.monty_sandbox_url)
-            self.pool = await enter_monty(self._pool_stack, pool, self.portal)
+            try:
+                self.portal = open_monty_portal(self._pool_stack, in_temporal_workflow=in_temporal_workflow)
+                pool = AsyncMonty() if self.monty_sandbox_url is None else AsyncMontyWebsocket(self.monty_sandbox_url)
+                self.pool = await enter_monty(self._pool_stack, pool, self.portal)
+            except BaseException:
+                await self._release_pool()  # a failed spawn or dial must not leave the portal thread behind
+                raise
         if self.session is None:
             checkout = self.pool.checkout(limits=limits, type_check=type_check, type_check_stubs=type_check_stubs)
             self.session = await enter_monty(self._session_stack, checkout, self.portal)
@@ -340,10 +344,13 @@ class _MontyRunState:
         try:
             await self.reset()
         finally:
-            await release_monty(self._pool_stack)
-            self._pool_stack = AsyncExitStack()
-            self.pool = None
-            self.portal = None
+            await self._release_pool()
+
+    async def _release_pool(self) -> None:
+        await release_monty(self._pool_stack)
+        self._pool_stack = AsyncExitStack()
+        self.pool = None
+        self.portal = None
 
 
 class _RunCodeArguments(TypedDict):

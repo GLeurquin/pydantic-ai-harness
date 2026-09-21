@@ -72,6 +72,7 @@ from pydantic_ai_harness.code_mode._toolset import (  # pyright: ignore[reportPr
     _SEARCH_TOOLS_MODIFIER,
     _TOOL_SEARCH_ADDENDUM,
     _global_mode_is_sequential,
+    _MontyRunState,
     _sanitize_tool_name,
 )
 
@@ -1473,6 +1474,20 @@ class TestCodeMode:
             'session exit',
             'monty exit',
         ]
+
+    async def test_failed_pool_start_closes_the_portal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A pool that fails to start inside a Temporal workflow must not leave its portal thread behind."""
+
+        def failing_monty() -> Never:
+            raise RuntimeError('spawn failed')
+
+        monkeypatch.setattr('pydantic_ai_harness.code_mode._toolset.AsyncMonty', failing_monty)
+        state = _MontyRunState()
+
+        with pytest.raises(RuntimeError, match='spawn failed'):
+            await state.get_session(type_check=False, type_check_stubs=None, limits={}, in_temporal_workflow=True)
+
+        assert state.portal is None
 
     async def test_agent_run_preserves_repl_between_code_calls(self) -> None:
         """Code Mode keeps one REPL across model steps in an agent run."""
