@@ -68,11 +68,17 @@ class LinkOutput(io.StringIO):
 
     def write(self, text: str) -> int:
         """SmoothWriter supplies whole ANSI tokens, but can split a link's label."""
+        length = len(text)
         prefix = self._link
-        for match in re.finditer(r'\x1b\]8;;([^\x1b]*)\x1b\\', text):
-            self._link = match[0] if match[1] else ''
+        text = re.sub(r'\x1b\]8;;([^\x1b]*)\x1b\\', self._track_link, text)
         self.output.write(prefix + text + ('\x1b]8;;\x1b\\' if self._link else ''))
-        return len(text)
+        return length
+
+    def _track_link(self, match: re.Match[str]) -> str:
+        # Smoothing repeats metadata per chunk. Cap the destination so large
+        # model-generated URLs cannot amplify terminal output without bound.
+        self._link = match[0] if 0 < len(match[1]) <= 2048 else ''
+        return self._link or '\x1b]8;;\x1b\\'
 
     def flush(self) -> None:
         """Forward flushes without taking ownership of the terminal."""

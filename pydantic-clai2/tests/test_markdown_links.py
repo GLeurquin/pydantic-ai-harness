@@ -109,3 +109,30 @@ async def test_model_control_bytes_cannot_inject_terminal_commands() -> None:
     await renderer.finish()
     assert '\x1b]52;' not in output.getvalue()
     assert '\x07' not in output.getvalue()
+
+
+@pytest.mark.parametrize('length', [2048, 2049, 10000])
+async def test_oversized_urls_remain_visible_without_repeated_metadata(*, length: int) -> None:
+    url = 'https://example.com/' + 'x' * (length - len('https://example.com/'))
+    output = io.StringIO()
+    console = Console(file=output, force_terminal=True, width=12000)
+    renderer = StreamRenderer(console, stop_loading=lambda: None, smooth_seconds=0)
+    await renderer.on_stream_event(PartStartEvent(index=0, part=TextPart(f'[label]({url})')))
+    await renderer.finish()
+    text = Text.from_ansi(output.getvalue())
+    assert 'label' in text.plain and url in text.plain
+    assert text.get_style_at_offset(console, 0).link == (url if length <= 2048 else None)
+    if length > 2048:
+        assert output.getvalue().count(url) == 1
+
+
+def test_oversized_url_does_not_amplify_slow_label_chunks() -> None:
+    output = io.StringIO()
+    writer = LinkOutput(output=output)
+    url = 'https://example.com/' + 'x' * 10000
+    writer.write(f'\x1b]8;;{url}\x1b\\')
+    for _ in range(10000):
+        writer.write('x')
+    writer.write(CLOSE)
+    assert len(output.getvalue()) < 10100
+    assert Text.from_ansi(output.getvalue()).plain == 'x' * 10000
