@@ -765,6 +765,9 @@ when upgrading; `/set model NAME` also saves the model in this list.
 
 ### Terminal themes
 
+Theme selection and cancellation do not print status messages. Terminal colour
+controls are never replayed as conversation text.
+
 ```text
 /theme tokyo_night
 /set display.theme github_light
@@ -797,7 +800,8 @@ slots via Termflow's OSC sequences. CLAI resets them to terminal defaults when
 you return to `default` or exit a selected palette, including errors and
 cancellation. Redirected output receives no palette-changing sequences.
 Unsupported terminals may ignore changes; supported ones may recolour ANSI
-scrollback. The early splash retains brand colours, and syntax keeps Monokai.
+scrollback. The early splash retains brand colours. Code uses the terminal
+foreground and ANSI syntax colours.
 Diff colours stay unchanged in `default`; bundled palettes use Termflow's diff
 defaults. Plugins cannot register custom palettes. Theme selection adds no model
 requests, hooks, or telemetry.
