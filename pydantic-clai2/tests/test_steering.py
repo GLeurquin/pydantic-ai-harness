@@ -37,15 +37,12 @@ async def test_enter_during_run_teardown_queues_follow_up(supplied_handler: bool
         finishing.set()
         await release.wait()
 
-    session = Session(
-        Agent(
-            TestModel(),
-            deps_type=type(None),
-            capabilities=[PauseAfterRun()],
-            event_stream_handler=handler if supplied_handler else None,
-        ),
-        deps=None,
-    )
+    class ObservedAgent(Agent[None, str]):
+        @property
+        def event_stream_handler(self):
+            return handler if supplied_handler else None
+
+    session = Session(ObservedAgent(TestModel(), deps_type=type(None), capabilities=[PauseAfterRun()]), deps=None)
     async with editor() as (live, _, _):
         live.steer = session.steer
         async with anyio.create_task_group() as tasks:
