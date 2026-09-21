@@ -21,6 +21,7 @@ import anyio
 from pydantic_ai.workspaces import (
     CommandResult,
     FileEntry,
+    SupportsCommands,
     SupportsFilesystem,
     WorkspaceBackend,
     WorkspaceError,
@@ -81,7 +82,7 @@ def _file_entry(entry: e2b.EntryInfo) -> FileEntry:
     return FileEntry(name=entry.name, path=entry.path, is_dir=is_dir, size=None if is_dir else entry.size)
 
 
-class E2BWorkspaceBackend(WorkspaceBackend, SupportsFilesystem):
+class E2BWorkspaceBackend(WorkspaceBackend, SupportsCommands, SupportsFilesystem):
     """An [E2B](https://e2b.dev) sandbox as a Pydantic AI [`WorkspaceBackend`][pydantic_ai.workspaces.WorkspaceBackend].
 
     Commands and file operations run inside an E2B microVM, so the host is never exposed.

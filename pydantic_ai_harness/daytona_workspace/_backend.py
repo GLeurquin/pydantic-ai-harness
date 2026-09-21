@@ -38,6 +38,7 @@ import anyio
 from pydantic_ai.workspaces import (
     CommandResult,
     FileEntry,
+    SupportsCommands,
     SupportsFilesystem,
     WorkspaceBackend,
     WorkspaceError,
@@ -161,7 +162,7 @@ async def _kill_quietly(process: _DaytonaProcess) -> None:
         pass
 
 
-class DaytonaWorkspaceBackend(WorkspaceBackend, SupportsFilesystem):
+class DaytonaWorkspaceBackend(WorkspaceBackend, SupportsCommands, SupportsFilesystem):
     """A Daytona sandbox behind the Pydantic AI `WorkspaceBackend` protocol."""
 
     def __init__(
