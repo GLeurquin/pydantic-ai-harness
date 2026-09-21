@@ -133,8 +133,8 @@ stopping.
 
 ## Tracing
 
-`BackgroundTools` adds no spans. Core records the original tool call and its immediate "started"
-result. The completed result remains in the agent's message history.
+`BackgroundTools` does not add tracing spans. Pydantic AI records the tool call and its immediate
+"started" result. The completed result remains in the agent's message history.
 
 ## Durable execution
 
