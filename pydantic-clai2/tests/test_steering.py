@@ -5,7 +5,8 @@ from pathlib import Path
 
 import anyio
 import pytest
-from pydantic_ai import Agent
+from pydantic_ai import Agent, AgentRunResult, RunContext
+from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import BinaryContent, ModelRequest, UserPromptPart
 from pydantic_ai.models import Model
 from pydantic_ai.models.test import TestModel
@@ -17,6 +18,28 @@ from pydantic_clai2._app import create_shell
 from pydantic_clai2._session import Session
 from pydantic_clai2.project_settings import ProjectSettings
 from pydantic_clai2.settings_store import SettingsStore
+
+
+async def test_enter_during_run_teardown_queues_follow_up() -> None:
+    finishing, release = anyio.Event(), anyio.Event()
+
+    class PauseAfterRun(AbstractCapability[None]):
+        async def after_run(self, ctx: RunContext[None], *, result: AgentRunResult[str]) -> AgentRunResult[str]:
+            finishing.set()
+            await release.wait()
+            return result
+
+    session = Session(Agent(TestModel(), deps_type=type(None), capabilities=[PauseAfterRun()]), deps=None)
+    async with editor() as (live, _, _):
+        live.steer = session.steer
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(session.prompt, 'start')
+            await finishing.wait()
+            live.buffer.replace('follow up during teardown')
+            live.feed('enter')
+            assert await live.read() == 'follow up during teardown'
+            release.set()
+        assert not session.steer('finished')
 
 
 @pytest.fixture

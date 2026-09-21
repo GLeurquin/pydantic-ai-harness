@@ -226,6 +226,7 @@ class Session(Generic[DepsT, OutputT]):
             self._running = False
 
     async def _stream(self, ctx: RunContext[DepsT], events: AsyncIterable[AgentStreamEvent]) -> None:
+        self._accepting_steering = True
         self._run_context = ctx
         for content in self._pending_steering:
             ctx.enqueue(*content, priority='asap')
@@ -241,11 +242,17 @@ class Session(Generic[DepsT, OutputT]):
                 if self.on_stream_event is not None:
                     await self.on_stream_event(event)
                 yield event
+            self._accepting_steering = False
+            self._run_context = None
 
         # Preserve a supplied agent's handler instead of replacing its observers.
         handler = self.agent.event_stream_handler
-        if handler is not None:
-            await handler(ctx, observed())
-        else:
-            async for _ in observed():
-                pass
+        try:
+            if handler is not None:
+                await handler(ctx, observed())
+            else:
+                async for _ in observed():
+                    pass
+        finally:
+            self._accepting_steering = False
+            self._run_context = None
