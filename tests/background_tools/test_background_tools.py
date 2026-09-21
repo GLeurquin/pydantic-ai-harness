@@ -1114,6 +1114,27 @@ class TestBackgroundTools:
         assert _ack_seen(result.all_messages())
         assert _follow_up_seen(result.all_messages(), 'completed.\nResult: researched topic')
 
+    async def test_callable_selector_decision_stays_stable_for_each_model_response(self) -> None:
+        selector_calls = 0
+
+        def changing_selector(ctx: RunContext[object], tool_def: ToolDefinition) -> bool:
+            nonlocal selector_calls
+            selector_calls += 1
+            return selector_calls > 1
+
+        agent = Agent(
+            _model_calling('research', '{"run_in_background": true}'),
+            capabilities=[BackgroundTools(tools=changing_selector)],
+        )
+
+        @agent.tool_plain(metadata={'background': 'optional'})
+        async def research() -> str:  # pyright: ignore[reportUnusedFunction]
+            return 'researched'
+
+        result = await agent.run('go')
+
+        assert result.output == 'done'
+
     async def test_model_omitting_flag_runs_tool_inline(self) -> None:
         def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
             if any(isinstance(part, ToolReturnPart) for message in messages for part in message.parts):

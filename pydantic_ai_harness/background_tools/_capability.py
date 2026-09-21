@@ -178,6 +178,9 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
     _send: MemoryObjectSendStream[_Outcome] = field(init=False, repr=False, compare=False)
     _outcomes: MemoryObjectReceiveStream[_Outcome] = field(init=False, repr=False, compare=False)
     """Outcomes in completion order; `after_node_run` takes them as they arrive."""
+    _prepared_modes: dict[str, Literal['always', 'optional'] | None] = field(
+        default_factory=dict[str, Literal['always', 'optional'] | None], init=False, repr=False, compare=False
+    )
 
     def get_instructions(self) -> AgentInstructions[AgentDepsT] | None:
         return _instructions
@@ -199,10 +202,20 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
         return None
 
     async def prepare_tools(self, ctx: RunContext[AgentDepsT], tool_defs: list[ToolDefinition]) -> list[ToolDefinition]:
-        return [
-            _with_run_in_background(tool_def) if await self._background_mode(ctx, tool_def) == 'optional' else tool_def
-            for tool_def in tool_defs
-        ]
+        self._prepared_modes.clear()
+        prepared: list[ToolDefinition] = []
+        for tool_def in tool_defs:
+            mode = await self._background_mode(ctx, tool_def)
+            self._prepared_modes[tool_def.name] = mode
+            prepared.append(_with_run_in_background(tool_def) if mode == 'optional' else tool_def)
+        return prepared
+
+    async def _prepared_mode(
+        self, ctx: RunContext[AgentDepsT], tool_def: ToolDefinition
+    ) -> Literal['always', 'optional'] | None:
+        if tool_def.name in self._prepared_modes:
+            return self._prepared_modes[tool_def.name]
+        return await self._background_mode(ctx, tool_def)
 
     async def before_tool_validate(
         self,
@@ -212,7 +225,7 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
         tool_def: ToolDefinition,
         args: RawToolArgs,
     ) -> RawToolArgs:
-        if await self._background_mode(ctx, tool_def) != 'optional':
+        if await self._prepared_mode(ctx, tool_def) != 'optional':
             return args
         parsed: Any = args
         if isinstance(args, str):
@@ -238,7 +251,7 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
         args: dict[str, Any],
         handler: WrapToolExecuteHandler,
     ) -> Any:
-        mode = await self._background_mode(ctx, tool_def)
+        mode = await self._prepared_mode(ctx, tool_def)
         # The flag was removed before validation, so it is read from the call as the model sent it.
         if mode is None or (mode == 'optional' and call.args_as_dict().get(_RUN_IN_BACKGROUND) is not True):
             return await handler(args)

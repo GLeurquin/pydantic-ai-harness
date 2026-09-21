@@ -126,8 +126,13 @@ stopping.
 - A sequential tool can overlap background work that started earlier. Tools that must not overlap
   should protect their shared data or should not run in the background.
 - Realtime sessions already run tools concurrently, so `BackgroundTools` leaves them unchanged.
-- Tool-result and tool-error hooks see the initial "started" message, not the later result. Validate
-  or limit the result inside the tool when this matters.
+- The later result message does not pass through tool-result or tool-error hooks. Validate or limit
+  the result inside the tool when this matters.
+
+## Tracing
+
+`BackgroundTools` adds no spans. Core records the original tool call and its immediate "started"
+result. The completed result remains in the agent's message history.
 
 ## Durable execution
 
