@@ -27,6 +27,7 @@ import anyio
 from pydantic_ai.workspaces import (
     CommandResult,
     FileEntry,
+    SupportsCommands,
     SupportsFilesystem,
     WorkspaceBackend,
     WorkspaceError,
@@ -103,7 +104,7 @@ def _file_entry(entry: modal.types.FileInfo, path: str) -> FileEntry:
     return FileEntry(name=entry.name, path=path, is_dir=is_dir, size=None if is_dir else entry.size)
 
 
-class ModalWorkspaceBackend(WorkspaceBackend, SupportsFilesystem):
+class ModalWorkspaceBackend(WorkspaceBackend, SupportsCommands, SupportsFilesystem):
     """A Modal sandbox implementing Pydantic AI's ``WorkspaceBackend`` protocol.
 
     Construction performs no I/O. The first operation creates or attaches to a sandbox, and the
