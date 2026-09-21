@@ -114,16 +114,9 @@ def _format_background_result(tool_name: str, task_id: str, result: Any) -> tupl
 
 @dataclass
 class BackgroundTools(AbstractCapability[AgentDepsT]):
-    """Run selected tools concurrently with the current agent run.
+    """Run selected tools in the background while the agent continues.
 
-    When the model calls a tool that matches the selector, the capability spawns the
-    tool's handler in a run-owned task and immediately returns an acknowledgment
-    string to the agent. When the task completes, its result (or error) is formatted as
-    user content and enqueued via
-    [`RunContext.enqueue`][pydantic_ai.tools.RunContext.enqueue] as an `'asap'` message.
-    Pydantic AI's pending message queue delivers it on the next model request, or
-    redirects the agent to a fresh request if it would otherwise end, so the model
-    receives the result and can act on it while the run remains active.
+    The model receives a "started" message right away and the result when the tool finishes.
 
     ```python
     import asyncio
@@ -140,36 +133,24 @@ class BackgroundTools(AbstractCapability[AgentDepsT]):
         return f'Research findings for {query!r}'
     ```
 
-    Combine with [`SetToolMetadata`][pydantic_ai.capabilities.SetToolMetadata] to mark
-    several tools at once, or with `FunctionToolset.with_metadata(...)` to mark a whole
-    toolset. Or pass a name list / predicate via `tools=...` to ignore metadata entirely.
-    Set the key to `'optional'` instead of `True` to let the model choose per call.
+    Pass `tools=...` to select tools by name, metadata, or a function. Use
+    `metadata={'background': 'optional'}` to let the model decide for each call.
 
     Warning:
-        Run cleanup cancels live background tasks and waits for them, so async tools must
-        propagate cancellation. A synchronous tool's worker thread cannot be interrupted, so
-        cleanup waits until it returns. It runs concurrently with the agent: keep the state
-        it touches thread-safe.
+        Cancelling a run also cancels its background tools. Async tools must allow cancellation.
+        Python cannot stop a synchronous tool before it returns.
 
-    Exceptions raised by the tool become failure messages; running out of retries or raising
-    `CancelledError` ends the run, as it would for a sequential tool. See the docs page for
-    streaming, realtime and durable-execution limits.
+    See the Background Tools guide for streaming, realtime, and durable execution.
     """
 
     tools: ToolSelector[AgentDepsT] = field(default_factory=lambda: {'background': True})
-    """Which tools should run in the background.
+    """Which tools always run in the background.
 
-    - `dict[str, Any]` (default `{'background': True}`): tools whose metadata deeply
-      includes the given key-value pairs.
-    - `'all'`: every tool in the agent's toolset (rarely what you want).
-    - `Sequence[str]`: tools with matching names.
-    - Callable `(ctx, tool_def) -> bool | Awaitable[bool]`: custom predicate.
+    Use `'all'`, a list of names, matching metadata, or a function that chooses each tool. The
+    default is `{'background': True}`.
 
-    A tool with `metadata={'background': 'optional'}` that this selector does not match gains an
-    optional boolean `run_in_background` argument, which the tool function never receives; a call
-    runs in the background only when the model passes `true`. Optional mode always uses the
-    `background` metadata key, regardless of this selector. Tools that cannot run in the background
-    in this run (sequential tools, sequential runs, realtime sessions) are left unchanged.
+    A tool marked with `metadata={'background': 'optional'}` lets the model decide for each call
+    unless this selector chooses it. Sequential tools and realtime sessions run normally.
     """
 
     id: str | None = 'background_tools'

@@ -1,6 +1,6 @@
 ---
 title: Background Tools
-description: Run selected tools concurrently -- the agent gets an immediate acknowledgment and receives the result as a follow-up message.
+description: Let the agent keep working while selected tools run, then give it each result.
 ---
 
 # Background Tools
@@ -27,11 +27,11 @@ agent = Agent('openai:gpt-5.6-sol', capabilities=[BackgroundTools()])
 @agent.tool_plain(metadata={'background': True})
 async def slow_research(query: str) -> str:
     """Research a topic thoroughly. Runs in the background."""
-    await asyncio.sleep(60)  # stand-in for a long-running job
+    await asyncio.sleep(60)  # Replace with real work.
     return f'Research findings for {query!r}'
 ```
 
-By default any tool with `metadata={'background': True}` runs in the background. The agent's instructions are augmented automatically so the model knows it shouldn't block waiting for the result.
+By default, any tool with `metadata={'background': True}` runs in the background. `BackgroundTools` tells the model how to continue while the tool runs.
 
 > While Pydantic AI Harness is on 0.x releases, the API may change between minor releases; when it does, deprecation warnings and release-note migration guidance tell you (or your agent) exactly how to upgrade. See the [version policy](index.md#version-policy).
 
@@ -50,18 +50,18 @@ BackgroundTools(tools={'kind': 'research'})       # custom metadata key
 # By name
 BackgroundTools(tools=['slow_research', 'deep_dig'])
 
-# By predicate
+# By function
 BackgroundTools(tools=lambda ctx, td: td.name.startswith('research_'))
 ```
 
 ### Letting the model decide
 
-Set the `background` metadata key to `'optional'` instead of `True`. The tool gains a
-`run_in_background` argument, and a call runs in the background only when the model passes
-`true`. Optional mode always uses the `background` metadata key, even when `tools` uses another
-selector. A tool that `tools` selects always runs in the background, whatever its metadata.
-Sequential tools and realtime sessions cannot run tools in the background, so they do not
-get the argument. A tool that already has a `run_in_background` parameter is rejected.
+Use `metadata={'background': 'optional'}` to let the model decide for each call. The model sees a
+`run_in_background` argument, but your function does not receive it.
+
+A tool selected by `BackgroundTools(tools=...)` always runs in the background. Sequential tools and
+realtime sessions run normally. Do not use `run_in_background` as one of your function's own
+parameters.
 
 ```python
 from pydantic_ai import Agent
@@ -96,61 +96,47 @@ agent = Agent(
 )
 ```
 
-## Result delivery
+## What happens during a run
 
-If the run remains active, a finished background tool produces a follow-up message:
+The model first receives a message saying that the tool has started. The message includes a task ID.
+When the tool finishes, the model receives the result with the same task ID.
 
-- On success: `Background tool 'X' (task <id>) completed.\nResult: <return value>`
-- On failure: `Background tool 'X' (task <id>) failed: <error>`
+Text and files returned by the tool are sent to the model. Application-only metadata is not sent.
+If a tool fails unexpectedly, the model sees the error type but not the error message, which may
+contain private information. Running out of retries or raising `CancelledError` ends the run. A tool
+can call `ctx.cancel()` to stop the run and the other background tools.
 
-The task ID matches the acknowledgment. The follow-up is user content, not another tool return.
-`ToolReturn.return_value` and `ToolReturn.content` remain model-visible, including multimodal
-content. Application-only `ToolReturn.metadata` and deferred tool names from `ToolReturn.tools` are
-not carried into the follow-up. Retries and deferred calls are reported as text failures. Expected
-tool errors include their message. For unexpected exceptions, the model sees only the exception
-type because messages may contain private details. Running out of retries, or raising
-`CancelledError`, ends the run, as it would for a sequential tool. Call `ctx.cancel()` when a
-background tool needs to stop the run and all live background tasks.
-
-## Execution behavior
-
-Normal completion waits for background tasks and delivers their follow-ups. Concurrent runs track
-their tasks separately. A pending background call counts toward `tool_calls_limit` until it finishes.
-A sequential tool can overlap background work acknowledged earlier; coordinate shared state inside
-tools that must be mutually exclusive. If a run pauses for
-[deferred tools](/ai/tools-toolsets/deferred-tools/) or ends through cancellation, a usage limit, or
-an error, live tasks are cancelled and their results are dropped. Run cleanup waits for the cancelled
-tasks to finish, also when the run itself is cancelled by an outer anyio cancel scope, so async tools
-must propagate cancellation. Suppressing cancellation can keep cleanup open.
+A normal run waits for its background tools to finish. A pending call counts toward
+`tool_calls_limit`. If the run pauses or stops early, unfinished tools are cancelled and their
+results are not delivered. Async tools must allow cancellation; ignoring it can prevent the run from
+stopping.
 
 !!! warning
-    Python cannot interrupt a synchronous tool's worker thread, so cleanup waits until the tool
-    returns, even when the run was cancelled.
+    Python cannot stop a synchronous tool before it returns. Cancelling the run will still wait for
+    that tool.
 
-    A synchronous background tool runs concurrently with the agent. Make mutable dependencies and
-    other shared state it uses thread-safe.
+    A synchronous background tool may change shared data at the same time as the agent or another
+    tool. Protect shared data from concurrent changes.
 
 ## Limitations
 
-- **Output streaming**: `run_stream()` and `run_stream_sync()` wait for background tools that are still running when the streamed response begins, but do not deliver their results. The response may therefore only acknowledge that the work is still running. Use `run_stream_events()`, `run()`, `run_sync()`, or a fully driven `agent.iter()` when the final output must include background results.
-- **Realtime**: Realtime sessions already execute tools concurrently. Selected tools stay on the
-  realtime session's native tool-result path, so their original result content is preserved and
-  they do not return the background acknowledgment.
-- **Result hooks and tracing**: The follow-up user message does not pass through tool-result or
-  tool-error hooks. A wrap-based capability nested inside `BackgroundTools` can inspect the handler
-  outcome; capabilities outside it observe the immediate acknowledgment. Screen and bound the result
-  inside the tool when enforcement must not depend on ordering.
+- `run_stream()` and `run_stream_sync()` wait for background tools but do not deliver their results.
+  The streamed response may only say that the work has started. Use `run_stream_events()`, `run()`,
+  `run_sync()`, or consume all of `agent.iter()` when the final response needs the result.
+- A sequential tool can overlap background work that started earlier. Tools that must not overlap
+  should protect their shared data or should not run in the background.
+- Realtime sessions already run tools concurrently, so `BackgroundTools` leaves them unchanged.
+- Tool-result and tool-error hooks see the initial "started" message, not the later result. Validate
+  or limit the result inside the tool when this matters.
 
 ## Durable execution
 
-`BackgroundTools` works with Temporal durable execution. A replay rebuilds the run-local background
-task while Temporal restores the tool handler from workflow history.
+`BackgroundTools` works with Temporal.
 
-With DBOS, ordinary function tools are not automatically durable steps. Delegate the durable work
-inside a background tool to an explicit DBOS step.
+With DBOS, put durable work in an explicit DBOS step and call that step from the background tool.
 
-A tool handler running inside a durable activity or task must not call `ctx.enqueue()`. Replay
-restores the handler's return value, not messages enqueued while the handler ran.
+Do not call `ctx.enqueue()` inside a durable activity or task. Its messages cannot be restored during
+replay.
 
 ## API
 
@@ -182,5 +168,5 @@ agent = Agent.from_file('agent.yaml', custom_capability_types=[BackgroundTools])
 
 ## Further reading
 
-- [Pydantic AI message history -- injecting messages mid-run](/ai/core-concepts/message-history/#injecting-messages-mid-run) -- the underlying primitive
+- [Injecting messages during a run](/ai/core-concepts/message-history/#injecting-messages-mid-run)
 - [Pydantic AI capabilities](/ai/capabilities/overview/)
