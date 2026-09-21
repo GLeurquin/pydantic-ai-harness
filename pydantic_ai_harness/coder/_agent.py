@@ -19,7 +19,6 @@ class _CoderWorkspace(AbstractCapability[object]):
 
 coder_agent = Agent[object](
     name='coder',
-    instructions='You are a coding agent built on Pydantic AI.',
     capabilities=[Coder[object](), _CoderWorkspace()],
 )
 """Model-less coding agent for CLIs that load `module:variable` targets."""

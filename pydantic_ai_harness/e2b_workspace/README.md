@@ -8,8 +8,16 @@ Run agent tools against files and processes in an E2B environment. `E2BWorkspace
 
 ## Install
 
+uv:
+
 ```bash
 uv add "pydantic-ai-harness[e2b]"
+```
+
+pip:
+
+```bash
+pip install "pydantic-ai-harness[e2b]"
 ```
 
 Set `E2B_API_KEY` for authentication. The integration requires E2B SDK 2.34.0 or later.

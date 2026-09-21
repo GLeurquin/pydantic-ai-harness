@@ -14,7 +14,7 @@ Run agent tools against files and processes in a Daytona environment. `DaytonaWo
 ## Install
 
 ```bash
-uv add "pydantic-ai-harness[daytona]"
+pip/uv-add "pydantic-ai-harness[daytona]"
 ```
 
 Set `DAYTONA_API_KEY` for authentication. The integration uses Daytona SDK 0.198.x.

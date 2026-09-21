@@ -8,8 +8,17 @@ Run agent tools against files and processes in a Modal container. `ModalWorkspac
 
 ## Install
 
+uv:
+
 ```bash
 uv add "pydantic-ai-harness[modal]"
+uv run modal token new
+```
+
+pip:
+
+```bash
+pip install "pydantic-ai-harness[modal]"
 modal token new
 ```
 
