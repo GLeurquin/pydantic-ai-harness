@@ -14,8 +14,11 @@ Run agent tools against files and processes in a Modal container. `ModalWorkspac
 ## Install
 
 ```bash
-uv add "pydantic-ai-harness[modal]"
-modal token new
+pip/uv-add "pydantic-ai-harness[modal]"
+```
+
+```bash
+py-cli modal token new
 ```
 
 Modal SDK 1.5.2 or later is required for its filesystem operations. Credentials can also be supplied through `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`.
