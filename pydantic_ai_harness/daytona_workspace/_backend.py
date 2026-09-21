@@ -196,21 +196,21 @@ class DaytonaWorkspaceBackend(WorkspaceBackend, SupportsCommands, SupportsFilesy
         self._lock = anyio.Lock()
 
     @property
-    def workspace(self) -> Awaitable[AsyncSandbox]:
-        return self._create_or_attach()
-
-    @property
     def ref(self) -> WorkspaceRef | None:
         return self._ref
 
-    async def _create_or_attach(self) -> AsyncSandbox:
-        """Hydrate the client and the sandbox on first use, once.
+    async def get_client(self) -> AsyncSandbox:
+        """Return the typed `daytona.AsyncSandbox`, creating or attaching to it on first use.
+
+        This is the sandbox handle, not the `AsyncDaytona` API client passed as `client=`.
 
         The only place `_client` and `_workspace` are read, so nothing can reach an
         unhydrated one: both stay optional and every other method comes through here.
         The lock serializes concurrent first uses -- two callers each creating a sandbox
-        would leave the loser billed and unreferenced. A failed acquisition releases a
-        client this backend owns, so a retry starts from a clean one.
+        would leave the loser billed and unreferenced. A failed acquisition releases an
+        API client this backend owns, so a retry starts from a clean one. Attaching by `ref`
+        to a sandbox that no longer exists raises `WorkspaceUnavailableError`; it does not
+        create a replacement.
         """
         async with self._lock:
             if (workspace := self._workspace) is not None:
@@ -245,22 +245,22 @@ class DaytonaWorkspaceBackend(WorkspaceBackend, SupportsCommands, SupportsFilesy
 
     async def read_bytes(self, path: str) -> bytes:
         async with self._translated_filesystem_error(path):
-            return await (await self.workspace).fs.download_file(path, _REQUEST_TIMEOUT)
+            return await (await self.get_client()).fs.download_file(path, _REQUEST_TIMEOUT)
 
     async def write_bytes(self, path: str, data: bytes) -> None:
         parent = posixpath.dirname(path)
         async with self._translated_filesystem_error(path):
             if parent not in ('', '.', '/'):
-                mkdir = await (await self.workspace).process.exec(
+                mkdir = await (await self.get_client()).process.exec(
                     f'mkdir -p -- {shlex.quote(parent)}', timeout=_REQUEST_TIMEOUT
                 )
                 if mkdir.exit_code != 0:
                     raise WorkspaceError(mkdir.result or f'Could not create {parent!r}.')
-            await (await self.workspace).fs.upload_file(data, path, timeout=_REQUEST_TIMEOUT)
+            await (await self.get_client()).fs.upload_file(data, path, timeout=_REQUEST_TIMEOUT)
 
     async def stat(self, path: str) -> FileEntry:
         async with self._translated_filesystem_error(path):
-            entry = await (await self.workspace).fs.get_file_info(path, request_timeout=_REQUEST_TIMEOUT)
+            entry = await (await self.get_client()).fs.get_file_info(path, request_timeout=_REQUEST_TIMEOUT)
         return FileEntry(
             name=posixpath.basename(path.rstrip('/')),
             path=path,
@@ -270,7 +270,7 @@ class DaytonaWorkspaceBackend(WorkspaceBackend, SupportsCommands, SupportsFilesy
 
     async def list_dir(self, path: str) -> Sequence[FileEntry]:
         async with self._translated_filesystem_error(path):
-            entries = await (await self.workspace).fs.list_files(path, request_timeout=_REQUEST_TIMEOUT)
+            entries = await (await self.get_client()).fs.list_files(path, request_timeout=_REQUEST_TIMEOUT)
         return [
             FileEntry(
                 name=entry.name,
@@ -283,15 +283,15 @@ class DaytonaWorkspaceBackend(WorkspaceBackend, SupportsCommands, SupportsFilesy
 
     async def make_dir(self, path: str) -> None:
         async with self._translated_filesystem_error(path):
-            await (await self.workspace).fs.create_folder(path, '755', request_timeout=_REQUEST_TIMEOUT)
+            await (await self.get_client()).fs.create_folder(path, '755', request_timeout=_REQUEST_TIMEOUT)
 
     async def remove(self, path: str) -> None:
         async with self._translated_filesystem_error(path):
-            await (await self.workspace).fs.delete_file(path, recursive=True, request_timeout=_REQUEST_TIMEOUT)
+            await (await self.get_client()).fs.delete_file(path, recursive=True, request_timeout=_REQUEST_TIMEOUT)
 
     async def exists(self, path: str) -> bool:
         try:
-            await (await self.workspace).fs.get_file_info(path, request_timeout=_REQUEST_TIMEOUT)
+            await (await self.get_client()).fs.get_file_info(path, request_timeout=_REQUEST_TIMEOUT)
         except daytona.DaytonaNotFoundError:
             return False
         except WorkspaceError:
@@ -360,7 +360,7 @@ class DaytonaWorkspaceBackend(WorkspaceBackend, SupportsCommands, SupportsFilesy
     async def working_dir(self) -> str:
         """Return the filesystem-canonical default directory inside the workspace."""
         if self._canonical_working_dir is None:
-            sandbox = await self.workspace
+            sandbox = await self.get_client()
             try:
                 result = await sandbox.process.exec('pwd -P', cwd=self._working_dir, timeout=_REQUEST_TIMEOUT)
             except Exception as error:
@@ -411,7 +411,7 @@ class DaytonaWorkspaceBackend(WorkspaceBackend, SupportsCommands, SupportsFilesy
             _command_line(command, shell), absolute_path('cwd', cwd) if cwd is not None else self._working_dir, env
         )
         session_id = f'pydantic-ai-{uuid.uuid4().hex}'
-        process = (await self.workspace).process
+        process = (await self.get_client()).process
         created = False
         try:
             with anyio.fail_after(_REQUEST_TIMEOUT):

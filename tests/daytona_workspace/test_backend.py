@@ -34,20 +34,20 @@ async def started(**settings: Any) -> DaytonaWorkspaceBackend:
     """Build a backend and resolve it now.
 
     Constructing one does no I/O, so a test that wants to assert on what creating or attaching
-    did has to touch the sandbox first. Awaiting the property is that touch.
+    did has to touch the sandbox first. Awaiting `get_client()` is that touch.
     """
     backend = DaytonaWorkspaceBackend(**settings)
-    await backend.workspace
+    await backend.get_client()
     return backend
 
 
 class TestConformance:
-    async def test_sandbox_property_is_lazy_and_reuses_handle(self, fake_daytona: FakeDaytona) -> None:
+    async def test_get_client_is_lazy_and_reuses_the_sandbox(self, fake_daytona: FakeDaytona) -> None:
         backend = DaytonaWorkspaceBackend()
-        pending = backend.workspace
         assert not fake_daytona.sandboxes
-        sandbox = await pending
-        assert await backend.workspace is sandbox
+        sandbox = await backend.get_client()
+        assert await backend.get_client() is sandbox
+        assert fake_daytona.sandboxes == [sandbox]
 
     async def test_run_and_filesystem_protocols(self, fake_daytona: FakeDaytona) -> None:
         backend = await started()
@@ -263,16 +263,33 @@ class TestLazyOperations:
         assert await backend.working_dir() == '/workspace'
         assert backend.ref is not None
 
-    @pytest.mark.parametrize('operation', ['read_bytes', 'exists', 'working_dir'])
+    @pytest.mark.parametrize('operation', ['run', 'write_bytes'])
+    async def test_ref_is_recorded_by_the_first_operation(self, fake_daytona: FakeDaytona, operation: str) -> None:
+        backend = DaytonaWorkspaceBackend()
+        assert backend.ref is None
+        if operation == 'run':
+            await backend.run(['true'])
+        else:
+            await backend.write_bytes('/note', b'data')
+        assert backend.ref == WorkspaceRef(provider='daytona', id=fake_daytona.sandboxes[0].id)
+
+    @pytest.mark.parametrize('operation', ['run', 'read_bytes', 'exists', 'working_dir'])
     async def test_missing_sandbox_remains_terminal(self, fake_daytona: FakeDaytona, operation: str) -> None:
         backend = DaytonaWorkspaceBackend(ref=WorkspaceRef(provider='daytona', id='missing'))
-        with pytest.raises(WorkspaceUnavailableError):
-            if operation == 'read_bytes':
-                await backend.read_bytes('/note')
-            elif operation == 'exists':
-                await backend.exists('/note')
-            else:
-                await backend.working_dir()
+        for _ in range(2):
+            with pytest.raises(WorkspaceUnavailableError):
+                if operation == 'run':
+                    await backend.run(['true'])
+                elif operation == 'read_bytes':
+                    await backend.read_bytes('/note')
+                elif operation == 'exists':
+                    await backend.exists('/note')
+                else:
+                    await backend.working_dir()
+        # A dead reference is reported, not replaced with a fresh environment.
+        assert backend.ref == WorkspaceRef(provider='daytona', id='missing')
+        assert not fake_daytona.create_params
+        assert not fake_daytona.sandboxes
 
     async def test_deadline_bounds_acquisition(self, fake_daytona: FakeDaytona) -> None:
         fake_daytona.create_gate = asyncio.Event()
@@ -345,13 +362,13 @@ async def test_attach_finds_target_among_several(fake_daytona: FakeDaytona) -> N
     fake_daytona.sandbox('sb-decoy')
     target = fake_daytona.sandbox('sb-target')
     backend = DaytonaWorkspaceBackend(ref=WorkspaceRef(provider='daytona', id=target.id))
-    assert (await backend.workspace).id == target.id
+    assert (await backend.get_client()).id == target.id
 
 
 async def test_supplied_client_is_used_and_never_closed(fake_daytona: FakeDaytona) -> None:
     client = daytona.AsyncDaytona()
     backend = DaytonaWorkspaceBackend(client=client)
-    await backend.workspace
+    await backend.get_client()
     assert fake_daytona.sandboxes[0].client is client
     await backend.disconnect()
     assert fake_daytona.closed_clients == 0
@@ -361,7 +378,7 @@ async def test_supplied_client_survives_acquisition_failure(fake_daytona: FakeDa
     client = daytona.AsyncDaytona()
     fake_daytona.create_error = DaytonaConnectionError('boom')
     with pytest.raises(WorkspaceError):
-        await DaytonaWorkspaceBackend(client=client).workspace
+        await DaytonaWorkspaceBackend(client=client).get_client()
     assert fake_daytona.closed_clients == 0
 
 
@@ -369,7 +386,7 @@ async def test_create_timeout_is_translated(fake_daytona: FakeDaytona, monkeypat
     monkeypatch.setattr('pydantic_ai_harness.daytona_workspace._backend._CREATE_TIMEOUT', 0.05)
     fake_daytona.create_gate = asyncio.Event()
     with pytest.raises(WorkspaceTimeoutError, match='creation did not complete'):
-        await DaytonaWorkspaceBackend().workspace
+        await DaytonaWorkspaceBackend().get_client()
     assert fake_daytona.closed_clients == 1
 
 
@@ -378,7 +395,7 @@ async def test_attach_timeout_is_translated(fake_daytona: FakeDaytona, monkeypat
     monkeypatch.setattr('pydantic_ai_harness.daytona_workspace._backend._CREATE_TIMEOUT', 0.05)
     fake_daytona.get_gate = asyncio.Event()
     with pytest.raises(WorkspaceTimeoutError, match='connection did not complete'):
-        await DaytonaWorkspaceBackend(ref=WorkspaceRef(provider='daytona', id=existing.id)).workspace
+        await DaytonaWorkspaceBackend(ref=WorkspaceRef(provider='daytona', id=existing.id)).get_client()
 
 
 async def test_deadline_bounds_attach(fake_daytona: FakeDaytona) -> None:
@@ -399,4 +416,4 @@ async def test_attach_error_is_translated(fake_daytona: FakeDaytona) -> None:
     fake_daytona.get_error = DaytonaConnectionError('control plane down')
     backend = DaytonaWorkspaceBackend(ref=WorkspaceRef(provider='daytona', id=existing.id))
     with pytest.raises(WorkspaceError):
-        await backend.workspace
+        await backend.get_client()

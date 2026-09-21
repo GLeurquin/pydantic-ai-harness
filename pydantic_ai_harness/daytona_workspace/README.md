@@ -82,9 +82,9 @@ async def resume(ref: WorkspaceRef) -> str:
         return result.output
 ```
 
-Retain a `DaytonaWorkspaceBackend` and await its `workspace` property to obtain the typed `daytona.AsyncSandbox`. An existing native handle can be supplied with `DaytonaWorkspaceBackend(workspace=native)`. Supply either a native handle or `ref=`, not both; the caller retains ownership of an injected handle and its SDK client.
+Retain a `DaytonaWorkspaceBackend` and call `await backend.get_client()` to obtain the typed `daytona.AsyncSandbox`. The first call creates or attaches to the environment; later calls return the same object. An existing native handle can be supplied with `DaytonaWorkspaceBackend(workspace=native)`. Supply either a native handle or `ref=`, not both; the caller retains ownership of an injected handle and its SDK client.
 
-Without `client=`, the backend creates and owns its local SDK client on first acquisition. Retain that backend and call `disconnect()` in `finally`. This example also deletes the remote workspace using the native SDK:
+Without `client=`, the backend creates and owns its `AsyncDaytona` API client on first acquisition. Retain that backend and call `disconnect()` in `finally`. This example also deletes the remote workspace using the native SDK:
 
 ```python
 from pydantic_ai import Agent, RunContext
@@ -99,7 +99,7 @@ async def working_directory(ctx: RunContext[None]) -> str:
 async def run_with_cleanup() -> str:
     backend = DaytonaWorkspaceBackend()
     try:
-        native = await backend.workspace
+        native = await backend.get_client()
         try:
             result = await agent.run('What is the working directory?', workspace=backend)
             return result.output
@@ -111,7 +111,7 @@ async def run_with_cleanup() -> str:
 
 To keep the remote workspace, omit `native.delete()` and retain the outer `finally` that disconnects the backend. `disconnect()` closes only a backend-owned SDK client; it does not delete or start a workspace, or close a caller-supplied client. Finish in-flight operations before disconnecting or leaving the SDK client context.
 
-## Lifetimes and durable execution
+## Lifetimes and cleanup
 
 `auto_stop_minutes` defaults to 60 for newly created environments; `0` disables automatic stopping. Creation disables automatic deletion, so stopping retains disk. Finishing an agent run does not stop or delete the environment. Attached environments retain their existing lifecycle settings.
 
@@ -119,7 +119,9 @@ The snapshot, environment variables, network settings, and automatic-stop interv
 
 Commands use Daytona process sessions. Argument lists are shell-quoted into command strings. The command `timeout` covers acquisition, session startup, and waiting for completion. The backend attempts bounded session deletion after completion, timeout, cancellation, or a result-reading failure. A failed cleanup request may leave the command running; these deadlines bound local waits and do not guarantee server-side termination. Complete output is buffered, and timeout errors include output received so far.
 
-Cancelling creation can leave an environment whose ID the caller did not receive. Automatic stopping does not delete its disk. Durable applications own creation coordination, reference persistence, and workspace restoration inside their activities. The capability does not make remote operations replay-safe or restore application wrappers automatically. Apply workspace policies when restoring the backend, then use `ctx.workspace` in tools.
+Cancelling creation can leave an environment whose ID the caller did not receive. Automatic stopping does not delete its disk.
+
+Pydantic AI does not stop or delete environments. Deleting them, and choosing the `auto_stop_minutes` that applies to the ones you lose track of, is the application's job. `DaytonaWorkspace.get_workspace` performs no I/O, so a backend can be rebuilt from a `WorkspaceRef` wherever the run continues, including under a durable execution engine; the reference carries no credentials, so each worker needs its own `DAYTONA_API_KEY` or `client=`. See [Workspaces](https://pydantic.dev/docs/ai/core-concepts/workspace/) for how a run selects and restores its workspace.
 
 The capability emits no additional telemetry spans. Core agent and tool spans cover calls made through tools; the Daytona SDK retains its own instrumentation behavior.
 

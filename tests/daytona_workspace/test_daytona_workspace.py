@@ -31,7 +31,7 @@ async def test_capability_is_lazy_and_forwards_options(fake_daytona: FakeDaytona
     backend = capability.get_workspace(_ctx(), ref=None)
     assert isinstance(backend, DaytonaWorkspaceBackend)
     assert not fake_daytona.create_params
-    await backend.workspace
+    await backend.get_client()
     params = fake_daytona.create_params[0]
     assert (params.snapshot, params.auto_stop_interval, params.env_vars, params.network_block_all) == (
         'python',
@@ -44,7 +44,7 @@ async def test_capability_is_lazy_and_forwards_options(fake_daytona: FakeDaytona
 async def test_explicit_ref_attaches_without_creation(fake_daytona: FakeDaytona) -> None:
     existing = fake_daytona.sandbox('existing')
     backend = DaytonaWorkspaceBackend(ref=WorkspaceRef(provider='daytona', id=existing.id))
-    await backend.workspace
+    await backend.get_client()
     assert backend.ref == WorkspaceRef(provider='daytona', id=existing.id)
     assert not fake_daytona.create_params
 
@@ -57,9 +57,9 @@ async def test_foreign_ref_is_declined_and_backend_rejects_it() -> None:
 
 async def test_native_ref_conflict_and_native_identity(fake_daytona: FakeDaytona) -> None:
     seed = DaytonaWorkspaceBackend()
-    native = await seed.workspace
+    native = await seed.get_client()
     backend = DaytonaWorkspaceBackend(workspace=native)
-    assert await backend.workspace is native
+    assert await backend.get_client() is native
     assert backend.ref == WorkspaceRef(provider='daytona', id=native.id)
     with pytest.raises(ValueError, match='either `workspace` or `ref`'):
         DaytonaWorkspaceBackend(workspace=native, ref=backend.ref)
@@ -129,7 +129,7 @@ async def test_concurrent_acquisition_and_operation_overlap(fake_daytona: FakeDa
     results: list[object] = []
 
     async def acquire() -> None:
-        results.append(await backend.workspace)
+        results.append(await backend.get_client())
 
     async with anyio.create_task_group() as tg:
         tg.start_soon(acquire)
