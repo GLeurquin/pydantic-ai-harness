@@ -9,6 +9,7 @@ import functools
 import hashlib
 import os
 import posixpath
+import re
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any, Concatenate, Literal, ParamSpec
@@ -16,7 +17,7 @@ from typing import Any, Concatenate, Literal, ParamSpec
 from pydantic_ai.exceptions import ModelRetry, UserError
 from pydantic_ai.tools import AgentDepsT, RunContext
 from pydantic_ai.toolsets import FunctionToolset
-from pydantic_ai.workspaces import WorkspaceError, WorkspaceUnavailableError
+from pydantic_ai.workspaces import WorkspaceError, WorkspaceFileEntry, WorkspaceUnavailableError
 
 from pydantic_ai_harness._workspace import workspace_path
 from pydantic_ai_harness.filesystem._events import DirectoryListedEvent, FileReadEvent, FileWrittenEvent
@@ -322,6 +323,17 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
     def _is_hidden(path: str) -> bool:
         return any(part.startswith('.') and part != '.' for part in path.split('/'))
 
+    async def _walk_entries(self, ctx: RunContext[AgentDepsT], directory: str) -> list[WorkspaceFileEntry]:
+        """Walk a workspace filesystem without assuming command execution is available."""
+        entries: list[WorkspaceFileEntry] = []
+        pending = [directory]
+        while pending:
+            current = pending.pop()
+            children = sorted(await ctx.workspace.list_dir(current), key=lambda entry: entry.path)
+            entries.extend(children)
+            pending.extend(entry.path for entry in reversed(children) if entry.is_dir)
+        return entries
+
     @_recoverable
     async def read_file(
         self,
@@ -565,31 +577,31 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
             str: Matching lines formatted as file:line_number:text.
         """
         root, resolved = await self._resolve(ctx, path, check_allowed=False)
-        per_file_cap = max(1, self._max_search_results + 1)
-        result = await ctx.workspace.run(
-            ['grep', '-rn', '-I', '-H', '-m', str(per_file_cap), '--', pattern, resolved],
-            timeout=30,
-        )
-        if result.exit_code >= 2:
-            raise ModelRetry(result.stderr.strip() or f'grep exited with code {result.exit_code}.')
-        if result.exit_code != 0 and not result.stdout:
-            return 'No matches found.'
+        try:
+            expression = re.compile(pattern)
+        except re.error as e:
+            raise ModelRetry(f'Invalid regular expression: {e}.') from e
 
         matches: list[str] = []
-        for line in result.stdout.splitlines():
-            parts = line.split(':', 2)
-            if len(parts) != 3:
-                continue
-            absolute, line_number, text = parts
-            rel = self._relative(root, absolute)
-            if self._is_hidden(rel) or not self._is_accessible(rel):
+        for entry in await self._walk_entries(ctx, resolved):
+            rel = self._relative(root, entry.path)
+            if entry.is_dir or self._is_hidden(rel) or not self._is_accessible(rel):
                 continue
             if include_glob is not None and not self._matches(rel, include_glob):
                 continue
-            if len(matches) >= self._max_search_results:
-                matches.append(f'[... truncated at {self._max_search_results} matches]')
-                break
-            matches.append(f'{rel}:{line_number}:{text}')
+            try:
+                data = await ctx.workspace.read_bytes(entry.path)
+            except FileNotFoundError:  # deleted mid-walk
+                continue
+            if b'\x00' in data[:8192]:
+                continue
+            for line_number, text in enumerate(data.decode('utf-8', errors='replace').splitlines(), start=1):
+                if expression.search(text) is None:
+                    continue
+                if len(matches) >= self._max_search_results:
+                    matches.append(f'[... truncated at {self._max_search_results} matches]')
+                    return '\n'.join(matches)
+                matches.append(f'{rel}:{line_number}:{text}')
         return '\n'.join(matches) if matches else 'No matches found.'
 
     @_recoverable
@@ -615,31 +627,27 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
         if not root_entry.is_dir:
             raise NotADirectoryError(f'Not a directory: {path}')
 
-        # Patterns follow glob semantics: `*` stays in one directory and `**/` recurses.
-        # `find -name` always recurses, so translate the two documented pattern shapes;
-        # other shapes anchor on `-path` (whose `*` may cross separators).
-        if pattern.startswith('**/') and '/' not in pattern[3:]:
-            argv = ['find', resolved, '-name', pattern[3:]]
-        elif '/' not in pattern:
-            argv = ['find', resolved, '-mindepth', '1', '-maxdepth', '1', '-name', pattern]
-        else:
-            argv = ['find', resolved, '-path', posixpath.join(resolved, pattern)]
-        result = await ctx.workspace.run(argv, timeout=30)
-        if result.exit_code != 0:
-            raise ModelRetry(result.stderr.strip() or f'find exited with code {result.exit_code}.')
-
-        matches: list[str] = []
-        for absolute in sorted(result.stdout.splitlines()):
-            rel = self._relative(root, absolute)
+        entries = await self._walk_entries(ctx, resolved)
+        candidates: list[tuple[str, WorkspaceFileEntry]] = []
+        for entry in entries:
+            rel = self._relative(root, entry.path)
+            search_relative = posixpath.relpath(entry.path, resolved)
             if self._is_hidden(rel) or not self._is_accessible(rel):
                 continue
+            if '/' not in pattern:
+                matched = posixpath.dirname(search_relative) in ('', '.') and fnmatch.fnmatch(entry.name, pattern)
+            elif pattern.startswith('**/') and '/' not in pattern[3:]:
+                matched = fnmatch.fnmatch(entry.name, pattern[3:])
+            else:
+                matched = fnmatch.fnmatch(search_relative, pattern)
+            if matched:
+                candidates.append((rel, entry))
+
+        matches: list[str] = []
+        for rel, entry in sorted(candidates, key=lambda item: item[0]):
             if len(matches) >= self._max_find_results:
                 matches.append(f'[... truncated at {self._max_find_results} matches]')
                 break
-            try:
-                entry = await ctx.workspace.stat(absolute)
-            except FileNotFoundError:  # deleted mid-walk
-                continue
             matches.append(f'{rel}{"/" if entry.is_dir else ""}')
         return '\n'.join(matches) if matches else 'No matches found.'
 

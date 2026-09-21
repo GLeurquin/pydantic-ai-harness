@@ -72,8 +72,8 @@ nothing; for untrusted work attach a container- or VM-backed workspace instead.
 | `create_directory` | Create a directory and any missing parents. |
 | `file_info` | Metadata for a file or directory (type, size and, for text files, line count and content hash). |
 
-`search_files` and `find_files` run `grep` and `find` inside the workspace, so the
-workspace image needs both.
+`search_files` and `find_files` walk the workspace's filesystem interface directly. They work with
+filesystem-only workspaces and do not require a shell, `grep`, or `find`.
 
 ## Events
 

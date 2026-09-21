@@ -16,7 +16,6 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 from pydantic_ai.workspaces import (
-    CommandResult,
     LocalWorkspace,
     Workspace,
     WorkspaceCommand,
@@ -24,7 +23,6 @@ from pydantic_ai.workspaces import (
     WorkspaceFileEntry,
     WorkspaceRef,
     WorkspaceResult,
-    WorkspaceTimeoutError,
     WorkspaceUnavailableError,
     WrapperWorkspace,
 )
@@ -189,51 +187,13 @@ class _LocalFilesystemBackend:
         return await self.backend.exists(path)
 
 
-class _TimeoutBackend(_LocalFilesystemBackend):
-    """A real local filesystem whose command execution times out."""
+class _FilesystemOnlyBackend(_LocalFilesystemBackend):
+    """A valid workspace backend with native files and no command execution."""
 
-    def __init__(self, backend: LocalWorkspace, error: WorkspaceTimeoutError) -> None:
-        super().__init__(backend)
-        self.error = error
-        self.ref = backend.ref
+    ref = WorkspaceRef(provider='local', id='filesystem-only')
 
     async def working_dir(self) -> str:
         return await self.backend.working_dir()
-
-    async def run(
-        self,
-        command: WorkspaceCommand,
-        *,
-        shell: bool = False,
-        cwd: str | None = None,
-        env: Mapping[str, str] | None = None,
-        timeout: float | None = None,
-    ) -> WorkspaceResult:
-        raise self.error
-
-
-class _ResultBackend(_LocalFilesystemBackend):
-    """A real local filesystem, with a canned result for every command."""
-
-    ref = WorkspaceRef(provider='local', id='result-1')
-
-    def __init__(self, backend: LocalWorkspace, result: CommandResult) -> None:
-        super().__init__(backend)
-        self.result = result
-
-    async def working_dir(self) -> str:
-        return await self.backend.working_dir()
-
-    async def run(
-        self,
-        command: WorkspaceCommand,
-        *,
-        shell: bool = False,
-        cwd: str | None = None,
-        env: Mapping[str, str] | None = None,
-        timeout: float | None = None,
-    ) -> WorkspaceResult:
-        return self.result
 
 
 async def test_error_backend_implements_the_complete_flat_filesystem() -> None:
@@ -677,6 +637,17 @@ async def test_list_directory_rejects_a_path_that_is_not_a_directory(
 # --- search_files ---
 
 
+async def test_search_and_find_work_with_a_filesystem_only_workspace(tmp_path: Path) -> None:
+    (tmp_path / 'a.txt').write_text('needle here\n')
+    workspace = Workspace(_FilesystemOnlyBackend(LocalWorkspace(root=tmp_path)))
+    toolset = _toolset(tmp_path)
+
+    assert await _call(toolset, _ctx(workspace), 'search_files', {'pattern': 'needle'}) == 'a.txt:1:needle here'
+    assert await _call(toolset, _ctx(workspace), 'find_files', {'pattern': '*.txt'}) == 'a.txt'
+    with pytest.raises(UserError, match='does not support command execution'):
+        await workspace.run(['true'])
+
+
 async def test_search_files_reports_every_match_below_the_search_root(tmp_path: Path, workspace: Workspace) -> None:
     (tmp_path / 'a.txt').write_text('needle here\n')
     (tmp_path / 'sub').mkdir()
@@ -745,12 +716,9 @@ async def test_search_files_at_the_result_cap_is_not_marked_truncated(tmp_path: 
     assert result.splitlines() == ['many.txt:1:needle', 'many.txt:2:needle']
 
 
-async def test_search_files_ignores_output_lines_it_cannot_parse(tmp_path: Path) -> None:
-    local = LocalWorkspace(root=tmp_path)
-    workspace = Workspace(_ResultBackend(local, CommandResult(exit_code=1, stdout='malformed\n', stderr='')))
-    result = await _call(_toolset(Path('.')), _ctx(workspace), 'search_files', {'pattern': 'needle'})
-
-    assert result == 'No matches found.'
+async def test_search_files_reports_an_invalid_regular_expression(tmp_path: Path, workspace: Workspace) -> None:
+    with pytest.raises(ModelRetry, match='Invalid regular expression'):
+        await _call(_toolset(tmp_path), _ctx(workspace), 'search_files', {'pattern': '['})
 
 
 # --- find_files ---
@@ -832,12 +800,10 @@ async def test_find_files_at_the_result_cap_is_not_marked_truncated(tmp_path: Pa
     assert result.splitlines() == ['one.py', 'two.py']
 
 
-async def test_find_files_skips_entries_deleted_mid_walk(tmp_path: Path) -> None:
+async def test_find_files_returns_live_files(tmp_path: Path, workspace: Workspace) -> None:
     (tmp_path / 'real.py').write_text('')
-    local = LocalWorkspace(root=tmp_path)
-    listing = CommandResult(exit_code=0, stdout=f'{tmp_path}/ghost.py\n{tmp_path}/real.py\n', stderr='')
-    workspace = Workspace(_ResultBackend(local, listing))
-    result = await _call(_toolset(Path('.')), _ctx(workspace), 'find_files', {'pattern': '*.py'})
+
+    result = await _call(_toolset(tmp_path), _ctx(workspace), 'find_files', {'pattern': '*.py'})
 
     assert result == 'real.py'
 
@@ -1108,45 +1074,6 @@ async def test_backend_failures_are_recoverable_except_the_terminal_ones(
 ) -> None:
     with pytest.raises(expected, match=str(error)):
         await _call(_toolset(Path('.')), _ctx(Workspace(_ErrorBackend(error))), name, args)
-
-
-@pytest.mark.parametrize(
-    ('name', 'args', 'exit_code', 'stderr', 'message'),
-    [
-        ('search_files', {'pattern': 'x'}, 2, 'grep failed', 'grep failed'),
-        ('search_files', {'pattern': 'x'}, 2, '', 'grep exited with code 2.'),
-        ('find_files', {'pattern': '*'}, 1, 'find failed', 'find failed'),
-        ('find_files', {'pattern': '*'}, 1, '', 'find exited with code 1.'),
-    ],
-    ids=['grep-stderr', 'grep-silent', 'find-stderr', 'find-silent'],
-)
-async def test_a_failing_command_is_reported_to_the_model(
-    tmp_path: Path,
-    name: str,
-    args: dict[str, object],
-    exit_code: int,
-    stderr: str,
-    message: str,
-) -> None:
-    local = LocalWorkspace(root=tmp_path)
-    workspace = Workspace(_ResultBackend(local, CommandResult(exit_code=exit_code, stdout='', stderr=stderr)))
-    with pytest.raises(ModelRetry, match=re.escape(message)):
-        await _call(_toolset(Path('.')), _ctx(workspace), name, args)
-
-
-@pytest.mark.parametrize(
-    ('name', 'args'),
-    [('search_files', {'pattern': 'x'}), ('find_files', {'pattern': '*'})],
-)
-async def test_command_backed_search_timeout_is_recoverable(tmp_path: Path, name: str, args: dict[str, object]) -> None:
-    error = WorkspaceTimeoutError('command timed out at /outside/root')
-
-    local = LocalWorkspace(root=tmp_path)
-    workspace = Workspace(_TimeoutBackend(local, error))
-    with pytest.raises(ModelRetry, match=f'{name} timed out') as exc_info:
-        await _call(_toolset(Path('.')), _ctx(workspace), name, args)
-
-    assert '/outside/root' not in str(exc_info.value)
 
 
 async def test_a_path_name_that_is_too_long_is_recoverable(tmp_path: Path, workspace: Workspace) -> None:
