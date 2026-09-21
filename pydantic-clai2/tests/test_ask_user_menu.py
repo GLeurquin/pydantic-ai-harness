@@ -27,7 +27,7 @@ from rich.console import Console
 from rich.text import Text
 
 from pydantic_clai2 import DEFAULT_PLUGINS
-from pydantic_clai2.ask_user_menu import QuestionMenu, TerminalAnswerer, activate, render_answer
+from pydantic_clai2.ask_user_menu import MenuResult, QuestionMenu, TerminalAnswerer, activate, render_answer
 from pydantic_clai2.menu_worker import menu_key
 from pydantic_clai2.plugins import PluginHost
 from pydantic_clai2.prompt_surface import PromptSurface
@@ -133,7 +133,7 @@ def test_inline_terminal_preserves_transcript(keys: list[str], expected: tuple[s
 
 
 async def test_answers_every_question_on_a_settled_screen() -> None:
-    answers = iter([('Patch',), ('api.py', 'db.py')])
+    answers = iter([('Patch',), ('api.py', 'db.py'), ('Submit answers',)])
     screen = ScreenLog()
     answerer = TerminalAnswerer(full_screen=screen, runner=lambda menu: next(answers))
     response = await answerer(AskUserRequest(questions=(APPROACH, TARGETS)))
@@ -355,3 +355,79 @@ def test_wide_characters_wrap_without_losing_choice_text() -> None:
     choices = ''.join(row[2:].strip() for row in rows[1:-1])
     assert label in choices
     assert description.replace(' ', '') in choices.replace(' ', '')
+
+
+@pytest.mark.parametrize('key, expected', [('left', 'previous'), ('right', 'next')])
+def test_question_navigation_keys(key: str, expected: str) -> None:
+    menu = QuestionMenu(question=TARGETS, position=1, total=2)
+    menu.choose('1')
+    assert menu.choose(key) == expected
+    assert menu.selected == {0}
+    assert 'Left/Right' in menu.hint
+    single = QuestionMenu(question=APPROACH, position=1, total=1)
+    assert single.choose(key) is None
+
+
+async def test_navigation_preserves_and_revises_drafts() -> None:
+    steps = iter(
+        [
+            (1, ['left']),
+            (1, ['2']),
+            (2, ['1', 'left']),
+            (1, ['1']),
+            (2, ['2', '3']),
+            (3, ['right']),
+            (3, ['left']),
+            (2, ['1', '3']),
+            (3, ['2']),
+            (1, ['right']),
+            (2, ['right']),
+            (3, ['1']),
+        ]
+    )
+
+    def run(menu: QuestionMenu) -> MenuResult:
+        position, keys = next(steps)
+        assert menu.position == position
+        if position == 3:
+            assert menu.prompt is not None and 'Approach: Refactor' in menu.prompt
+        result: MenuResult = None
+        for key in keys:
+            result = menu.choose(key)
+        return result
+
+    response = await TerminalAnswerer(full_screen=ScreenLog(), runner=run)(
+        AskUserRequest(questions=(APPROACH, TARGETS))
+    )
+    assert response.answers == (
+        AskUserAnswer(header='Approach', selected=('Refactor',)),
+        AskUserAnswer(header='Targets', selected=('db.py',)),
+    )
+
+
+async def test_review_requires_every_question_and_can_cancel() -> None:
+    steps = iter([(1, 'right'), (2, 'right'), (3, '1'), (1, '1'), (2, 'right'), (3, '1'), (2, 'escape')])
+
+    def run(menu: QuestionMenu) -> MenuResult:
+        position, key = next(steps)
+        assert menu.position == position
+        if position == 3:
+            assert menu.prompt is not None and '(unanswered)' in menu.prompt
+        return menu.run(console=Console(file=io.StringIO(), width=100), key_source=lambda: key)
+
+    assert await TerminalAnswerer(full_screen=ScreenLog(), runner=run)(
+        AskUserRequest(questions=(APPROACH, TARGETS))
+    ) == AskUserResponse(cancelled=True)
+
+
+def test_review_supports_large_answer_summaries() -> None:
+    question = Question(
+        header='x' * 25,
+        question='Which?',
+        options=(QuestionOption(label='a' * 50), QuestionOption(label='b' * 50)),
+        multi_select=True,
+    )
+    menus = [QuestionMenu(question=question, position=i + 1, total=10, selected={0, 1}) for i in range(10)]
+    review = TerminalAnswerer.review_menu(menus)
+    assert review.prompt is not None and len(review.prompt) > 500
+    assert review.choose('1') == ('Submit answers',)

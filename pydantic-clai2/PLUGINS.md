@@ -229,6 +229,11 @@ changes its settings (`strategy`, `threshold`, `protected_tokens`,
 
 ### `ask_user`: questions answered from the terminal
 
+For batches, Left/Right moves between questions without losing selections.
+You can revisit and change answers before choosing `Submit answers` on the final
+review screen. Submitting with unanswered questions returns to the first one.
+Single-question prompts submit immediately after choosing an answer.
+
 The second built-in, `ask_user` (`pydantic_clai2.ask_user_menu:activate`), gives
 the model the harness's `AskUser` capability: one tool, `ask_user_question`, for
 asking you one to ten multiple-choice questions when the task is ambiguous. Each

@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
+from typing import Literal, TypeAlias
 
 from pydantic_ai_harness.ask_user import (
     AskUser,
@@ -12,6 +13,7 @@ from pydantic_ai_harness.ask_user import (
     AskUserRequest,
     AskUserResponse,
     Question,
+    QuestionOption,
 )
 from rich.console import Console, RenderableType
 from rich.text import Text
@@ -23,6 +25,8 @@ from .menu_worker import menu_key, run_worker
 from .plugins import FullScreen, PluginHost
 from .prompt_surface import PromptSurface
 
+MenuResult: TypeAlias = tuple[str, ...] | Literal['previous', 'next'] | None
+
 
 @dataclass(kw_only=True)
 class QuestionMenu:
@@ -31,6 +35,7 @@ class QuestionMenu:
     question: Question
     position: int
     total: int
+    prompt: str | None = None
     cursor: int = 0
     selected: set[int] = field(default_factory=set[int])
 
@@ -44,11 +49,14 @@ class QuestionMenu:
     @property
     def hint(self) -> str:
         """Show the available actions without a separate Space-key convention."""
-        action = 'toggle; Done submits' if self.question.multi_select else 'select'
-        return f'Up/Down move - number/Enter {action} - Esc decline'
+        action = 'toggle; Done continues' if self.question.multi_select else 'select'
+        navigation = 'Left/Right questions - ' if self.total > 1 else ''
+        return f'{navigation}Up/Down move - number/Enter {action} - Esc decline'
 
-    def choose(self, key: str) -> tuple[str, ...] | None:
+    def choose(self, key: str) -> MenuResult:
         """Apply a key; return selections only when a nonempty answer is submitted."""
+        if self.total > 1 and key in ('left', 'right'):
+            return 'previous' if key == 'left' else 'next'
         count = len(self.question.options)
         rows = count + int(self.question.multi_select)
         if key in ('up', 'down', 'tab'):
@@ -57,6 +65,7 @@ class QuestionMenu:
             if key != 'enter':
                 self.cursor = int(key) - 1
             if not self.question.multi_select:
+                self.selected = {self.cursor}
                 return (self.question.options[self.cursor].label,)
             if self.cursor == count:
                 if self.selected:
@@ -72,7 +81,9 @@ class QuestionMenu:
         budget = max(3, height // 2)
         choices: list[str] = []
         for index, option in enumerate(self.question.options):
-            marker = ('[x] ' if index in self.selected else '[ ] ') if self.question.multi_select else ''
+            marker = (
+                ('[x] ' if index in self.selected else '[ ] ') if self.question.multi_select or self.selected else ''
+            )
             description = f' - {option.description}' if option.description else ''
             choices.append(f'{index + 1}. {marker}{option.label}{description}')
         if self.question.multi_select:
@@ -97,13 +108,17 @@ class QuestionMenu:
             theme.sgr(theme.MUTED) + truncate(self.hint, width) + '\x1b[0m',
         )
 
-    def run(self, *, console: Console, key_source: Callable[[], str] = menu_key) -> tuple[str, ...] | None:
+    def run(self, *, console: Console, key_source: Callable[[], str] = menu_key) -> MenuResult:
         """Borrow the released editor surface, never entering the alternate screen."""
         surface = console.file
         if not isinstance(surface, PromptSurface):
             surface = PromptSurface(output=surface, size=lambda: console.size)
         try:
-            console.print(Text(self.question.question, style=theme.color(theme.ACCENT)))
+            console.print(
+                Text(
+                    self.prompt if self.prompt is not None else self.question.question, style=theme.color(theme.ACCENT)
+                )
+            )
             with raw_mode():
                 while True:
                     surface.paint(self.frame(width=console.width, height=console.height))
@@ -125,7 +140,7 @@ class TerminalAnswerer:
         *,
         full_screen: FullScreen,
         console: Console | None = None,
-        runner: Callable[[QuestionMenu], tuple[str, ...] | None] | None = None,
+        runner: Callable[[QuestionMenu], MenuResult] | None = None,
     ) -> None:
         """Use the shell handoff for exclusive input ownership, not an alternate screen."""
         self._full_screen = full_screen
@@ -135,16 +150,65 @@ class TerminalAnswerer:
 
     async def __call__(self, request: AskUserRequest, /) -> AskUserResponse:
         """Answer every question or decline the entire request."""
-        answers: list[AskUserAnswer] = []
+        menus = [
+            QuestionMenu(question=question, position=position, total=len(request.questions))
+            for position, question in enumerate(request.questions, start=1)
+        ]
+        position = 0
         async with self._terminal, self._full_screen():
-            for position, question in enumerate(request.questions, start=1):
-                menu = QuestionMenu(question=question, position=position, total=len(request.questions))
+            while True:
+                reviewing = position == len(menus)
+                menu = self.review_menu(menus) if reviewing else menus[position]
                 operation = partial(self._runner, menu) if self._runner else partial(menu.run, console=self._console)
-                selected = await run_worker(operation)
-                if selected is None:
+                result = await run_worker(operation)
+                if result is None:
                     return AskUserResponse(cancelled=True)
-                answers.append(AskUserAnswer(header=question.header, selected=selected))
-        return AskUserResponse(answers=tuple(answers))
+                if result == 'previous':
+                    position = max(0, position - 1)
+                elif result == 'next':
+                    position = min(len(menus), position + 1)
+                elif reviewing:
+                    if result == ('Submit answers',) and all(menu.selected for menu in menus):
+                        break
+                    position = next((i for i, menu in enumerate(menus) if not menu.selected), 0)
+                else:
+                    menu.selected = {i for i, option in enumerate(menu.question.options) if option.label in result}
+                    if len(menus) == 1:
+                        break
+                    position += 1
+        return AskUserResponse(
+            answers=tuple(
+                AskUserAnswer(
+                    header=menu.question.header,
+                    selected=tuple(
+                        option.label for i, option in enumerate(menu.question.options) if i in menu.selected
+                    ),
+                )
+                for menu in menus
+            )
+        )
+
+    @staticmethod
+    def review_menu(menus: list[QuestionMenu]) -> QuestionMenu:
+        """Summarize drafts before submitting the whole batch."""
+        summary = '\n'.join(
+            f'{menu.question.header}: '
+            + (
+                ', '.join(option.label for i, option in enumerate(menu.question.options) if i in menu.selected)
+                or '(unanswered)'
+            )
+            for menu in menus
+        )
+        return QuestionMenu(
+            question=Question(
+                header='Review answers',
+                question='Review your answers before submitting.',
+                options=(QuestionOption(label='Submit answers'), QuestionOption(label='Review answers')),
+            ),
+            prompt=summary,
+            position=len(menus) + 1,
+            total=len(menus) + 1,
+        )
 
 
 def render_answer(event: AskUserAnsweredEvent) -> RenderableType:

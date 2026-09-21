@@ -989,6 +989,11 @@ plugin list. Use `/plugins list` to print it. Plugins are trusted code running a
 
 ## Questions from the model
 
+For batches, Left/Right moves between questions without losing selections.
+You can revisit and change answers before choosing `Submit answers` on the final
+review screen. Submitting with unanswered questions returns to the first one.
+Single-question prompts submit immediately after choosing an answer.
+
 When the task is ambiguous, the model can call `ask_user_question` instead of
 guessing. Questions appear inline, with the conversation still visible above a
 compact numbered picker. Use Up/Down and Enter, or press an option's number to
