@@ -13,7 +13,7 @@ from __future__ import annotations
 import math
 import posixpath
 import shlex
-from collections.abc import AsyncGenerator, Awaitable, Mapping, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
@@ -88,7 +88,8 @@ class E2BWorkspaceBackend(WorkspaceBackend, SupportsCommands, SupportsFilesystem
     Commands and file operations run inside an E2B microVM, so the host is never exposed.
 
     Building one does no I/O. The first operation creates or attaches to a workspace, and the
-    native `e2b.AsyncSandbox` is available by awaiting `workspace`.
+    typed `e2b.AsyncSandbox` is available through `get_client()`. The backend does not kill the
+    sandbox; killing it is the application's job.
 
     Commands run as one-shot operations, with complete output returned after they finish.
 
@@ -144,17 +145,14 @@ class E2BWorkspaceBackend(WorkspaceBackend, SupportsCommands, SupportsFilesystem
         self._created_timeout: int | None = None
         self._lock = anyio.Lock()
 
-    @property
-    def workspace(self) -> Awaitable[e2b.AsyncSandbox]:
-        return self._create_or_attach()
-
-    async def _create_or_attach(self) -> e2b.AsyncSandbox:
-        """Acquire the native E2B sandbox on first use, once, and record its identity.
+    async def get_client(self) -> e2b.AsyncSandbox:
+        """Return the typed `e2b.AsyncSandbox`, creating or attaching to it on first use.
 
         The only place `_workspace` is read, so nothing can reach an unacquired handle:
         it stays optional and every other method comes through here. The lock serializes
         concurrent first uses -- two callers each creating a sandbox would leave the loser
-        billed and unreferenced.
+        billed and unreferenced. Attaching by `ref` to a sandbox that no longer exists raises
+        `WorkspaceUnavailableError`; it does not create a replacement.
         """
         async with self._lock:
             if (workspace := self._workspace) is not None:
@@ -184,32 +182,32 @@ class E2BWorkspaceBackend(WorkspaceBackend, SupportsCommands, SupportsFilesystem
 
     async def read_bytes(self, path: str) -> bytes:
         async with self._translated_filesystem_error(path):
-            return bytes(await (await self.workspace).files.read(path, 'bytes'))
+            return bytes(await (await self.get_client()).files.read(path, 'bytes'))
 
     async def write_bytes(self, path: str, data: bytes) -> None:
         async with self._translated_filesystem_error(path):
-            await (await self.workspace).files.write(path, data)  # pyright: ignore[reportUnknownMemberType]
+            await (await self.get_client()).files.write(path, data)  # pyright: ignore[reportUnknownMemberType]
 
     async def stat(self, path: str) -> FileEntry:
         async with self._translated_filesystem_error(path):
-            return _file_entry(await (await self.workspace).files.get_info(path))
+            return _file_entry(await (await self.get_client()).files.get_info(path))
 
     async def list_dir(self, path: str) -> Sequence[FileEntry]:
         async with self._translated_filesystem_error(path):
-            entries = await (await self.workspace).files.list(path, depth=1)
+            entries = await (await self.get_client()).files.list(path, depth=1)
         return [_file_entry(entry) for entry in entries]
 
     async def make_dir(self, path: str) -> None:
         async with self._translated_filesystem_error(path):
-            await (await self.workspace).files.make_dir(path)
+            await (await self.get_client()).files.make_dir(path)
 
     async def remove(self, path: str) -> None:
         async with self._translated_filesystem_error(path):
-            await (await self.workspace).files.remove(path)
+            await (await self.get_client()).files.remove(path)
 
     async def exists(self, path: str) -> bool:
         async with self._translated_filesystem_error(path):
-            return await (await self.workspace).files.exists(path)
+            return await (await self.get_client()).files.exists(path)
 
     async def _create(self) -> e2b.AsyncSandbox:
         """Provision a fresh E2B sandbox."""
@@ -286,7 +284,7 @@ class E2BWorkspaceBackend(WorkspaceBackend, SupportsCommands, SupportsFilesystem
         result: e2b.CommandResult | None = None
         try:
             with anyio.move_on_after(timeout):
-                sandbox = await self.workspace
+                sandbox = await self.get_client()
                 handle = await sandbox.commands.run(
                     line,
                     background=True,
@@ -362,7 +360,7 @@ class E2BWorkspaceBackend(WorkspaceBackend, SupportsCommands, SupportsFilesystem
         error keeps the extra round trip off successful operations.
         """
         try:
-            sandbox = await self.workspace
+            sandbox = await self.get_client()
             running = await sandbox.is_running()
         except Exception:
             # The classifying probe can itself fail, including with a raw transport error; fall

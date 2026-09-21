@@ -30,7 +30,7 @@ pytestmark = [
 @asynccontextmanager
 async def owned_backend() -> AsyncGenerator[ModalWorkspaceBackend, None]:
     backend = ModalWorkspaceBackend(image='python:3.12-slim')
-    native = await backend.workspace
+    native = await backend.get_client()
     try:
         yield backend
     finally:

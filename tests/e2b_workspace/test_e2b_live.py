@@ -61,7 +61,7 @@ def _unique(prefix: str) -> str:
 async def _owned(**settings: object) -> AsyncGenerator[E2BWorkspaceBackend]:
     """Create a workspace and kill its native handle on the way out."""
     backend = E2BWorkspaceBackend(**settings)  # type: ignore[arg-type]
-    native = await backend.workspace
+    native = await backend.get_client()
     try:
         yield backend
     finally:
@@ -313,7 +313,7 @@ class TestRealLifecycle:
             await owner.write_bytes(marker, b'shared')
 
             attached = E2BWorkspaceBackend(ref=owner.ref)
-            assert (await attached.workspace).sandbox_id == (await owner.workspace).sandbox_id
+            assert (await attached.get_client()).sandbox_id == (await owner.get_client()).sandbox_id
             assert await attached.read_bytes(marker) == b'shared'
 
             assert (await owner.run(['cat', marker], timeout=30)).stdout == 'shared'
@@ -327,7 +327,7 @@ class TestRealLifecycle:
         marker = f'/tmp/{_unique("paused")}.txt'
         async with _owned(sandbox_timeout=120) as owner:
             await owner.write_bytes(marker, b'before-pause')
-            await (await owner.workspace).beta_pause()
+            await (await owner.get_client()).beta_pause()
 
             attached = E2BWorkspaceBackend(ref=owner.ref)
             assert await attached.read_bytes(marker) == b'before-pause'

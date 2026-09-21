@@ -27,20 +27,30 @@ async def started(**settings: Any) -> E2BWorkspaceBackend:
     """Build a backend and resolve it now.
 
     Constructing one does no I/O, so a test that wants to assert on what creating or attaching
-    did has to touch the sandbox first. Awaiting `sandbox` is that touch.
+    did has to touch the sandbox first. Awaiting `get_client()` is that touch.
     """
     backend = E2BWorkspaceBackend(**settings)
-    await backend.workspace
+    await backend.get_client()
     return backend
 
 
 class TestConformance:
-    async def test_sandbox_property_is_lazy_and_reuses_handle(self, fake_e2b: FakeE2B) -> None:
+    async def test_get_client_is_lazy_and_reuses_the_client(self, fake_e2b: FakeE2B) -> None:
         backend = E2BWorkspaceBackend()
-        pending = backend.workspace
         assert not fake_e2b.sandboxes
-        sandbox = await pending
-        assert await backend.workspace is sandbox
+        sandbox = await backend.get_client()
+        assert await backend.get_client() is sandbox
+        assert fake_e2b.sandboxes == [sandbox]
+
+    @pytest.mark.parametrize('operation', ['run', 'write_bytes'])
+    async def test_ref_is_recorded_by_the_first_operation(self, fake_e2b: FakeE2B, operation: str) -> None:
+        backend = E2BWorkspaceBackend()
+        assert backend.ref is None
+        if operation == 'run':
+            await backend.run(['true'])
+        else:
+            await backend.write_bytes('/tmp/file', b'data')
+        assert backend.ref == WorkspaceRef(provider='e2b', id=fake_e2b.sandboxes[0].id)
 
     async def test_backend_implements_run_and_filesystem_protocols(self, fake_e2b: FakeE2B) -> None:
         # Protocol inheritance also checks signatures statically.
@@ -51,7 +61,7 @@ class TestConformance:
     async def test_identity_is_e2b_workspace_id(self, fake_e2b: FakeE2B) -> None:
         backend = await started()
         assert backend.ref == WorkspaceRef(provider='e2b', id='sbx-1')
-        assert await backend.workspace is fake_e2b.sandboxes[0]
+        assert await backend.get_client() is fake_e2b.sandboxes[0]
 
     async def test_shared_run_and_nonzero_result(self, fake_e2b: FakeE2B) -> None:
         fake_e2b.responder = lambda command, timeout: ('', '', 2)
@@ -124,6 +134,17 @@ class TestConnect:
         fake_e2b.connect_error = fake_e2b.sandbox_gone_type('not found')
         with pytest.raises(WorkspaceUnavailableError, match="'sbx-gone'"):
             await started(ref=WorkspaceRef(provider='e2b', id='sbx-gone'))
+        assert not fake_e2b.create_calls
+
+    async def test_an_operation_on_a_gone_sandbox_does_not_create_a_replacement(self, fake_e2b: FakeE2B) -> None:
+        fake_e2b.connect_error = fake_e2b.sandbox_gone_type('not found')
+        backend = E2BWorkspaceBackend(ref=WorkspaceRef(provider='e2b', id='sbx-gone'))
+        for _ in range(2):
+            with pytest.raises(WorkspaceUnavailableError, match="'sbx-gone'"):
+                await backend.run(['true'])
+        assert backend.ref == WorkspaceRef(provider='e2b', id='sbx-gone')
+        assert not fake_e2b.create_calls
+        assert not fake_e2b.sandboxes
 
     async def test_connect_auth_error_is_terminal(self, fake_e2b: FakeE2B) -> None:
         fake_e2b.connect_error = fake_e2b.auth_type('bad key')

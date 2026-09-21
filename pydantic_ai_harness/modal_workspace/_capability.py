@@ -22,8 +22,8 @@ class ModalWorkspace(AbstractCapability[AgentDepsT]):
     """Supply a Modal workspace through `ctx.workspace`.
 
     A run with an explicit `WorkspaceRef` attaches to that workspace. Without a reference, the
-    first workspace operation creates a fresh Modal sandbox. The application owns persistence of
-    the returned reference and the lifecycle of the native Modal handle.
+    first workspace operation creates a fresh Modal sandbox. Pydantic AI does not terminate the
+    sandbox; terminating it is the application's job.
     """
 
     image: str = DEFAULT_IMAGE
