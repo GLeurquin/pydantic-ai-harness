@@ -412,12 +412,15 @@ class TestBackgroundTools:
         assert not _follow_up_seen(stream_result.all_messages(), 'late result')
 
     async def test_run_stream_events_delivers_background_result(self) -> None:
+        release = asyncio.Event()
+
         async def model_fn(
             messages: list[ModelMessage], info: AgentInfo
         ) -> AsyncIterator[str | dict[int, DeltaToolCall]]:
             if _follow_up_seen(messages, "Background tool 'slow'"):
                 yield 'done'
             elif _ack_seen(messages):
+                release.set()
                 yield 'waiting'
             else:
                 yield {0: DeltaToolCall(name='slow', json_args='{}')}
@@ -426,6 +429,7 @@ class TestBackgroundTools:
 
         @agent.tool_plain(metadata={'background': True})
         async def slow() -> str:  # pyright: ignore[reportUnusedFunction]
+            await release.wait()
             return 'value'
 
         output = None
