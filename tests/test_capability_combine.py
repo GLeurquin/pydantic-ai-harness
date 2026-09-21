@@ -73,9 +73,16 @@ from pydantic_ai_harness import (
     SystemReminders,
     ToolOutputLimits,
 )
+from pydantic_ai_harness.ask_user import AskUserRequest, AskUserResponse
 from pydantic_ai_harness.system_reminders import Reminder
 
 pytestmark = pytest.mark.anyio
+
+
+async def _decline(request: AskUserRequest) -> AskUserResponse:
+    """Only here to construct `AskUser`; the combine tests never call a tool."""
+    return AskUserResponse(cancelled=True)  # pragma: no cover
+
 
 _TMP_A = Path(tempfile.mkdtemp(prefix='combine-a-'))
 _TMP_B = Path(tempfile.mkdtemp(prefix='combine-b-'))
@@ -244,7 +251,7 @@ COMBINE_POLICY: dict[str, Policy] = {
         _check_background_tools,
     ),
     # -- Several of these is the normal case, so they stay anonymous. --
-    '_RepairToolArguments': Anonymous('repairing valid arguments again is a no-op'),
+    'RepairToolArguments': Anonymous('repairing valid arguments again is a no-op'),
     '_BoundToolOutputs': Anonymous('Coder-local truncation composes with standalone output policies'),
     'Coder': Anonymous('a packaged harness; composing two is composing their members'),
     'Researcher': Anonymous('a packaged harness; composing two is composing their members'),
@@ -252,6 +259,7 @@ COMBINE_POLICY: dict[str, Policy] = {
     'ClearToolResults': Anonymous('several form an escalation ladder, like `TieredCompaction` tiers'),
     'DeduplicateFileReads': Anonymous('file-read identification is agent-specific; one per `file_key`'),
     'DynamicWorkflow': Anonymous('one per workflow definition'),
+    'FallbackCompaction': Anonymous('drives a fallback chain; several independent chains compose'),
     'InputGuardrail': Anonymous('several guards is the design'),
     'OutputGuardrail': Anonymous('several guards is the design'),
     'PromptInjectionDefender': Anonymous('one per `tool_filter`; several scopes compose'),
@@ -274,6 +282,11 @@ COMBINE_POLICY: dict[str, Policy] = {
     'FileSystem': Collides(
         'its toolset registers `read_file` and friends under fixed names',
         lambda cls: (cls(str(_TMP_A)), cls(str(_TMP_B))),
+    ),
+    'AskUser': Collides(
+        'its toolset registers `ask_user_question` under a fixed name, and two answerers is a conflict, '
+        'not one configuration stated twice',
+        lambda cls: (cls(answerer=_decline), cls(answerer=_decline)),
     ),
     'Shell': Collides(
         'its toolset registers `run_command` and friends under fixed names',
