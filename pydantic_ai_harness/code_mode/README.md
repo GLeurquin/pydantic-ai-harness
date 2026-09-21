@@ -69,8 +69,16 @@ The [harness Quick start](../../README.md#quick-start) wires `CodeMode` up again
 
 Code mode requires the Monty sandbox:
 
+uv:
+
 ```bash
 uv add "pydantic-ai-harness[codemode]"
+```
+
+pip:
+
+```bash
+pip install "pydantic-ai-harness[codemode]"
 ```
 
 The `code-mode` extra is also supported as an alias.
@@ -202,7 +210,7 @@ REPL: a worker crash, a type error, a host-side failure, and a syntax error befo
 Each of those renews the allowance without the model asking for a restart. An ordinary exception
 inside a snippet is not one of them.
 
-Once a session's allowance is spent, every later `run_code` call fails on arrival, including
+Once a session's duration allowance is spent, every later `run_code` call fails on arrival, including
 snippets that would cost almost nothing, because they reuse the same session. Rewriting the code
 does not help. `restart: true` is what recovers it, at the cost of the REPL state that session was
 holding, so any variables, imports, and definitions have to be recreated. `run_code` says as much
@@ -210,6 +218,14 @@ in the retry it returns, and that retry also reports the nested calls the snippe
 restarting does not throw away the only record of them. The behaviour is worth knowing when
 choosing `max_duration_secs`: set it low and a long agent run will spend it on ordinary work and
 pay a restart to continue.
+
+Monty also limits cumulative suspensions with `max_suspensions` (default 1,000 per session).
+External calls, OS callbacks, name lookups and future resolutions each consume this budget, so
+it is not a tool-call count. Consecutive snippets share it. After exhaustion, further host
+interactions fail, although pure Python using existing state may still work. `run_code` includes
+the started-call summary and explicit restart guidance: inspect partial results before continuing,
+since `restart: true` discards REPL state and replaying completed calls repeats their side effects.
+There is no automatic restart or replay for exhaustion.
 
 Nested tool calls are bounded separately by `max_tool_calls`, which defaults to 100 per `run_code`
 call. The budget is reserved before each call is scheduled, so a snippet cannot dispatch more work
@@ -225,25 +241,90 @@ model some calls are missing from what it can see. The list is context for the m
 nothing stops it from calling those tools again, so treat it as informing the next attempt rather
 than preventing a repeat.
 
-Override them with `resource_limits={'max_duration_secs': 10, 'max_memory': 134_217_728}` and
+Override them with `resource_limits={'max_duration_secs': 10, 'max_memory': 134_217_728, 'max_suspensions': 10_000}` and
 `max_tool_calls=25`. Pass `resource_limits='unlimited'` only when another execution boundary
-supplies equivalent limits.
+supplies equivalent limits. It removes the time and memory caps, but leaves Monty's default
+suspension budget in place; suspensions cannot be unlimited.
 
 When `CodeMode` runs inside a Temporal workflow, it disables `max_duration_secs`, including an
 explicit override. `run_code` is replayed in workflow code, so measuring elapsed time there could
-make replay choose a different path from the recorded workflow. The memory cap still applies. Put
+make replay choose a different path from the recorded workflow. The memory and suspension caps still apply. Put
 time-bounded work behind a Temporal activity instead.
 
 ## REPL state
 
 State persists between `run_code` calls within the same agent run -- variables, imports, and function definitions carry over. Pass `restart: true` in the tool call to reset state. If a worker crash or host-side execution failure invalidates the session, `run_code` returns a model retry that reports the reset; the next snippet must recreate any required state.
 
+## Eager execution
+
+Normally, `CodeMode` waits for the model to finish writing a `run_code` call before it
+runs any code. Set `eager=True` to start sooner:
+
+```python
+from pydantic_ai import Agent
+from pydantic_ai_harness import CodeMode
+
+agent = Agent(
+    'openai:gpt-5.6-sol',
+    capabilities=[CodeMode(eager=True)],
+)
+```
+
+For example, suppose the model produces this code one line at a time:
+
+```python
+first = await fetch_item(item_id=1)
+second = await fetch_item(item_id=2)
+[first, second]
+```
+
+With eager mode, the first call to `fetch_item` can begin as soon as the first line is
+complete. `CodeMode` continues receiving the remaining lines at the same time. Without
+eager mode, neither call begins until the model has produced the whole snippet.
+
+The code still counts as one `run_code` call. It uses one REPL session, one tool-call limit,
+and one combined result. Hooks on `fetch_item` and other tools called by the code still run.
+Hooks around `run_code` itself run only after the model has finished writing the call, so
+they cannot approve or change lines that eager mode has already run.
+
+Configured Monty resource limits still apply. Eager fragments and the remaining code share
+the same session duration and memory allowances.
+
+Keep these limitations in mind:
+
+- Eager mode cannot undo side effects from code that has already run.
+- If the model later requests `restart: true`, some work may run again.
+- If the model changes an earlier line while streaming, `CodeMode` resets the REPL and asks
+  the model to send the code again.
+- Eager mode trusts that the provider preserves the streamed `run_code` part and its tool
+  name. If a provider removes or renames the part, the work that already ran cannot be
+  undone.
+- Eager execution is used only when `run_code` is the first tool call in a model response.
+  Later tool calls wait for normal dispatch so they run in the order the model requested.
+- Eager mode is disabled when using durable execution such as Temporal or DBOS.
+- Eager mode needs asyncio, like the rest of the sandbox executor.
+- If a statement is interrupted before it finishes, for example because the call failed
+  validation, the session restarts and the next snippet must recreate its state.
+- Nested tools called from eager statements must cooperate with asyncio cancellation. When
+  a run ends or a streamed call is invalidated, `CodeMode` cancels the in-flight work and
+  waits a bounded time (currently 5 seconds) for it to release. Work that does not release
+  in time is abandoned; it cannot start further tool calls.
+- Tools called from statements that ran early are traced before the `run_code` span opens.
+
 ## Temporal durability
 
 Install both integrations:
 
+uv:
+
 ```bash
 uv add "pydantic-ai-harness[codemode,temporal]"
+```
+
+pip:
+
+```bash
+pip install "pydantic-ai-harness[codemode,temporal]"
 ```
 
 Construct the named agent and its stable-ID toolsets outside the workflow, then attach
@@ -390,6 +471,7 @@ Code runs inside [Monty](https://github.com/pydantic/monty), a sandboxed Python 
 - No `import *`
 - Filesystem I/O needs an `os_access` handler or a `mount`; `os.getenv`/`os.environ` need an `os_access` handler
 - Tools requiring approval or with deferred (`CallDeferred`) execution are sandboxed like any other tool; without a `HandleDeferredToolCalls` (or equivalent) capability on the agent to resolve them inline, calling one from `run_code` raises an error that surfaces to the model as a retry
+- Tool results reach the sandbox in the JSON shape their generated stub declares, since the stub is derived from the tool's JSON schema: `Decimal`, `UUID` and `datetime` arrive as strings, and mapping keys are stringified, so a `dict[int, str]` of `{1: 'a'}` arrives as `{'1': 'a'}`. `bytes` and `bytearray` are the exception: Monty carries binary natively, so they cross unchanged even though the stub declares `str` for them
 
 ## API
 
