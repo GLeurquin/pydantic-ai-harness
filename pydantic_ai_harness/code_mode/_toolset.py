@@ -108,26 +108,26 @@ def _in_temporal_workflow(ctx: RunContext[object]) -> bool:
 
 
 def _check_monty_sandbox_url(url: str) -> None:
-    """Reject plaintext `ws://` to non-loopback hosts.
+    """Reject plaintext `ws://` unless the host is a loopback IP literal.
 
     The WebSocket frames carry tool dispatches, mount reads, and `os_access` results, so a
     plaintext connection to a remote host would let an on-path attacker read and forge them.
-    `ws://` stays available for loopback: a local relay or a TLS-terminating sidecar.
+    `ws://` stays available for a local relay or TLS-terminating sidecar on `127.0.0.1` or
+    `[::1]`. Names such as `localhost` are not accepted: what they resolve to is up to the
+    resolver, not this check.
     """
     split = urlsplit(url)
     if split.scheme != 'ws':
         return
     host = split.hostname or ''
-    if host == 'localhost':
-        return
     try:
         if ip_address(host).is_loopback:
             return
     except ValueError:
         pass
     raise UserError(
-        f'`CodeMode.monty_sandbox_url` uses plaintext `ws://` for remote host {host!r}. '
-        'Use `wss://`, or a loopback address for a local relay.'
+        f'`CodeMode.monty_sandbox_url` uses plaintext `ws://` for host {host!r}. '
+        'Use `wss://`, or a loopback IP address such as `ws://127.0.0.1:<port>` for a local relay.'
     )
 
 

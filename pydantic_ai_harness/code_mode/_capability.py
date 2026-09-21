@@ -130,7 +130,7 @@ class CodeMode(AbstractCapability[AgentDepsT]):
 
     The URL points to a relay or any server that bridges each WebSocket connection to a Monty
     worker. Only execution moves: tool dispatch, mounts, `os_access`, and print capture stay
-    host-side over the connection. Plaintext `ws://` is accepted for loopback hosts only.
+    host-side over the connection. Plaintext `ws://` is accepted for loopback IP literals only.
     Not available inside a Temporal workflow. See the Code Mode guide for the transport's
     per-turn deadline.
     """

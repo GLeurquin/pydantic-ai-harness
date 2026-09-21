@@ -71,7 +71,8 @@ async def _serve_relay(host: str, port: int, monty_bin: str) -> None:  # pragma:
 
     async with serve(handler, host, port, max_size=None) as server:
         bound_host, bound_port = next(iter(server.sockets)).getsockname()[:2]
-        print(f'ws://{bound_host}:{bound_port}', flush=True)
+        authority = f'[{bound_host}]' if ':' in bound_host else bound_host
+        print(f'ws://{authority}:{bound_port}', flush=True)
         await asyncio.get_running_loop().create_future()
 
 

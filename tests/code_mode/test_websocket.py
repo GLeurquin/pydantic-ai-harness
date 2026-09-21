@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import shutil
 import socket
 import sys
 from collections.abc import AsyncIterator
@@ -24,6 +23,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_monty import MountDir
+from pydantic_monty._binary import find_monty_binary  # the lookup `Monty()` uses for local workers
 
 from pydantic_ai_harness import CodeMode
 from tests.code_mode import websocket_relay  # pyright: ignore[reportMissingTypeStubs]
@@ -41,15 +41,11 @@ def anyio_backend() -> str:
 @pytest.fixture
 async def websocket_relay_url() -> AsyncIterator[str]:
     """Start the protocol relay on an ephemeral loopback port."""
-    monty_bin = shutil.which('monty')
-    if monty_bin is None:  # pragma: no cover
-        pytest.fail('The `monty` binary is required for the WebSocket transport test.')
-
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         str(_RELAY_SCRIPT),
         '--monty-bin',
-        monty_bin,
+        find_monty_binary(),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -169,10 +165,13 @@ def _text_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
 
 @pytest.mark.parametrize(
     'url',
-    ['ws://sandbox.example.com:8799/monty', 'ws://192.0.2.1:8799', 'ws:///monty'],
+    ['ws://sandbox.example.com:8799/monty', 'ws://192.0.2.1:8799', 'ws://localhost:8799', 'ws:///monty'],
 )
 async def test_plaintext_remote_sandbox_url_rejected(url: str) -> None:
-    """`ws://` to a non-loopback host fails when the toolset enters, before any connection is dialed."""
+    """`ws://` to anything but a loopback IP literal fails at toolset enter, before any dial.
+
+    `localhost` is a name, and names are only as loopback as the resolver says they are.
+    """
     agent: Agent[None, str] = Agent(
         FunctionModel(_text_model),
         capabilities=[CodeMode(monty_sandbox_url=url)],
@@ -183,10 +182,10 @@ async def test_plaintext_remote_sandbox_url_rejected(url: str) -> None:
 
 @pytest.mark.parametrize(
     'url',
-    ['ws://127.0.0.1:8799', 'ws://localhost:8799', 'ws://[::1]:8799', 'wss://sandbox.example.com/monty'],
+    ['ws://127.0.0.1:8799', 'ws://[::1]:8799', 'wss://sandbox.example.com/monty'],
 )
 async def test_loopback_or_tls_sandbox_url_accepted(url: str) -> None:
-    """Loopback `ws://` and any `wss://` URL pass validation; workers dial lazily, not at enter."""
+    """Loopback-literal `ws://` and any `wss://` URL pass validation; workers dial lazily, not at enter."""
     agent: Agent[None, str] = Agent(FunctionModel(_text_model), capabilities=[CodeMode(monty_sandbox_url=url)])
     result = await agent.run('no run_code call, so nothing dials')
     assert result.output == 'done'
