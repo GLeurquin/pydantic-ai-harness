@@ -230,6 +230,8 @@ changes its settings (`strategy`, `threshold`, `protected_tokens`,
 ### `ask_user`: questions answered from the terminal
 
 For batches, Left/Right moves between questions without losing selections.
+The question and choices update in place; navigating does not add repeated
+questions to the transcript.
 You can revisit and change answers before choosing `Submit answers` on the final
 review screen. Submitting with unanswered questions returns to the first one.
 Single-question prompts submit immediately after choosing an answer.

@@ -114,7 +114,8 @@ harness AskUser capability with an inline numbered picker as its answerer, so
 the model can ask the user multiple-choice questions mid-run through
 ask_user_question. The conversation remains visible. Enter or a number selects;
 for multiple selections it toggles, then Done continues. For batches, Left/Right
-moves between questions and preserves selections. A final review screen submits
+moves between questions and preserves selections. The question and choices update
+in place without adding navigation steps to the transcript. A final review screen submits
 all answers together; unanswered questions must be completed first. /plugins disable ask_user removes the tool. To answer the
 questions somewhere other than the terminal, declare ask_user again with a
 module whose activate(host) calls host.add(AskUser(answerer=...)) with your own

@@ -99,11 +99,18 @@ class QuestionMenu:
                 prefix = '> ' if index == self.cursor and line_index == 0 else '  '
                 role = theme.ACCENT if index == self.cursor else theme.INFO
                 lines.append(theme.sgr(role) + truncate(prefix + line.plain, width) + '\x1b[0m')
-        visible = max(1, budget - 2)
+        prompt = Text(self.prompt if self.prompt is not None else self.question.question)
+        prompt_lines = prompt.wrap(console, width=max(1, width), overflow='fold')
+        prompt_budget = max(0, budget - 3)
+        prompt_rows = [line.plain for line in prompt_lines[:prompt_budget]]
+        if len(prompt_lines) > prompt_budget and prompt_rows:
+            prompt_rows[-1] = truncate(truncate(prompt_rows[-1], max(0, width - 4)) + ' ...', width)
+        visible = max(1, budget - 2 - len(prompt_rows))
         start = min(focus, max(0, len(lines) - visible))
         title = truncate(self.title, width)
         return (
             theme.sgr(theme.ACCENT, bold=True) + title + '\x1b[0m',
+            *(theme.sgr(theme.ACCENT) + row + '\x1b[0m' for row in prompt_rows),
             *lines[start : start + visible],
             theme.sgr(theme.MUTED) + truncate(self.hint, width) + '\x1b[0m',
         )
@@ -114,22 +121,21 @@ class QuestionMenu:
         if not isinstance(surface, PromptSurface):
             surface = PromptSurface(output=surface, size=lambda: console.size)
         try:
-            console.print(
-                Text(
-                    self.prompt if self.prompt is not None else self.question.question, style=theme.color(theme.ACCENT)
-                )
-            )
             with raw_mode():
-                while True:
-                    surface.paint(self.frame(width=console.width, height=console.height))
-                    key = key_source()
-                    if key in ('escape', 'ctrl-c'):
-                        return None
-                    result = self.choose(key)
-                    if result is not None:
-                        return result
+                return self.read(surface=surface, console=console, key_source=key_source)
         finally:
             surface.release()
+
+    def read(self, *, surface: PromptSurface, console: Console, key_source: Callable[[], str] = menu_key) -> MenuResult:
+        """Update an already-owned surface without writing to the transcript."""
+        while True:
+            surface.paint(self.frame(width=console.width, height=console.height))
+            key = key_source()
+            if key in ('escape', 'ctrl-c'):
+                return None
+            result = self.choose(key)
+            if result is not None:
+                return result
 
 
 class TerminalAnswerer:
@@ -156,26 +162,39 @@ class TerminalAnswerer:
         ]
         position = 0
         async with self._terminal, self._full_screen():
-            while True:
-                reviewing = position == len(menus)
-                menu = self.review_menu(menus) if reviewing else menus[position]
-                operation = partial(self._runner, menu) if self._runner else partial(menu.run, console=self._console)
-                result = await run_worker(operation)
-                if result is None:
-                    return AskUserResponse(cancelled=True)
-                if result == 'previous':
-                    position = max(0, position - 1)
-                elif result == 'next':
-                    position = min(len(menus), position + 1)
-                elif reviewing:
-                    if result == ('Submit answers',) and all(menu.selected for menu in menus):
-                        break
-                    position = next((i for i, menu in enumerate(menus) if not menu.selected), 0)
-                else:
-                    menu.selected = {i for i, option in enumerate(menu.question.options) if option.label in result}
-                    if len(menus) == 1:
-                        break
-                    position += 1
+            surface = self._console.file
+            if not isinstance(surface, PromptSurface):
+                surface = PromptSurface(output=surface, size=lambda: self._console.size)
+            try:
+                with raw_mode():
+                    while True:
+                        reviewing = position == len(menus)
+                        menu = self.review_menu(menus) if reviewing else menus[position]
+                        operation = (
+                            partial(self._runner, menu)
+                            if self._runner
+                            else partial(menu.read, surface=surface, console=self._console)
+                        )
+                        result = await run_worker(operation)
+                        if result is None:
+                            return AskUserResponse(cancelled=True)
+                        if result == 'previous':
+                            position = max(0, position - 1)
+                        elif result == 'next':
+                            position = min(len(menus), position + 1)
+                        elif reviewing:
+                            if result == ('Submit answers',) and all(menu.selected for menu in menus):
+                                break
+                            position = next((i for i, menu in enumerate(menus) if not menu.selected), 0)
+                        else:
+                            menu.selected = {
+                                i for i, option in enumerate(menu.question.options) if option.label in result
+                            }
+                            if len(menus) == 1:
+                                break
+                            position += 1
+            finally:
+                surface.release()
         return AskUserResponse(
             answers=tuple(
                 AskUserAnswer(

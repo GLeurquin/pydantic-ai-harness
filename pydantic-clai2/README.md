@@ -990,6 +990,8 @@ plugin list. Use `/plugins list` to print it. Plugins are trusted code running a
 ## Questions from the model
 
 For batches, Left/Right moves between questions without losing selections.
+The question and choices update in place; navigating does not add repeated
+questions to the transcript.
 You can revisit and change answers before choosing `Submit answers` on the final
 review screen. Submitting with unanswered questions returns to the first one.
 Single-question prompts submit immediately after choosing an answer.

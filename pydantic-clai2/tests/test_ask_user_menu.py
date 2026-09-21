@@ -25,6 +25,7 @@ from pydantic_ai_harness.ask_user import (
 from rich.cells import cell_len
 from rich.console import Console
 from rich.text import Text
+from surface_terminal import SurfaceTerminal
 
 from pydantic_clai2 import DEFAULT_PLUGINS
 from pydantic_clai2.ask_user_menu import MenuResult, QuestionMenu, TerminalAnswerer, activate, render_answer
@@ -242,7 +243,8 @@ async def test_default_runner_reuses_editor_surface(monkeypatch: pytest.MonkeyPa
     response = await TerminalAnswerer(full_screen=ScreenLog(), console=console)(AskUserRequest(questions=(APPROACH,)))
     assert response.answers == (AskUserAnswer(header='Approach', selected=('Patch',)),)
     assert 'Earlier conversation' in output.getvalue()
-    assert 'How should we do it?' in '\n'.join(surface.transcript.frame(width=80, height=24).rows)
+    assert 'How should we do it?' not in '\n'.join(surface.transcript.frame(width=80, height=24).rows)
+    assert 'How should we do it?' in output.getvalue()
     assert '\x1b[?1049' not in output.getvalue()
 
 
@@ -338,7 +340,7 @@ def test_option_description_preserves_explicit_line_breaks() -> None:
     )
     menu = QuestionMenu(question=question, position=1, total=1)
     rows = [Text.from_ansi(row).plain for row in menu.frame(width=80, height=24)]
-    assert rows[1:4] == ['> 1. First - First step', '  ', '  Second step']
+    assert rows[2:5] == ['> 1. First - First step', '  ', '  Second step']
 
 
 def test_wide_characters_wrap_without_losing_choice_text() -> None:
@@ -431,3 +433,75 @@ def test_review_supports_large_answer_summaries() -> None:
     review = TerminalAnswerer.review_menu(menus)
     assert review.prompt is not None and len(review.prompt) > 500
     assert review.choose('1') == ('Submit answers',)
+
+
+@pytest.mark.parametrize('finish', ['submit', 'escape', 'failure'])
+async def test_batch_repaints_in_place_without_polluting_history(monkeypatch: pytest.MonkeyPatch, finish: str) -> None:
+    terminal = SurfaceTerminal(width=100, height=30)
+    surface = PromptSurface(output=terminal, size=lambda: (100, 30))
+    surface.write('Earlier conversation\n')
+    console = Console(file=surface, width=100, height=30)
+    steps = iter(
+        [
+            ('Approach (question 1 of 2)', 'left'),
+            ('Approach (question 1 of 2)', '2'),
+            ('Targets (question 2 of 2)', '1'),
+            ('Targets (question 2 of 2)', 'left'),
+            ('Approach (question 1 of 2)', 'right'),
+            ('Targets (question 2 of 2)', '3'),
+            ('Review answers', 'right'),
+            ('Review answers', 'finish'),
+        ]
+    )
+    frames: list[str] = []
+
+    def read_key(*, timeout: float) -> str:
+        title, key = next(steps)
+        visible = '\n'.join(terminal.lines())
+        frames.append(visible)
+        assert title in visible
+        assert 'Earlier conversation' in '\n'.join(terminal.history + terminal.lines())
+        assert 'How should we do it?' not in '\n'.join(terminal.history)
+        assert 'Which files?' not in '\n'.join(terminal.history)
+        assert '\x1b[?25h' not in terminal.getvalue()
+        if title.startswith('Approach'):
+            assert 'How should we do it?' in visible and 'Which files?' not in visible
+        elif title.startswith('Targets'):
+            assert 'Which files?' in visible and 'How should we do it?' not in visible
+        else:
+            assert 'Approach: Patch' in visible and 'Targets: api.py' in visible
+        if key != 'finish':
+            return key
+        if finish == 'failure':
+            raise OSError('reader failed')
+        return '1' if finish == 'submit' else 'escape'
+
+    monkeypatch.setattr('pydantic_clai2.menu_worker.read_key', read_key)
+    answerer = TerminalAnswerer(full_screen=ScreenLog(), console=console)
+    request = AskUserRequest(questions=(APPROACH, TARGETS))
+    if finish == 'failure':
+        with pytest.raises(OSError, match='reader failed'):
+            await answerer(request)
+    else:
+        response = await answerer(request)
+        assert response.cancelled == (finish == 'escape')
+        if finish == 'submit':
+            assert response.answers == (
+                AskUserAnswer(header='Approach', selected=('Patch',)),
+                AskUserAnswer(header='Targets', selected=('api.py',)),
+            )
+    assert frames[0] == frames[1]
+    assert frames[-1] == frames[-2]
+    assert terminal.getvalue().count('\x1b[?25h') == 1
+    assert terminal.getvalue().count('\x1b[?2004h') == 1
+    transcript = '\n'.join(surface.transcript.frame(width=100, height=30).rows)
+    assert transcript == 'Earlier conversation\n'
+    assert not any('question ' in line for line in terminal.lines())
+
+
+def test_long_question_still_leaves_room_for_a_choice() -> None:
+    menu = QuestionMenu(question=APPROACH, position=1, total=1, prompt='Long question ' * 100)
+    rows = menu.frame(width=20, height=10)
+    assert len(rows) <= 5
+    assert any('> 1.' in row for row in rows)
+    assert all(cell_len(Text.from_ansi(row).plain) <= 20 for row in rows)
