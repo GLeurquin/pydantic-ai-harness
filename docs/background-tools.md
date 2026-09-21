@@ -115,11 +115,13 @@ background tool needs to stop the run and all live background tasks.
 ## Execution behavior
 
 Normal completion waits for background tasks and delivers their follow-ups. Concurrent runs track
-their tasks separately. If a run pauses for [deferred tools](/ai/tools-toolsets/deferred-tools/) or
-ends through cancellation, a usage limit, or an error, live tasks are cancelled and their results
-are dropped. Run cleanup waits for the cancelled tasks to finish, also when the run itself is
-cancelled by an outer anyio cancel scope, so async tools must propagate cancellation. Suppressing
-cancellation can keep cleanup open.
+their tasks separately. A pending background call counts toward `tool_calls_limit` until it finishes.
+A sequential tool can overlap background work acknowledged earlier; coordinate shared state inside
+tools that must be mutually exclusive. If a run pauses for
+[deferred tools](/ai/tools-toolsets/deferred-tools/) or ends through cancellation, a usage limit, or
+an error, live tasks are cancelled and their results are dropped. Run cleanup waits for the cancelled
+tasks to finish, also when the run itself is cancelled by an outer anyio cancel scope, so async tools
+must propagate cancellation. Suppressing cancellation can keep cleanup open.
 
 !!! warning
     Python cannot interrupt a synchronous tool's worker thread, so cleanup waits until the tool

@@ -381,6 +381,7 @@ class TestBackgroundTools:
 
     async def test_run_stream_waits_for_live_task_then_drops_its_result(self) -> None:
         started = asyncio.Event()
+        response_streamed = asyncio.Event()
         release = asyncio.Event()
 
         async def stream_model(
@@ -388,6 +389,7 @@ class TestBackgroundTools:
         ) -> AsyncIterator[str | dict[int, DeltaToolCall]]:
             if _ack_seen(messages):
                 yield 'final answer'
+                response_streamed.set()
             else:
                 yield {0: DeltaToolCall(name='slow', json_args='{}')}
 
@@ -402,7 +404,7 @@ class TestBackgroundTools:
         async with agent.run_stream('go') as stream_result:
             output = asyncio.ensure_future(stream_result.get_output())
             await asyncio.wait_for(started.wait(), timeout=5)
-            await asyncio.sleep(0)
+            await asyncio.wait_for(response_streamed.wait(), timeout=5)
             assert not output.done()
             release.set()
             assert await asyncio.wait_for(output, timeout=5) == 'final answer'
