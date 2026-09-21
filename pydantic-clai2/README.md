@@ -854,6 +854,11 @@ Tool calls print once with a filled-circle marker and the tool name, followed by
 are truncated to one terminal row. Completion activity remains in the footer
 rather than adding a separate `Finished:` line to the transcript.
 
+Markdown link labels are clickable in terminals that support OSC 8 hyperlinks.
+The URL stays visible beside the label for other terminals and redirected output.
+Links survive viewport resizing; following one uses your terminal's usual click
+modifier (often Cmd-click or Ctrl-click).
+
 ## Grep previews
 
 Grep calls display the expression and path. Results show the first 20 logical
