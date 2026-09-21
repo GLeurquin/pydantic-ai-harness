@@ -154,8 +154,6 @@ class TestEagerCodeMode:
     async def test_nested_tool_hooks_apply_to_eager_fragments(self):
         seen: list[str] = []
         search_started = asyncio.Event()
-        stream_finished = asyncio.Event()
-        search_ran_early = False
 
         class RecordTools(AbstractCapability[None]):
             async def before_tool_execute(
@@ -170,8 +168,6 @@ class TestEagerCodeMode:
                 return args
 
         async def search(query: str) -> str:
-            nonlocal search_ran_early
-            search_ran_early = not stream_finished.is_set()
             search_started.set()
             return query
 
@@ -186,11 +182,9 @@ class TestEagerCodeMode:
             for chunk in chunks[:-1]:
                 yield {1: DeltaToolCall(json_args=chunk)}
                 await asyncio.sleep(0)
-            # The first statement is complete by now; hold the stream open until the eager
-            # pump has dispatched it, so the timing does not depend on the sandbox's speed.
+            # The first statement is complete by now: `search` must run before the stream ends.
             await asyncio.wait_for(search_started.wait(), timeout=5)
             yield {1: DeltaToolCall(json_args=chunks[-1])}
-            stream_finished.set()
 
         agent: Agent[None, str] = Agent(
             FunctionModel(stream_function=stream_code),
@@ -201,7 +195,6 @@ class TestEagerCodeMode:
 
         await agent.run('go')
 
-        assert search_ran_early
         assert seen == ['search', 'run_code']
 
     async def test_failure_preserves_state_and_reports_prior_output(self):

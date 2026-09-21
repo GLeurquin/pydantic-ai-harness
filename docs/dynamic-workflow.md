@@ -217,6 +217,16 @@ Before a script runs it is statically type-checked against the sub-agent signatu
 !!! warning "An uncaught error aborts the whole script"
     A sub-agent failure surfaces as `RuntimeError`. The script can catch it with `try`/`except RuntimeError`; an uncaught failure aborts the whole script and the model retries it. If a script fails after some sub-agents already finished, the retry prompt lists bounded previews of up to the 20 most recent completed results. The model can reuse an untruncated preview as a plain value instead of paying for the same call again.
 
+## Running inside a Temporal workflow
+
+Attach `TemporalDurability` to the orchestrating agent alongside `DynamicWorkflow`, and to each
+sub-agent whose model requests should run as activities, then register every agent with its own
+`AgentPlugin`. The script itself runs in workflow code, through the same Monty loop as
+[Code Mode](/ai/harness/code-mode/#temporal-durability), and is re-executed during replay against the recorded activity
+results. `max_duration_secs` is ignored there, because an elapsed timer could make replay take a
+different path from the original run. Keep the script deterministic in the same way: it has no
+clock or filesystem access, and every sub-agent call is recorded as its activities.
+
 ## Observability
 
 The [Logfire](https://pydantic.dev/logfire) trace is the best way to see what a workflow did. Each sub-agent run appears nested under the `run_workflow` span, and the span carries the exact `code` argument the model wrote, so you can read the script it actually ran. Until first-class progress streaming ships, set `event_stream_handler` on each sub-agent `Agent` to watch sub-agent runs inside the one tool call.

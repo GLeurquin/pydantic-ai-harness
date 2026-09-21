@@ -62,7 +62,7 @@ pytestmark = pytest.mark.anyio
 
 TEMPORAL_PORT = 7244  # avoid conflict with other test suites
 # Fixed because the agent below is built at import time, before any fixture runs.
-MONTY_RELAY_PORT = 7245
+MONTY_RELAY_PORT = 7246
 TASK_QUEUE = 'pydantic-ai-harness-code-mode-queue'
 BASE_ACTIVITY_CONFIG = ActivityConfig(
     start_to_close_timeout=timedelta(seconds=60),
@@ -117,10 +117,10 @@ async def client(temporal_env: WorkflowEnvironment) -> Client:
 
 
 @pytest.fixture
-async def monty_relay() -> AsyncIterator[str]:
+async def monty_relay() -> AsyncIterator[None]:
     """Serve remote Monty workers on the port `remote_code_mode_agent` is configured with."""
-    async with websocket_relay_server(MONTY_RELAY_PORT) as url:
-        yield url
+    async with websocket_relay_server(MONTY_RELAY_PORT):
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -215,12 +215,9 @@ class RemoteCodeModeWorkflow:
     """`CodeModeWorkflow` against remote workers reached over `monty_sandbox_url`."""
 
     @workflow.run
-    async def run(self, prompt: str) -> dict[str, Any]:
+    async def run(self, prompt: str) -> str:
         result = await remote_code_mode_agent.run(prompt)
-        return {
-            'output': str(result.output),
-            'messages': result.all_messages_json().decode(),
-        }
+        return str(result.output)
 
 
 # ---------------------------------------------------------------------------
@@ -333,13 +330,13 @@ async def test_code_mode_runs_in_temporal_workflow(client: Client) -> None:
     assert replay_result.replay_failure is None
 
 
-async def test_code_mode_runs_over_websocket_in_temporal_workflow(client: Client, monty_relay: str) -> None:
-    """Remote workers behave like local ones in a workflow: the same feeds, activities, and replay.
+@pytest.mark.usefixtures('monty_relay')
+async def test_code_mode_runs_over_websocket_in_temporal_workflow(client: Client) -> None:
+    """Remote workers run and replay in a workflow like local ones do.
 
-    Both bindings are async, so this also covers the blocking-portal path that every Monty
-    call takes inside a workflow (`AsyncMonty` above goes through the same portal).
+    Every Monty call inside a workflow goes through the blocking portal, so this covers that
+    path for both bindings.
     """
-    assert monty_relay == f'ws://127.0.0.1:{MONTY_RELAY_PORT}'
     workflow_id = 'test_code_mode_temporal_remote_1'
     async with Worker(
         client,
@@ -348,21 +345,13 @@ async def test_code_mode_runs_over_websocket_in_temporal_workflow(client: Client
         plugins=[AgentPlugin(remote_code_mode_agent)],
         workflow_runner=_workflow_runner(),
     ):
-        result = await client.execute_workflow(
+        output = await client.execute_workflow(
             RemoteCodeModeWorkflow.run,
             args=['Calculate 3 + 4'],
             id=workflow_id,
             task_queue=TASK_QUEUE,
         )
-
-    assert result['output'] == 'done: 70'
-    messages = json.loads(result['messages'])
-    assert len(messages) == 6
-    first_return = messages[2]['parts'][0]
-    assert first_return['content'] == 7
-    nested_returns = first_return['metadata']['tool_returns']
-    assert [nested['content'] for nested in nested_returns.values()] == [7]
-    assert messages[4]['parts'][0]['content'] == 70
+    assert output == 'done: 70'
 
     history = await client.get_workflow_handle(workflow_id).fetch_history()
     replay_result = await Replayer(

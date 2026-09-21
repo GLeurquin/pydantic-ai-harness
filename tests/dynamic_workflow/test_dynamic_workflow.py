@@ -1312,17 +1312,12 @@ async def test_cancellation_closes_unscheduled_coroutines() -> None:
         started.set()
         await asyncio.Event().wait()  # block forever; only cancellation ends this
 
+    code = "import asyncio\nawait asyncio.gather(sub(task='a'), sub(task='b'))"
     async with AsyncMonty() as pool:
         async with pool.checkout() as session:
             executor = MontyExecutor(dispatch=dispatch, valid_names={'sub'}, global_sequential=True)
             # The first call is awaited inline and blocks; the second is still a bare coroutine.
-            task = asyncio.ensure_future(
-                executor.run(
-                    functools.partial(
-                        session.feed_start, "import asyncio\nawait asyncio.gather(sub(task='a'), sub(task='b'))"
-                    )
-                )
-            )
+            task = asyncio.ensure_future(executor.run(functools.partial(session.feed_start, code)))
             await started.wait()
             task.cancel()
             with pytest.raises(asyncio.CancelledError):  # pragma: no branch

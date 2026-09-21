@@ -480,6 +480,16 @@ reach runtime validation; they are still rejected before a sub-agent runs.
 > previews of up to the 20 most recent completed results. The model can reuse an untruncated preview
 > as a plain value instead of paying for the same call again.
 
+## Running inside a Temporal workflow
+
+Attach `TemporalDurability` to the orchestrating agent alongside `DynamicWorkflow`, and to each
+sub-agent whose model requests should run as activities, then register every agent with its own
+`AgentPlugin`. The script itself runs in workflow code, through the same Monty loop as
+[Code Mode](../code_mode/README.md#temporal-durability), and is re-executed during replay against the recorded activity
+results. `max_duration_secs` is ignored there, because an elapsed timer could make replay take a
+different path from the original run. Keep the script deterministic in the same way: it has no
+clock or filesystem access, and every sub-agent call is recorded as its activities.
+
 ## What is coming
 
 A suspended Monty program is a small serializable value you can dump, reload, and fork. That points

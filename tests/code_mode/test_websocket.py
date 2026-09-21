@@ -2,22 +2,13 @@
 
 from __future__ import annotations
 
-import socket
 from pathlib import Path
 from typing import Any
 
 import pytest
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import UserError
-from pydantic_ai.messages import (
-    ModelMessage,
-    ModelRequest,
-    ModelResponse,
-    RetryPromptPart,
-    TextPart,
-    ToolCallPart,
-    ToolReturnPart,
-)
+from pydantic_ai.messages import ModelMessage, ModelResponse, RetryPromptPart, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_monty import MountDir
 
@@ -31,72 +22,31 @@ def anyio_backend() -> str:
     return 'asyncio'
 
 
-async def test_code_mode_runs_over_websocket(
-    websocket_relay_url: str,
-    tmp_path: Path,
-) -> None:
-    """Remote feeds retain state while host tools, prints, mounts, and barriers round-trip.
+def _parts(messages: list[ModelMessage], part_type: type[Any]) -> list[Any]:
+    return [part for message in messages for part in message.parts if isinstance(part, part_type)]
 
-    The third snippet drives every async snapshot flavor through the shared executor: the
-    `gather` defers two calls (function snapshots) and collects them (a future snapshot),
-    then the sequential `barrier()` resolves inline after the deferred work settles.
-    """
-    (tmp_path / 'input.txt').write_text('mounted data')
-    observed_returns: list[Any] = []
+
+def _snippets_model(*snippets: str) -> FunctionModel:
+    """A model that calls `run_code` with each snippet in turn, then says 'done'."""
 
     def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        returns = [
-            part
-            for message in messages
-            if isinstance(message, ModelRequest)
-            for part in message.parts
-            if isinstance(part, ToolReturnPart) and part.tool_name == 'run_code'
-        ]
-        observed_returns[:] = [part.content for part in returns]
-        if not returns:
-            return ModelResponse(
-                parts=[
-                    ToolCallPart(
-                        'run_code',
-                        {'code': 'value = await add(a=2, b=3)\nprint("remote tool result", value)'},
-                    )
-                ]
-            )
-        if len(returns) == 1:
-            return ModelResponse(
-                parts=[
-                    ToolCallPart(
-                        'run_code',
-                        {
-                            'code': (
-                                'from pathlib import Path\n'
-                                'text = Path("/workspace/input.txt").read_text()\n'
-                                'print(text)\n'
-                                'value * 10'
-                            )
-                        },
-                    )
-                ]
-            )
-        if len(returns) == 2:
-            return ModelResponse(
-                parts=[
-                    ToolCallPart(
-                        'run_code',
-                        {
-                            'code': (
-                                'import asyncio\n'
-                                'first, second = await asyncio.gather(add(a=1, b=1), add(a=2, b=2))\n'
-                                '[first, second, barrier()]'
-                            )
-                        },
-                    )
-                ]
-            )
+        done = len(_parts(messages, ToolReturnPart)) + len(_parts(messages, RetryPromptPart))
+        if done < len(snippets):
+            return ModelResponse(parts=[ToolCallPart('run_code', {'code': snippets[done]})])
         return ModelResponse(parts=[TextPart('done')])
 
-    agent: Agent[None, str] = Agent(
-        FunctionModel(model),
+    return FunctionModel(model)
+
+
+async def test_code_mode_runs_over_websocket(websocket_relay_url: str, tmp_path: Path) -> None:
+    """Remote feeds keep REPL state while tools, prints, mounts, `gather`, and barriers stay host-side."""
+    (tmp_path / 'input.txt').write_text('mounted data')
+    agent = Agent(
+        _snippets_model(
+            'value = await add(a=2, b=3)\nprint("remote tool result", value)',
+            'from pathlib import Path\nprint(Path("/workspace/input.txt").read_text())\nvalue * 10',
+            'import asyncio\nfirst, second = await asyncio.gather(add(a=1, b=1), add(a=2, b=2))\n[first, second, barrier()]',
+        ),
         capabilities=[
             CodeMode(
                 monty_sandbox_url=websocket_relay_url,
@@ -116,15 +66,11 @@ async def test_code_mode_runs_over_websocket(
     result = await agent.run('exercise the remote sandbox')
 
     assert result.output == 'done'
-    assert observed_returns == [
+    assert [part.content for part in _parts(result.all_messages(), ToolReturnPart)] == [
         {'output': 'remote tool result 5\n'},
         {'output': 'mounted data\n', 'result': 50},
         [2, 4, 'barrier'],
     ]
-
-
-def _text_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-    return ModelResponse(parts=[TextPart('done')])
 
 
 @pytest.mark.parametrize(
@@ -132,61 +78,31 @@ def _text_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
     ['ws://sandbox.example.com:8799/monty', 'ws://192.0.2.1:8799', 'ws://localhost:8799', 'ws:///monty'],
 )
 async def test_plaintext_remote_sandbox_url_rejected(url: str) -> None:
-    """`ws://` to anything but a loopback IP literal fails at toolset enter, before any dial.
+    """`ws://` to anything but a loopback IP literal fails when the run starts, before any dial.
 
     `localhost` is a name, and names are only as loopback as the resolver says they are.
     """
-    agent: Agent[None, str] = Agent(
-        FunctionModel(_text_model),
-        capabilities=[CodeMode(monty_sandbox_url=url)],
-    )
+    agent = Agent(_snippets_model(), capabilities=[CodeMode(monty_sandbox_url=url)])
     with pytest.raises(UserError, match='wss://'):
         await agent.run('never dials')
 
 
-@pytest.mark.parametrize(
-    'url',
-    ['ws://127.0.0.1:8799', 'ws://[::1]:8799', 'wss://sandbox.example.com/monty'],
-)
+@pytest.mark.parametrize('url', ['ws://127.0.0.1:8799', 'ws://[::1]:8799', 'wss://sandbox.example.com/monty'])
 async def test_loopback_or_tls_sandbox_url_accepted(url: str) -> None:
     """Loopback-literal `ws://` and any `wss://` URL pass validation; workers dial lazily, not at enter."""
-    agent: Agent[None, str] = Agent(FunctionModel(_text_model), capabilities=[CodeMode(monty_sandbox_url=url)])
+    agent = Agent(_snippets_model(), capabilities=[CodeMode(monty_sandbox_url=url)])
     result = await agent.run('no run_code call, so nothing dials')
     assert result.output == 'done'
 
 
 async def test_dial_failure_redacts_sandbox_url() -> None:
     """A failed dial's retry message must not leak the URL, which may carry credentials."""
-    with socket.socket() as probe:
-        probe.bind(('127.0.0.1', 0))
-        free_port = probe.getsockname()[1]
-    secret_url = f'ws://127.0.0.1:{free_port}/?token=hunter2'
+    agent = Agent(
+        _snippets_model('1 + 1'), capabilities=[CodeMode(monty_sandbox_url='ws://127.0.0.1:1/?token=hunter2')]
+    )
 
-    def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        retries = [
-            part
-            for message in messages
-            if isinstance(message, ModelRequest)
-            for part in message.parts
-            if isinstance(part, RetryPromptPart)
-        ]
-        if not retries:
-            return ModelResponse(parts=[ToolCallPart('run_code', {'code': '1 + 1'})])
-        return ModelResponse(parts=[TextPart('done')])
-
-    agent: Agent[None, str] = Agent(FunctionModel(model), capabilities=[CodeMode(monty_sandbox_url=secret_url)])
     result = await agent.run('dial a dead worker')
 
-    assert result.output == 'done'
-    retry_parts = [
-        part
-        for message in result.all_messages()
-        if isinstance(message, ModelRequest)
-        for part in message.parts
-        if isinstance(part, RetryPromptPart)
-    ]
-    assert retry_parts, 'expected the dial failure to surface as a retry'
-    content = str(retry_parts[0].content)
-    assert 'token=hunter2' not in content
-    assert secret_url not in content
-    assert '<monty_sandbox_url>' in content
+    (retry,) = _parts(result.all_messages(), RetryPromptPart)
+    assert 'hunter2' not in str(retry.content)
+    assert '<monty_sandbox_url>' in str(retry.content)

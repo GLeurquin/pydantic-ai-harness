@@ -8,15 +8,15 @@ import keyword
 import re
 import warnings
 from collections.abc import Callable, Coroutine, Mapping, Sequence
-from contextlib import AbstractAsyncContextManager, AsyncExitStack
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, field, replace
 from functools import partial
 from ipaddress import ip_address
 from itertools import islice
-from typing import Annotated, Any, Literal, Protocol, TypeVar, runtime_checkable
+from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
-from anyio.from_thread import BlockingPortal, start_blocking_portal
+from anyio.from_thread import BlockingPortal
 from pydantic import Field, TypeAdapter
 from pydantic_ai import AbstractToolset, RunContext, ToolDefinition, WrapperToolset
 from pydantic_ai.exceptions import ApprovalRequired, CallDeferred, ModelRetry, UserError
@@ -58,7 +58,15 @@ except ImportError as _import_error:  # pragma: no cover
     raise ImportError(
         'pydantic-monty is required for CodeMode. Install it with: pip install "pydantic-ai-harness[code-mode]"'
     ) from _import_error
-from pydantic_ai_harness._monty_exec import MontyExecutor, PrintCapture, is_sandbox_panic
+from pydantic_ai_harness._monty_exec import (
+    MontyExecutor,
+    PrintCapture,
+    enter_monty,
+    in_temporal_workflow,
+    is_sandbox_panic,
+    open_monty_portal,
+    release_monty,
+)
 
 # A raw OS callback. Return `pydantic_monty.NOT_HANDLED` to defer the call to the
 # sandbox's default, which leaves it unavailable.
@@ -67,8 +75,6 @@ CodeModeOSCallback = Callable[[OsFunction, tuple[object, ...], dict[str, object]
 CodeModeOS = AbstractOS | CodeModeOSCallback
 # Accepted by `CodeMode.mount`: one or more host-directory mounts.
 CodeModeMount = MountDir | list[MountDir]
-
-_T = TypeVar('_T')
 
 # Bounds for the nested-call summary appended to a budget-exhaustion retry. Monty caps printed
 # output at 10 MiB by raising, which suits a stream the model asked for but not a summary the
@@ -90,23 +96,6 @@ _SANDBOX_LIMIT_MARKERS = {
     'max_memory': 'memory limit exceeded',
     'max_suspensions': 'suspension limit ',
 }
-
-
-@runtime_checkable
-class _TemporalDurability(Protocol):
-    """The part of Temporal's public durability capability CodeMode needs."""
-
-    in_durable_context: bool
-
-
-def _in_temporal_workflow(ctx: RunContext[object]) -> bool:
-    """Whether this tool call runs in a Temporal workflow without importing its optional extra."""
-    return any(
-        any(base.__module__.startswith('pydantic_ai.durable_exec.temporal') for base in type(capability).__mro__)
-        and isinstance(capability, _TemporalDurability)
-        and capability.in_durable_context
-        for capability in ctx.capabilities.values()
-    )
 
 
 def _check_monty_sandbox_url(url: str) -> None:
@@ -309,9 +298,8 @@ class _MontyRunState:
     """Monty resources shared by every toolset view created during one agent run.
 
     Workers are local subprocesses from `AsyncMonty`, or remote ones dialed through
-    `AsyncMontyWebsocket` when `monty_sandbox_url` is set. Both are async bindings; inside a
-    Temporal workflow their awaits go through `portal` (see `call_monty`), which is opened with
-    the pool and closed after it.
+    `AsyncMontyWebsocket` when `monty_sandbox_url` is set. Inside a Temporal workflow every Monty
+    call goes through `portal`, opened with the pool and closed after it (see `_monty_exec`).
     """
 
     monty_sandbox_url: str | None = None
@@ -332,26 +320,17 @@ class _MontyRunState:
     ) -> AsyncMontySession:
         """Return the run's live REPL session, spawning or dialing its pool on first use."""
         if self.pool is None:
-            if in_temporal_workflow:
-                self.portal = self._pool_stack.enter_context(start_blocking_portal())
+            self.portal = open_monty_portal(self._pool_stack, in_temporal_workflow=in_temporal_workflow)
             pool = AsyncMonty() if self.monty_sandbox_url is None else AsyncMontyWebsocket(self.monty_sandbox_url)
-            self.pool = await self._enter(self._pool_stack, pool)
+            self.pool = await enter_monty(self._pool_stack, pool, self.portal)
         if self.session is None:
-            self.session = await self._enter(
-                self._session_stack,
-                self.pool.checkout(limits=limits, type_check=type_check, type_check_stubs=type_check_stubs),
-            )
+            checkout = self.pool.checkout(limits=limits, type_check=type_check, type_check_stubs=type_check_stubs)
+            self.session = await enter_monty(self._session_stack, checkout, self.portal)
         return self.session
-
-    async def _enter(self, stack: AsyncExitStack, resource: AbstractAsyncContextManager[_T]) -> _T:
-        """Enter a Monty pool or session on `stack`, through the portal when one is open."""
-        if self.portal is None:
-            return await stack.enter_async_context(resource)
-        return stack.enter_context(self.portal.wrap_async_context_manager(resource))
 
     async def reset(self) -> None:
         """Return the current worker and make the next call start a fresh REPL."""
-        await self._session_stack.aclose()
+        await release_monty(self._session_stack)
         self._session_stack = AsyncExitStack()
         self.session = None
         self.has_executed_feed = False
@@ -361,7 +340,7 @@ class _MontyRunState:
         try:
             await self.reset()
         finally:
-            await self._pool_stack.aclose()
+            await release_monty(self._pool_stack)
             self._pool_stack = AsyncExitStack()
             self.pool = None
             self.portal = None
@@ -1049,13 +1028,13 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
         # behavior as a normal call while presenting one combined result to the model.
         capture = execution.capture
 
-        in_temporal_workflow = _in_temporal_workflow(ctx)
+        in_workflow = in_temporal_workflow(ctx)
         try:
             session = await run_state.get_session(
                 type_check=type_check,
                 type_check_stubs=type_check_stubs,
-                limits=_resolve_resource_limits(self.resource_limits, in_temporal_workflow=in_temporal_workflow),
-                in_temporal_workflow=in_temporal_workflow,
+                limits=_resolve_resource_limits(self.resource_limits, in_temporal_workflow=in_workflow),
+                in_temporal_workflow=in_workflow,
             )
             try:
                 completed = await MontyExecutor(

@@ -21,12 +21,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Container, Coroutine
+from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field
-from typing import Any, TypeVar
+from typing import Any, Protocol, TypeVar, runtime_checkable
 
 import anyio
-from anyio.from_thread import BlockingPortal
+from anyio.from_thread import BlockingPortal, start_blocking_portal
 from opentelemetry import context as otel_context
+from pydantic_ai import RunContext
 from typing_extensions import TypeVarTuple, Unpack
 
 try:
@@ -56,21 +58,69 @@ _T = TypeVar('_T')
 _Args = TypeVarTuple('_Args')
 
 
+@runtime_checkable
+class _TemporalDurability(Protocol):
+    """The part of Temporal's public durability capability the Monty loop needs."""
+
+    in_durable_context: bool
+
+
+def in_temporal_workflow(ctx: RunContext[object]) -> bool:
+    """Whether this tool call runs in a Temporal workflow, without importing its optional extra."""
+    return any(
+        any(base.__module__.startswith('pydantic_ai.durable_exec.temporal') for base in type(capability).__mro__)
+        and isinstance(capability, _TemporalDurability)
+        and capability.in_durable_context
+        for capability in ctx.capabilities.values()
+    )
+
+
+# Running Monty inside a Temporal workflow
+# ----------------------------------------
+# Monty's bindings are async and complete each awaited call from Monty's own I/O thread by waking
+# the event loop the `await` started on (`loop.call_soon_threadsafe`). A Temporal workflow's event
+# loop cannot be woken that way, so the call would never complete. Inside a workflow, the four
+# helpers below therefore route every Monty call through an `anyio` blocking portal: a helper
+# thread running a normal asyncio loop. The workflow thread blocks until the sandbox suspends or
+# completes, exactly as it did with Monty's former sync bindings, and control is back in the
+# workflow between calls, where nested tools run as activities. Outside a workflow the portal is
+# `None` and every helper is a plain `await`.
+
+
+def open_monty_portal(stack: AsyncExitStack, *, in_temporal_workflow: bool) -> BlockingPortal | None:
+    """Open the portal Monty calls need inside a Temporal workflow; `stack` closes it."""
+    if not in_temporal_workflow:
+        return None
+    return stack.enter_context(start_blocking_portal())
+
+
 async def call_monty(
     portal: BlockingPortal | None, fn: Callable[[Unpack[_Args]], Awaitable[_T]], *args: Unpack[_Args]
 ) -> _T:
-    """Await one call into Monty's async bindings, `fn(*args)`.
-
-    Monty completes each awaited call from its own I/O thread by waking the event loop the
-    `await` started on (`loop.call_soon_threadsafe`). A Temporal workflow's event loop cannot
-    be woken that way, so inside a workflow `portal` is an `anyio` blocking portal whose thread
-    runs a normal asyncio loop: the call runs there and the workflow thread blocks until it
-    returns, exactly as it did with Monty's former sync bindings. Everywhere else `portal` is
-    `None` and this is a plain `await`.
-    """
+    """Await one call into Monty's async bindings, `fn(*args)`, through `portal` when there is one."""
     if portal is None:
         return await fn(*args)
     return portal.call(fn, *args)
+
+
+async def enter_monty(
+    stack: AsyncExitStack, resource: AbstractAsyncContextManager[_T], portal: BlockingPortal | None
+) -> _T:
+    """Enter a Monty pool or session on `stack`, through `portal` when there is one."""
+    if portal is None:
+        return await stack.enter_async_context(resource)
+    return stack.enter_context(portal.wrap_async_context_manager(resource))
+
+
+async def release_monty(stack: AsyncExitStack) -> None:
+    """Exit the Monty resources on `stack`, even while the run is being cancelled.
+
+    Cancellation is delivered again at every suspension point while an enclosing cancel scope
+    stays cancelled, which would abandon the session or pool exit half way and leak the worker.
+    Local exits kill worker subprocesses and remote exits are bounded by the transport's deadline.
+    """
+    with anyio.CancelScope(shield=True):
+        await stack.aclose()
 
 
 @dataclass
@@ -131,7 +181,7 @@ class MontyExecutor:
     valid_names: Container[str]
     sequential_names: set[str] = field(default_factory=set[str])
     global_sequential: bool = False
-    # Set inside a Temporal workflow; see `call_monty`.
+    # Set inside a Temporal workflow; see `open_monty_portal`.
     portal: BlockingPortal | None = None
 
     # Parallel calls deferred but not yet resolved, keyed by Monty call id.
