@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
 import socket
-import sys
-from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -23,48 +20,15 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_monty import MountDir
-from pydantic_monty._binary import find_monty_binary  # the lookup `Monty()` uses for local workers
 
 from pydantic_ai_harness import CodeMode
-from tests.code_mode import websocket_relay  # pyright: ignore[reportMissingTypeStubs]
 
 pytestmark = pytest.mark.anyio
-
-_RELAY_SCRIPT = Path(websocket_relay.__file__)
 
 
 @pytest.fixture
 def anyio_backend() -> str:
     return 'asyncio'
-
-
-@pytest.fixture
-async def websocket_relay_url() -> AsyncIterator[str]:
-    """Start the protocol relay on an ephemeral loopback port."""
-    process = await asyncio.create_subprocess_exec(
-        sys.executable,
-        str(_RELAY_SCRIPT),
-        '--monty-bin',
-        find_monty_binary(),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    assert process.stdout is not None
-    assert process.stderr is not None
-    try:
-        url_line = await asyncio.wait_for(process.stdout.readline(), timeout=5)
-        if not url_line:  # pragma: no cover
-            stderr = (await process.stderr.read()).decode()
-            pytest.fail(f'WebSocket relay exited before startup: {stderr}')
-        yield url_line.decode().strip()
-    finally:
-        if process.returncode is None:  # pragma: no branch
-            process.terminate()
-        try:
-            await asyncio.wait_for(process.wait(), timeout=5)
-        except TimeoutError:  # pragma: no cover
-            process.kill()
-            await process.wait()
 
 
 async def test_code_mode_runs_over_websocket(

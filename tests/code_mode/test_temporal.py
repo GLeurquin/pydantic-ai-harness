@@ -51,16 +51,18 @@ except ImportError:  # pragma: lax no cover
     pytest.skip('temporalio not installed', allow_module_level=True)
 
 from pydantic_ai import Agent, ToolDefinition
-from pydantic_ai.exceptions import UserError
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.toolsets.function import FunctionToolset
 
 from pydantic_ai_harness import CodeMode
+from tests.code_mode.conftest import websocket_relay_server  # pyright: ignore[reportMissingTypeStubs]
 
 pytestmark = pytest.mark.anyio
 
 TEMPORAL_PORT = 7244  # avoid conflict with other test suites
+# Fixed because the agent below is built at import time, before any fixture runs.
+MONTY_RELAY_PORT = 7245
 TASK_QUEUE = 'pydantic-ai-harness-code-mode-queue'
 BASE_ACTIVITY_CONFIG = ActivityConfig(
     start_to_close_timeout=timedelta(seconds=60),
@@ -112,6 +114,13 @@ async def client(temporal_env: WorkflowEnvironment) -> Client:
         f'localhost:{TEMPORAL_PORT}',
         plugins=[PydanticAIPlugin()],
     )
+
+
+@pytest.fixture
+async def monty_relay() -> AsyncIterator[str]:
+    """Serve remote Monty workers on the port `remote_code_mode_agent` is configured with."""
+    async with websocket_relay_server(MONTY_RELAY_PORT) as url:
+        yield url
 
 
 # ---------------------------------------------------------------------------
@@ -166,15 +175,12 @@ code_mode_agent = Agent(
 )
 
 
-def _sandbox_url_guard_model(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
-    return ModelResponse(parts=[TextPart(content='unreachable')])  # pragma: no cover
-
-
-sandbox_url_guard_agent = Agent(
-    FunctionModel(_sandbox_url_guard_model),
-    name='code_mode_temporal_sandbox_url_guard_agent',
+remote_code_mode_agent = Agent(
+    FunctionModel(_code_mode_model),
+    name='code_mode_temporal_remote_agent',
+    toolsets=[FunctionToolset(tools=[add], id='math')],
     capabilities=[
-        CodeMode(monty_sandbox_url='ws://127.0.0.1:1'),
+        CodeMode(monty_sandbox_url=f'ws://127.0.0.1:{MONTY_RELAY_PORT}'),
         TemporalDurability(activity_config=BASE_ACTIVITY_CONFIG),
     ],
 )
@@ -205,16 +211,16 @@ class SandboxRestrictionWorkflow:
 
 
 @workflow.defn
-class SandboxUrlGuardWorkflow:
-    """Exercise the workflow-side WebSocket transport guard."""
+class RemoteCodeModeWorkflow:
+    """`CodeModeWorkflow` against remote workers reached over `monty_sandbox_url`."""
 
     @workflow.run
-    async def run(self) -> str:
-        try:
-            await sandbox_url_guard_agent.run('test guard')
-        except UserError as e:
-            return str(e)
-        return 'sandbox URL was accepted'  # pragma: no cover
+    async def run(self, prompt: str) -> dict[str, Any]:
+        result = await remote_code_mode_agent.run(prompt)
+        return {
+            'output': str(result.output),
+            'messages': result.all_messages_json().decode(),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -327,22 +333,41 @@ async def test_code_mode_runs_in_temporal_workflow(client: Client) -> None:
     assert replay_result.replay_failure is None
 
 
-async def test_sandbox_url_rejected_in_temporal_workflow(client: Client) -> None:
-    """The async-only WebSocket transport fails before a workflow-side tool call."""
+async def test_code_mode_runs_over_websocket_in_temporal_workflow(client: Client, monty_relay: str) -> None:
+    """Remote workers behave like local ones in a workflow: the same feeds, activities, and replay.
+
+    Both bindings are async, so this also covers the blocking-portal path that every Monty
+    call takes inside a workflow (`AsyncMonty` above goes through the same portal).
+    """
+    assert monty_relay == f'ws://127.0.0.1:{MONTY_RELAY_PORT}'
+    workflow_id = 'test_code_mode_temporal_remote_1'
     async with Worker(
         client,
         task_queue=TASK_QUEUE,
-        workflows=[SandboxUrlGuardWorkflow],
-        plugins=[AgentPlugin(sandbox_url_guard_agent)],
+        workflows=[RemoteCodeModeWorkflow],
+        plugins=[AgentPlugin(remote_code_mode_agent)],
         workflow_runner=_workflow_runner(),
     ):
         result = await client.execute_workflow(
-            SandboxUrlGuardWorkflow.run,
-            id='test_code_mode_temporal_sandbox_url_guard',
+            RemoteCodeModeWorkflow.run,
+            args=['Calculate 3 + 4'],
+            id=workflow_id,
             task_queue=TASK_QUEUE,
         )
 
-    assert result == (
-        '`CodeMode.monty_sandbox_url` cannot be used inside a Temporal workflow because '
-        'Monty WebSocket transport requires async worker I/O.'
-    )
+    assert result['output'] == 'done: 70'
+    messages = json.loads(result['messages'])
+    assert len(messages) == 6
+    first_return = messages[2]['parts'][0]
+    assert first_return['content'] == 7
+    nested_returns = first_return['metadata']['tool_returns']
+    assert [nested['content'] for nested in nested_returns.values()] == [7]
+    assert messages[4]['parts'][0]['content'] == 70
+
+    history = await client.get_workflow_handle(workflow_id).fetch_history()
+    replay_result = await Replayer(
+        workflows=[RemoteCodeModeWorkflow],
+        plugins=[PydanticAIPlugin()],
+        workflow_runner=_workflow_runner(),
+    ).replay_workflow(history)
+    assert replay_result.replay_failure is None

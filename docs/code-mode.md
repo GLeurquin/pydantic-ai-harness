@@ -311,9 +311,8 @@ REPL session remains checked out for the agent run, so state persists across `ru
 does with local workers.
 
 Everything else is unchanged: the same host-side execution loop drives a remote session, so
-`sequential` tools, parallel `gather`, resource limits, eager execution, and DBOS durability
-behave exactly as they do with local workers. `monty_sandbox_url` cannot be used inside a
-Temporal workflow, whose replaying event loop cannot service the transport's worker I/O.
+`sequential` tools, parallel `gather`, resource limits, eager execution, and Temporal and DBOS
+durability behave exactly as they do with local workers.
 
 The WebSocket transport has a 10-second deadline for each remote protocol turn. The deadline
 covers worker-side execution only: while the sandbox is suspended waiting for a host tool call, the
@@ -349,8 +348,13 @@ plain agent from a workflow and register its activities with `PydanticAIPlugin` 
 
 `PydanticAIPlugin` passes `pydantic_monty` through Temporal's workflow sandbox. This makes Monty
 runnable there, but `run_code` still executes in workflow code and is re-executed during replay.
-`monty_sandbox_url` is not available here: the remote session's awaits are resolved from a
-worker I/O thread that the replaying workflow loop never services.
+Monty's bindings are async and complete each call by waking the event loop it was awaited on,
+which Temporal's workflow event loop does not support. Inside a workflow, CodeMode therefore
+runs every Monty call on a helper thread with its own event loop (an `anyio` blocking portal)
+and blocks the workflow thread until the sandbox suspends or completes, the same way a blocking
+call would. Between those calls, control is back in the workflow, where nested tools run as
+activities. This applies to local workers and to `monty_sandbox_url` alike; with a remote
+worker, replay dials the worker again and re-runs the recorded snippets against it.
 Model requests and, by default, nested tool calls cross Temporal activity boundaries;
 `asyncio.gather` can schedule nested tool activities concurrently. The REPL is process-local state
 for one agent run, not durable storage. Replay reconstructs it by running the recorded snippets

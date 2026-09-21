@@ -10,12 +10,11 @@ Two capabilities build on this:
 
 The snapshot API (rather than `feed_run`) is used deliberately: it exposes each suspension
 to this host-controlled loop, which owns sequential barriers, dispatch cancellation, and
-trace context. The loop drives both of Monty's bindings: local workers hand it sync
-snapshots, and remote workers reached over `AsyncMontyWebsocket` hand it async snapshots
-whose `resume` is awaited. Under Temporal, this loop runs workflow-side and replays.
-Monty's passed-through native module owns its worker subprocess outside the restricted
-Python module sandbox, while nested durable-wrapped tools cross their configured activity
-boundaries.
+trace context. The loop drives Monty's async bindings only: `AsyncMonty` for local worker
+subprocesses and `AsyncMontyWebsocket` for remote workers, which hand it the same snapshot
+types. Under Temporal, this loop runs workflow-side and replays; each Monty call then goes
+through a blocking portal (see `call_monty`), while nested durable-wrapped tools cross their
+configured activity boundaries.
 """
 
 from __future__ import annotations
@@ -23,10 +22,12 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Container, Coroutine
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeVar
 
 import anyio
+from anyio.from_thread import BlockingPortal
 from opentelemetry import context as otel_context
+from typing_extensions import TypeVarTuple, Unpack
 
 try:
     from pydantic_monty import (
@@ -36,13 +37,10 @@ try:
         AsyncSnapshot,
         CollectString,
         ExternalException,
+        ExternalFuture,
         ExternalReturnValue,
         ExternalSettledResult,
-        FunctionSnapshot,
-        FutureSnapshot,
         MontyComplete,
-        NameLookupSnapshot,
-        SyncSnapshot,
     )
 except ImportError as _import_error:  # pragma: no cover
     raise ImportError(
@@ -54,9 +52,25 @@ except ImportError as _import_error:  # pragma: no cover
 # perform the host-side work (tool call or sub-agent run) and return the result.
 DispatchFn = Callable[[str, dict[str, Any]], Coroutine[Any, Any, Any]]
 
-MontyState = SyncSnapshot | AsyncSnapshot
-# What `feed_start`/`resume` return: the next state (sync bindings) or an awaitable of it (async bindings).
-ResumeResult = SyncSnapshot | Awaitable[AsyncSnapshot]
+_T = TypeVar('_T')
+_Args = TypeVarTuple('_Args')
+
+
+async def call_monty(
+    portal: BlockingPortal | None, fn: Callable[[Unpack[_Args]], Awaitable[_T]], *args: Unpack[_Args]
+) -> _T:
+    """Await one call into Monty's async bindings, `fn(*args)`.
+
+    Monty completes each awaited call from its own I/O thread by waking the event loop the
+    `await` started on (`loop.call_soon_threadsafe`). A Temporal workflow's event loop cannot
+    be woken that way, so inside a workflow `portal` is an `anyio` blocking portal whose thread
+    runs a normal asyncio loop: the call runs there and the workflow thread blocks until it
+    returns, exactly as it did with Monty's former sync bindings. Everywhere else `portal` is
+    `None` and this is a plain `await`.
+    """
+    if portal is None:
+        return await fn(*args)
+    return portal.call(fn, *args)
 
 
 @dataclass
@@ -117,6 +131,8 @@ class MontyExecutor:
     valid_names: Container[str]
     sequential_names: set[str] = field(default_factory=set[str])
     global_sequential: bool = False
+    # Set inside a Temporal workflow; see `call_monty`.
+    portal: BlockingPortal | None = None
 
     # Parallel calls deferred but not yet resolved, keyed by Monty call id.
     _pending: dict[int, PendingCall] = field(default_factory=dict[int, PendingCall], init=False)
@@ -125,15 +141,15 @@ class MontyExecutor:
         default_factory=dict[int, ExternalSettledResult], init=False
     )
 
-    async def run(self, start: ResumeResult) -> MontyComplete:
-        """Drive the REPL from the `feed_start` result until it completes."""
+    async def run(self, feed_start: Callable[[], Awaitable[AsyncSnapshot]]) -> MontyComplete:
+        """Drive the REPL from `feed_start` (a bound `AsyncMontySession.feed_start`) until it completes."""
         try:
-            state = await _settle(start)
+            state = await call_monty(self.portal, feed_start)
             while not isinstance(state, MontyComplete):
-                if isinstance(state, (NameLookupSnapshot, AsyncNameLookupSnapshot)):
+                if isinstance(state, AsyncNameLookupSnapshot):
                     # Leave the name undefined so the sandbox raises `NameError`.
-                    state = await _settle(state.resume())
-                elif isinstance(state, (FunctionSnapshot, AsyncFunctionSnapshot)):
+                    state = await call_monty(self.portal, state.resume)
+                elif isinstance(state, AsyncFunctionSnapshot):
                     state = await self._handle_function(state)
                 else:
                     state = await self._resolve_futures(state)
@@ -162,22 +178,20 @@ class MontyExecutor:
                     await asyncio.gather(*cancelled, return_exceptions=True)
         return state
 
-    async def _handle_function(self, snapshot: FunctionSnapshot | AsyncFunctionSnapshot) -> MontyState:
+    async def _handle_function(self, snapshot: AsyncFunctionSnapshot) -> AsyncSnapshot:
         """Dispatch (or defer) a single external function call."""
         if snapshot.is_os_function:
             # OS calls (env, clock, filesystem) are answered from the feed's mounts and the
             # `os=` handler captured at `feed_start`, falling back to monty's unhandled default.
-            return await _settle(snapshot.resume_auto())
+            return await call_monty(self.portal, snapshot.resume_auto)
 
         name = snapshot.function_name
         if name not in self.valid_names:
-            return await _settle(snapshot.resume({'exception': NameError(f'Unknown function: {name}')}))
+            return await self._raise_in_sandbox(snapshot, NameError(f'Unknown function: {name}'))
 
         if snapshot.args:
-            return await _settle(
-                snapshot.resume(
-                    {'exception': TypeError(f'{name}() does not accept positional arguments; use keyword arguments')}
-                )
+            return await self._raise_in_sandbox(
+                snapshot, TypeError(f'{name}() does not accept positional arguments; use keyword arguments')
             )
 
         if name in self.sequential_names:
@@ -191,10 +205,10 @@ class MontyExecutor:
             try:
                 call = self._dispatch(snapshot, parallel=False)
             except Exception as exc:
-                return await _settle(snapshot.resume({'exception': exc}))
+                return await self._raise_in_sandbox(snapshot, exc)
             # The wrapped outcome (`{'return_value': ...}` / `{'exception': ...}`) is already
             # exactly the payload `resume` expects.
-            return await _settle(snapshot.resume(await _await_external(call)))
+            return await call_monty(self.portal, snapshot.resume, await _await_external(call))
 
         # Deferred execution -- resolved later at FutureSnapshot.
         try:
@@ -206,11 +220,15 @@ class MontyExecutor:
             # feed: calls that already completed keep the results the host recorded for them, and
             # the snippet can still return them. Nothing was scheduled, so there is no task to
             # clean up and no further work is admitted.
-            return await _settle(snapshot.resume({'exception': exc}))
+            return await self._raise_in_sandbox(snapshot, exc)
         self._pending[snapshot.call_id] = call
-        return await _settle(snapshot.resume({'future': ...}))
+        return await call_monty(self.portal, snapshot.resume, ExternalFuture(future=...))
 
-    def _dispatch(self, snapshot: FunctionSnapshot | AsyncFunctionSnapshot, *, parallel: bool) -> PendingCall:
+    async def _raise_in_sandbox(self, snapshot: AsyncFunctionSnapshot, exc: Exception) -> AsyncSnapshot:
+        """Resume the suspended call by raising `exc` at its sandbox call site."""
+        return await call_monty(self.portal, snapshot.resume, ExternalException(exception=exc))
+
+    def _dispatch(self, snapshot: AsyncFunctionSnapshot, *, parallel: bool) -> PendingCall:
         # Compatibility with Monty before https://github.com/pydantic/monty/pull/885.
         trace_context: Callable[[], otel_context.Context] = getattr(snapshot, 'trace_context', otel_context.get_current)
         context = trace_context()
@@ -222,7 +240,7 @@ class MontyExecutor:
         finally:
             otel_context.detach(token)
 
-    async def _resolve_futures(self, snapshot: FutureSnapshot | AsyncFutureSnapshot) -> MontyState:
+    async def _resolve_futures(self, snapshot: AsyncFutureSnapshot) -> AsyncSnapshot:
         """Resolve the deferred calls a `FutureSnapshot` is waiting on."""
         pending_ids = snapshot.pending_call_ids
         results: dict[int, ExternalSettledResult] = {}
@@ -241,14 +259,7 @@ class MontyExecutor:
                 del self._pending[cid]
                 results[cid] = _wrap_gathered(outcome)
 
-        return await _settle(snapshot.resume(results))
-
-
-async def _settle(resumed: ResumeResult) -> MontyState:
-    """Return the next REPL state from either binding: sync `resume` returns it, async `resume` awaits it."""
-    if isinstance(resumed, Awaitable):
-        return await resumed
-    return resumed
+        return await call_monty(self.portal, snapshot.resume, results)
 
 
 async def _await_external(call: PendingCall) -> ExternalReturnValue | ExternalException:

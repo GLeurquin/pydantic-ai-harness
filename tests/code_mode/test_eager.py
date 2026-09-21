@@ -153,6 +153,7 @@ class TestEagerCodeMode:
 
     async def test_nested_tool_hooks_apply_to_eager_fragments(self):
         seen: list[str] = []
+        search_started = asyncio.Event()
         stream_finished = asyncio.Event()
         search_ran_early = False
 
@@ -171,6 +172,7 @@ class TestEagerCodeMode:
         async def search(query: str) -> str:
             nonlocal search_ran_early
             search_ran_early = not stream_finished.is_set()
+            search_started.set()
             return query
 
         code = 'value = await search(query="alpha")\nx = 1\ny = 2\nz = 3\nvalue'
@@ -181,9 +183,13 @@ class TestEagerCodeMode:
                 return
             chunks = stream_json_args(code, chunk_size=4)
             yield {1: DeltaToolCall(name='run_code')}
-            for chunk in chunks:
+            for chunk in chunks[:-1]:
                 yield {1: DeltaToolCall(json_args=chunk)}
                 await asyncio.sleep(0)
+            # The first statement is complete by now; hold the stream open until the eager
+            # pump has dispatched it, so the timing does not depend on the sandbox's speed.
+            await asyncio.wait_for(search_started.wait(), timeout=5)
+            yield {1: DeltaToolCall(json_args=chunks[-1])}
             stream_finished.set()
 
         agent: Agent[None, str] = Agent(

@@ -60,7 +60,7 @@ from pydantic_ai.toolsets.combined import CombinedToolset
 from pydantic_ai.toolsets.function import FunctionToolset
 from pydantic_ai.usage import RequestUsage, RunUsage
 from pydantic_core import SchemaValidator, core_schema
-from pydantic_monty import NOT_HANDLED, Monty, MountDir, OSAccess, OsFunction
+from pydantic_monty import NOT_HANDLED, AsyncMonty, MountDir, OSAccess, OsFunction
 from typing_extensions import Never, TypedDict
 
 from pydantic_ai_harness import CodeMode
@@ -679,8 +679,8 @@ class TestCodeMode:
     async def test_nested_call_budget_is_reserved_before_dispatch(self) -> None:
         """Calls past the budget never run, so a gather cannot outrun the limit before it bites.
 
-        The executor schedules each deferred call as a task without yielding in between, so a
-        budget checked inside the dispatch coroutine would admit every call in the gather.
+        The executor schedules every deferred call in the gather before any of them is awaited,
+        so a budget checked inside the dispatch coroutine would admit all of them.
         """
         executed: list[int] = []
 
@@ -711,9 +711,10 @@ class TestCodeMode:
                 tools['run_code'],
             )
 
-        # The refusal happens while the executor is still scheduling, before any dispatched task
-        # has been given the event loop, so none of the 50 calls reaches the tool.
-        assert executed == []
+        # The budget is taken when a call is scheduled, not when its task runs, so the 47 refused
+        # calls never reach the tool. The three admitted ones may or may not have run by the time
+        # the refusal aborts the snippet.
+        assert set(executed) <= {0, 1, 2}
 
     async def test_exhausted_budget_preserves_completed_calls(self) -> None:
         """A refused call fails inside the sandbox, so work already done is not thrown away.
@@ -1411,7 +1412,7 @@ class TestCodeMode:
                 raise RuntimeError('wrapped enter failed')
 
         monty = MagicMock()
-        monkeypatch.setattr('pydantic_ai_harness.code_mode._toolset.Monty', monty)
+        monkeypatch.setattr('pydantic_ai_harness.code_mode._toolset.AsyncMonty', monty)
         wrapper = CodeMode[object]().get_wrapper_toolset(FailingToolset())
         assert isinstance(wrapper, CodeModeToolset)
 
@@ -1425,20 +1426,20 @@ class TestCodeMode:
         events: list[str] = []
 
         class TrackingMonty:
-            def __enter__(self) -> TrackingMonty:
+            async def __aenter__(self) -> TrackingMonty:
                 events.append('monty enter')
                 return self
 
-            def __exit__(self, *args: Any) -> None:
+            async def __aexit__(self, *args: Any) -> None:
                 events.append('monty exit')
 
             def checkout(self, *args: Any, **kwargs: Any) -> Any:
                 class TrackingSession:
-                    def __enter__(self) -> TrackingSession:
+                    async def __aenter__(self) -> TrackingSession:
                         events.append('session enter')
                         return self
 
-                    def __exit__(self, *args: Any) -> None:
+                    async def __aexit__(self, *args: Any) -> None:
                         events.append('session exit')
 
                 return TrackingSession()
@@ -1452,7 +1453,7 @@ class TestCodeMode:
                 events.append('wrapped exit')
                 return None
 
-        monkeypatch.setattr('pydantic_ai_harness.code_mode._toolset.Monty', TrackingMonty)
+        monkeypatch.setattr('pydantic_ai_harness.code_mode._toolset.AsyncMonty', TrackingMonty)
         wrapper = CodeMode[object]().get_wrapper_toolset(TrackingToolset())
         assert isinstance(wrapper, CodeModeToolset)
 
@@ -2826,7 +2827,7 @@ class TestCodeMode:
         `MontyCrashedError` cannot be constructed or subclassed from Python.
         """
         monkeypatch.setattr(
-            'pydantic_ai_harness.code_mode._toolset.Monty', functools.partial(Monty, request_timeout=0.5)
+            'pydantic_ai_harness.code_mode._toolset.AsyncMonty', functools.partial(AsyncMonty, request_timeout=0.5)
         )
         wrapper = CodeMode[None]().get_wrapper_toolset(_build_function_toolset(add))
         assert isinstance(wrapper, CodeModeToolset)

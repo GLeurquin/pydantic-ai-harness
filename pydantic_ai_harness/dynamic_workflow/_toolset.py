@@ -14,6 +14,7 @@ import keyword
 import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import partial
 from typing import Annotated, Any, Generic, Literal, cast
 
 from pydantic import Field, TypeAdapter
@@ -31,7 +32,7 @@ from typing_extensions import Self, TypedDict
 
 try:
     from pydantic_monty import (
-        Monty,
+        AsyncMonty,
         MontyCrashedError,
         MontyRuntimeError,
         MontySyntaxError,
@@ -727,14 +728,17 @@ class DynamicWorkflowToolset(AbstractToolset[AgentDepsT]):
         type_check_stubs = self._build_type_check_stubs()
         in_workflow_token = _in_workflow.set(True)
         try:
-            with Monty() as monty_pool:
-                with monty_pool.checkout(limits=limits, type_check=True, type_check_stubs=type_check_stubs) as session:
-                    monty_state = session.feed_start(code, print_callback=capture.callback)
+            async with AsyncMonty() as monty_pool:
+                async with monty_pool.checkout(
+                    limits=limits, type_check=True, type_check_stubs=type_check_stubs
+                ) as session:
                     # `_by_name` is not mutated while a script executes (reveals land in `get_tools`,
                     # which does not interleave with `call_tool`), so it is a stable name registry for
                     # the whole script. Sub-agents always run concurrently (the executor's defaults);
                     # durable ordering (global_sequential) lands with durability.
-                    completed = await MontyExecutor(dispatch=dispatch, valid_names=self._by_name).run(monty_state)
+                    completed = await MontyExecutor(dispatch=dispatch, valid_names=self._by_name).run(
+                        partial(session.feed_start, code, print_callback=capture.callback)
+                    )
         except MontyTypingError as e:
             raise ModelRetry(f'Type error in workflow:\n{capture.prepend_to(e.display())}') from e
         except MontySyntaxError as e:  # pragma: no cover -- backstop; the type checker parses first

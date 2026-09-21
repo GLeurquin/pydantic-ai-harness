@@ -8,13 +8,15 @@ import keyword
 import re
 import warnings
 from collections.abc import Callable, Coroutine, Mapping, Sequence
-from contextlib import AsyncExitStack
+from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field, replace
+from functools import partial
 from ipaddress import ip_address
 from itertools import islice
-from typing import Annotated, Any, Literal, Protocol, runtime_checkable
+from typing import Annotated, Any, Literal, Protocol, TypeVar, runtime_checkable
 from urllib.parse import urlsplit
 
+from anyio.from_thread import BlockingPortal, start_blocking_portal
 from pydantic import Field, TypeAdapter
 from pydantic_ai import AbstractToolset, RunContext, ToolDefinition, WrapperToolset
 from pydantic_ai.exceptions import ApprovalRequired, CallDeferred, ModelRetry, UserError
@@ -41,12 +43,11 @@ except ImportError:  # pragma: no cover
 try:
     from pydantic_monty import (
         AbstractOS,
+        AsyncMonty,
         AsyncMontySession,
         AsyncMontyWebsocket,
-        Monty,
         MontyCrashedError,
         MontyRuntimeError,
-        MontySession,
         MontySyntaxError,
         MontyTypingError,
         MountDir,
@@ -67,6 +68,7 @@ CodeModeOS = AbstractOS | CodeModeOSCallback
 # Accepted by `CodeMode.mount`: one or more host-directory mounts.
 CodeModeMount = MountDir | list[MountDir]
 
+_T = TypeVar('_T')
 
 # Bounds for the nested-call summary appended to a budget-exhaustion retry. Monty caps printed
 # output at 10 MiB by raising, which suits a stream the model asked for but not a summary the
@@ -306,37 +308,46 @@ def _resolve_resource_limits(
 class _MontyRunState:
     """Monty resources shared by every toolset view created during one agent run.
 
-    Workers are local subprocesses from `Monty()`, or remote ones dialed through
-    `AsyncMontyWebsocket` when `monty_sandbox_url` is set. Both hand `MontyExecutor`
-    snapshots; only the remote session's `feed_start` and `resume` are awaitable.
+    Workers are local subprocesses from `AsyncMonty`, or remote ones dialed through
+    `AsyncMontyWebsocket` when `monty_sandbox_url` is set. Both are async bindings; inside a
+    Temporal workflow their awaits go through `portal` (see `call_monty`), which is opened with
+    the pool and closed after it.
     """
 
     monty_sandbox_url: str | None = None
-    pool: Monty | AsyncMontyWebsocket | None = None
-    session: MontySession | AsyncMontySession | None = None
+    pool: AsyncMonty | AsyncMontyWebsocket | None = None
+    session: AsyncMontySession | None = None
+    portal: BlockingPortal | None = None
     has_executed_feed: bool = False
     _pool_stack: AsyncExitStack = field(default_factory=AsyncExitStack, repr=False)
     _session_stack: AsyncExitStack = field(default_factory=AsyncExitStack, repr=False)
 
     async def get_session(
-        self, *, type_check: bool, type_check_stubs: str | None, limits: ResourceLimits
-    ) -> MontySession | AsyncMontySession:
+        self,
+        *,
+        type_check: bool,
+        type_check_stubs: str | None,
+        limits: ResourceLimits,
+        in_temporal_workflow: bool = False,
+    ) -> AsyncMontySession:
         """Return the run's live REPL session, spawning or dialing its pool on first use."""
         if self.pool is None:
-            if self.monty_sandbox_url is None:
-                self.pool = self._pool_stack.enter_context(Monty())
-            else:
-                self.pool = await self._pool_stack.enter_async_context(AsyncMontyWebsocket(self.monty_sandbox_url))
+            if in_temporal_workflow:
+                self.portal = self._pool_stack.enter_context(start_blocking_portal())
+            pool = AsyncMonty() if self.monty_sandbox_url is None else AsyncMontyWebsocket(self.monty_sandbox_url)
+            self.pool = await self._enter(self._pool_stack, pool)
         if self.session is None:
-            if isinstance(self.pool, AsyncMontyWebsocket):
-                self.session = await self._session_stack.enter_async_context(
-                    self.pool.checkout(limits=limits, type_check=type_check, type_check_stubs=type_check_stubs)
-                )
-            else:
-                self.session = self._session_stack.enter_context(
-                    self.pool.checkout(limits=limits, type_check=type_check, type_check_stubs=type_check_stubs)
-                )
+            self.session = await self._enter(
+                self._session_stack,
+                self.pool.checkout(limits=limits, type_check=type_check, type_check_stubs=type_check_stubs),
+            )
         return self.session
+
+    async def _enter(self, stack: AsyncExitStack, resource: AbstractAsyncContextManager[_T]) -> _T:
+        """Enter a Monty pool or session on `stack`, through the portal when one is open."""
+        if self.portal is None:
+            return await stack.enter_async_context(resource)
+        return stack.enter_context(self.portal.wrap_async_context_manager(resource))
 
     async def reset(self) -> None:
         """Return the current worker and make the next call start a fresh REPL."""
@@ -346,13 +357,14 @@ class _MontyRunState:
         self.has_executed_feed = False
 
     async def close(self) -> None:
-        """Return the checked-out worker, then close the owning pool even if that fails."""
+        """Return the checked-out worker, then close the owning pool (and portal) even if that fails."""
         try:
             await self.reset()
         finally:
             await self._pool_stack.aclose()
             self._pool_stack = AsyncExitStack()
             self.pool = None
+            self.portal = None
 
 
 class _RunCodeArguments(TypedDict):
@@ -749,13 +761,6 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
 
     async def for_run(self, ctx: RunContext[AgentDepsT]) -> AbstractToolset[AgentDepsT]:
         """Return a fresh toolset instance with isolated REPL state for this agent run."""
-        if self.monty_sandbox_url is not None and _in_temporal_workflow(ctx):
-            # The remote session resolves its awaits from a worker I/O thread through
-            # `call_soon_threadsafe`, which Temporal's replaying workflow loop never services.
-            raise UserError(
-                '`CodeMode.monty_sandbox_url` cannot be used inside a Temporal workflow because '
-                'Monty WebSocket transport requires async worker I/O.'
-            )
         wrapped = await self.wrapped.for_run(ctx)
         return replace(self, wrapped=wrapped)
 
@@ -1044,26 +1049,31 @@ class CodeModeToolset(WrapperToolset[AgentDepsT]):
         # behavior as a normal call while presenting one combined result to the model.
         capture = execution.capture
 
+        in_temporal_workflow = _in_temporal_workflow(ctx)
         try:
             session = await run_state.get_session(
                 type_check=type_check,
                 type_check_stubs=type_check_stubs,
-                limits=_resolve_resource_limits(self.resource_limits, in_temporal_workflow=_in_temporal_workflow(ctx)),
+                limits=_resolve_resource_limits(self.resource_limits, in_temporal_workflow=in_temporal_workflow),
+                in_temporal_workflow=in_temporal_workflow,
             )
             try:
-                monty_state = session.feed_start(
-                    code,
-                    print_callback=capture.callback,
-                    os=self.os_access,
-                    mount=self.mount,
-                    skip_type_check=not type_check,
-                )
                 completed = await MontyExecutor(
                     dispatch=dispatch_tool_call,
                     valid_names=callable_defs,
                     sequential_names=sequential_tools,
                     global_sequential=global_sequential,
-                ).run(monty_state)
+                    portal=run_state.portal,
+                ).run(
+                    partial(
+                        session.feed_start,
+                        code,
+                        print_callback=capture.callback,
+                        os=self.os_access,
+                        mount=self.mount,
+                        skip_type_check=not type_check,
+                    )
+                )
             except MontyRuntimeError:
                 # The session is idle again and keeps assignments made before the failing line.
                 run_state.has_executed_feed = True
