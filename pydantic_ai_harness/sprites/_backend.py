@@ -34,6 +34,7 @@ import anyio
 from anyio.lowlevel import checkpoint
 from pydantic_ai.workspaces import (
     CommandResult,
+    SupportsCommands,
     WorkspaceBackend,
     WorkspaceCommand,
     WorkspaceError,
@@ -108,7 +109,7 @@ def _operation_error(error: Exception, context: str) -> WorkspaceError:
     return WorkspaceError(f'{context}: {type(error).__name__}: {error}')
 
 
-class SpriteWorkspaceBackend(WorkspaceBackend):
+class SpriteWorkspaceBackend(WorkspaceBackend, SupportsCommands):
     """A Fly.io Sprite behind the Pydantic AI `WorkspaceBackend` protocol.
 
     Construction does no I/O. Await `workspace` to obtain the native SDK object. Every command
