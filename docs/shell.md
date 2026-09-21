@@ -12,6 +12,8 @@ background processes automatically when the agent run ends.
 
 [Source](https://github.com/pydantic/pydantic-ai-harness/tree/main/pydantic_ai_harness/shell/)
 
+> While Pydantic AI Harness is on 0.x releases, the API may change between minor releases; when it does, deprecation warnings and release-note migration guidance tell you (or your agent) exactly how to upgrade. See the [version policy](index.md#version-policy).
+
 ## The problem
 
 Agents frequently need to run a build, a test suite, a linter, or a quick
@@ -48,7 +50,7 @@ denylist active -- `Shell()` alone is a working (if permissive) configuration.
 
 ## Tools
 
-`Shell` contributes four tools to the agent:
+`Shell` contributes four run-scoped tools by default, plus the opt-in persistent `shell` tool:
 
 | Tool | Purpose |
 |---|---|
@@ -56,6 +58,7 @@ denylist active -- `Shell()` alone is a working (if permissive) configuration.
 | `start_command` | Launch a long-running command (server, watcher) in the background; returns an ID. |
 | `check_command` | Report the status and accumulated output of a background command. |
 | `stop_command` | Terminate a background command and return its final output. |
+| `shell` | Opt-in: run a command that outlives the run, in `foreground` (wait up to `timeout`, then hand back the still-running process) or `background` mode. Returns the PID and the paths of its output log and JSON status file. |
 
 `run_command` accepts an optional `timeout_seconds` argument that overrides
 `default_timeout` for a single call. `check_command` and `stop_command` take the
@@ -92,13 +95,21 @@ denylist. Pass `denied_commands=[]` to disable command-name filtering.
 
 A denied command surfaces to the model as a
 [`ModelRetry`](/ai/tools-toolsets/tools-advanced/#tool-retries), not a hard error:
-the run continues and the model can pick an allowed command instead.
+the run continues and the model can pick an allowed command instead. So does
+every other failure the model can act on: a working directory an earlier command
+deleted or replaced with a file, and a command the operating system refuses to
+spawn because it holds a NUL byte or contains a character the operating system
+cannot encode. Failures
+the model can do nothing about still abort the run: a host that cannot allocate
+a process, an argument or environment that exceeds the platform's combined
+size limit, and an invalid character in an application-supplied `env`.
 
 !!! warning "Best-effort, not a security boundary"
-    These command checks are best-effort. A sufficiently motivated agent can
-    defeat them (e.g. `bash -c '...'`, env-var indirection). For hard
-    guarantees, run the agent inside OS-level isolation -- a container or
-    sandbox.
+    `allowed_commands` is a guardrail against accidents, not a security boundary.
+    Validation checks only the first token, and allowlisted commands such as
+    `python`, `git`, `uv`, and `make` can spawn arbitrary processes. A model that
+    wants to work around the allowlist can. For untrusted work, run the agent
+    inside OS-level isolation such as [`ModalSandbox`](modal-sandbox.md) or a container.
 
 ## Environment control
 
@@ -108,11 +119,11 @@ writes can read them. Two fields control what the subprocess sees:
 
 | Field | Effect |
 |---|---|
-| `env` | Explicit environment that replaces inheritance entirely. The subprocess sees exactly these variables and nothing else. |
+| `env` | Explicit environment that replaces inheritance for the subprocess's own environment. |
 | `denied_env_patterns` | Glob patterns (`fnmatch`) for variable names stripped from the base environment. Mirrors `denied_commands`. |
 
-`env` is a hard boundary for inherited environment variables: set it and inherited secrets cannot reach the
-subprocess at all (you supply `PATH` and anything else the command needs).
+`env` prevents inherited variables from appearing in the subprocess's own
+environment (you supply `PATH` and anything else the command needs).
 `denied_env_patterns` is a denylist over the inherited environment -- lighter to
 configure when you only need to drop a few known-sensitive names. The two
 compose: when both are set, patterns also filter the explicit `env`. Leaving
@@ -121,8 +132,7 @@ both unset preserves the inherit-everything default.
 ```python
 import os
 
-from pydantic_ai_harness import Shell
-from pydantic_ai_harness.shell import LLM_API_KEY_ENV_PATTERNS
+from pydantic_ai_harness import LLM_API_KEY_ENV_PATTERNS, Shell
 
 # Strip provider credentials from the inherited environment.
 Shell(cwd='./repo', denied_env_patterns=LLM_API_KEY_ENV_PATTERNS)
@@ -143,14 +153,14 @@ credentials, so it is opt-in.
 
 `env` is enforced at spawn, not applied as a post-hoc filter on a running
 process: the subprocess starts with exactly the resolved environment (your
-`env`, minus anything `denied_env_patterns` removes from it). That makes it a
-real boundary for inherited environment variables, unlike the best-effort command denylist. It is not a full
-security boundary: a command running under the same OS identity can still read
-host files -- use OS-level isolation for that. The flip side is that a
-pattern broad enough to strip `PATH` or `HOME`, or an `env` that omits them, can
-break command resolution. External commands may still run via the shell's
-built-in default `PATH` on some systems, but don't rely on it -- set `PATH`
-explicitly when you replace the environment.
+`env`, minus anything `denied_env_patterns` removes from it). Neither control is
+a security boundary. A command running under the same OS identity may still
+read the parent process's environment through system interfaces such as Linux
+procfs, as well as other host files. Use OS-level isolation when commands are
+untrusted. The flip side is that a pattern broad enough to strip `PATH` or
+`HOME`, or an `env` that omits them, can break command resolution. External
+commands may still run via the shell's built-in default `PATH` on some systems,
+but don't rely on it -- set `PATH` explicitly when you replace the environment.
 
 ## Background processes
 
@@ -180,6 +190,69 @@ result = agent.run_sync(
 )
 print(result.output)
 ```
+
+## Persistent commands
+
+The four tools above are run-scoped: their processes die with the run. Name
+`shell` in `tools` to register the persistent tool instead:
+
+```python
+from pydantic_ai_harness import Shell
+
+Shell(cwd='./repo', tools=['shell'])
+```
+
+`shell(command, mode='foreground', timeout=None)` hands the command to a small
+supervisor process started in its own session. The supervisor appends the
+command's combined stdout and stderr to an output log, publishes a JSON status
+file (`{"pid": ..., "exit_code": ...}`, with `exit_code` null until the command
+exits), and reaps the command. The tool returns the supervisor's PID and both
+paths, so the model reads progress with its other tools and stops the process
+with `kill -- -PID` on POSIX or `taskkill /PID <PID> /T /F` on Windows (the
+process group or tree; the result names the right one). Foreground waits up to
+`timeout` seconds (default `default_timeout`, at most `MAX_FOREGROUND_WAIT`,
+270) for the exit status and returns the last 16,000 bytes of the log followed
+by the handles, even if the command is still running; background returns the
+handles at once. The handles come last so that `max_output_chars`, which keeps
+the tail of an over-long result, cannot drop them. The 270-second cap keeps a tool call shorter than typical provider
+request timeouts, so a long build or test run does not stall the conversation:
+the model gets the handles back, does other work, and polls the status file.
+
+The command outlives the agent run, the event loop, and (once it has started)
+the calling interpreter, so a server the model starts keeps serving. Nothing
+wakes the agent when the command finishes; the model polls. A foreground call
+that is cancelled (a run cancellation, say) cannot hand back its handles, so it
+kills the supervisor's whole session and removes the log directory instead. A
+log directory that was handed back is never rotated or deleted: the caller owns
+cleaning it up, and a verbose command should bound its own output. A supervisor that exits without
+publishing a status (a broken interpreter, say) surfaces as a retry naming the
+log directory.
+
+`allowed_commands`, `denied_commands`, `denied_operators`, `allow_interactive`,
+`env`, and `denied_env_patterns` apply to `shell` exactly as to `run_command`.
+`persist_cwd` does not: every `shell` command starts in the configured `cwd`,
+whatever `run_command` has tracked. Commands and logs are host-local, not durable
+workflow activities, and are not replay-safe.
+
+Each `shell` call emits progress events in the `shell` namespace, so a UI can
+show output as it arrives without parsing the tool result:
+
+| Event | Dispatch | Payload |
+|---|---|---|
+| `CommandStartedEvent` | stream | `command`, `pid` |
+| `CommandOutputEvent` | stream | `text`: a chunk of the combined log, decoded incrementally |
+| `CommandFinishedEvent` | stream | `pid`, `output_path`, `status_path`, `exit_code`, `truncated`, `total_lines` |
+
+Output events are emitted while a foreground call waits: at most the first
+16,000 bytes of the log per call, in chunks of up to 4,096 bytes, polled every
+50 ms. A background call emits only the started and finished events. `finished`
+means the tool stopped waiting, not that the command exited: `exit_code` is
+`None` while no status has been published, and `truncated` says the log held
+more than the events showed. `total_lines` counts logical lines in logs up to
+1 MiB and is `None` for larger logs, which are not scanned. A cancelled call may
+emit no finished event. Events carry command text and command output, so treat
+them as untrusted when rendering. They add no telemetry spans; core already
+traces the tool call.
 
 ## Working directory
 
@@ -222,8 +295,12 @@ Shell(
     allow_interactive=False,       # allow TTY-style commands
     env=None,                      # explicit env, replacing inheritance (None = inherit)
     denied_env_patterns=[],        # glob patterns stripped from the env
+    tools=RUN_SCOPED_TOOL_NAMES,   # which tools to register ('shell' for persistent commands)
 )
 ```
+
+With `tools=['shell']`, `default_timeout` is also the foreground wait and must be
+greater than zero and at most 270 seconds; that is checked at construction.
 
 ## Agent spec (YAML/JSON)
 

@@ -15,6 +15,7 @@ from typing import TypeGuard
 from pydantic_ai.messages import ModelMessage, ModelRequest, SystemPromptPart
 from pydantic_core import to_json
 
+from pydantic_ai_harness._output import truncate_tail
 from pydantic_ai_harness.compaction._shared import estimate_token_count
 
 
@@ -72,6 +73,39 @@ def to_text(value: object) -> str:
     return to_json(value).decode('utf-8', errors='replace')
 
 
+# A serializer callable for structured (non-string, non-binary) tool returns:
+# `(value) -> text`, where the text is what gets measured, previewed, spilled, and read back.
+Serializer = Callable[[object], str]
+
+# `str.splitlines` treats these as line breaks, but JSON only requires escaping control
+# characters below 0x20, so `to_json` emits them raw inside string values. Escaping them
+# keeps read-back line slicing aligned with the lines the presets rendered.
+_LINE_SEPARATOR_ESCAPES = {0x85: '\\u0085', 0x2028: '\\u2028', 0x2029: '\\u2029'}
+
+
+def indented_json(value: object) -> str:
+    """Serializer preset: render `value` as indented JSON, one field per line.
+
+    A spilled payload rendered this way can be paged and `pattern`-filtered by line
+    through `read_tool_result`; compact JSON puts the whole value on one line.
+    """
+    return to_json(value, indent=2).decode('utf-8', errors='replace').translate(_LINE_SEPARATOR_ESCAPES)
+
+
+def json_lines(value: object) -> str:
+    """Serializer preset: render a sequence as JSON Lines, one compact JSON value per line.
+
+    Line N is item N, so `read_tool_result` offsets and limits map directly to items and a
+    `pattern` match returns whole items; an empty sequence renders as an empty string.
+    Values that are not sequences (or that are strings or byte payloads) fall back to
+    `indented_json`.
+    """
+    if _is_text_sequence(value):
+        rendered = '\n'.join(to_json(item).decode('utf-8', errors='replace') for item in value)
+        return rendered.translate(_LINE_SEPARATOR_ESCAPES)
+    return indented_json(value)
+
+
 def measure(text: str, *, over_tokens: bool, tokenizer: Callable[[str], int] | None) -> int:
     """Measure `text` in characters (default) or estimated tokens (`over_tokens=True`)."""
     if not over_tokens:
@@ -98,7 +132,7 @@ def _is_mapping(value: object) -> TypeGuard[Mapping[object, object]]:
 
 
 def _is_text_sequence(value: object) -> TypeGuard[Sequence[object]]:
-    return isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray, memoryview))
 
 
 def _sketch_mapping(mapping: Mapping[object, object]) -> str:
@@ -113,26 +147,61 @@ def _sketch_sequence(items: Sequence[object]) -> str:
     return f'[{len(items)} items of {elem}]'
 
 
-def truncate_text(text: str, max_chars: int, strategy: TruncationStrategy) -> str:
-    """Cut `text` down to roughly `max_chars`, annotating what was removed.
+def _tail_line_start(text: str, count: int) -> int:
+    """Find the last N LF/CRLF lines without splitting the entire payload."""
+    end = len(text) - int(text.endswith('\n'))
+    for _ in range(count):
+        end = text.rfind('\n', 0, end)
+        if end < 0:
+            return 0
+    return end + 1
 
-    Returns `text` unchanged when it already fits.
+
+def truncate_text(text: str, max_chars: int, strategy: TruncationStrategy, *, keep_tail_lines: int = 0) -> str:
+    """Limit `text` to `max_chars`, including the truncation marker.
+
+    Omit the marker when it cannot fit alongside the retained content. Reserved tail
+    lines take priority over both the marker and the remaining content.
     """
+    if max_chars <= 0:
+        return ''
     total = len(text)
     if total <= max_chars:
         return text
-
-    if strategy is TruncationStrategy.head:
-        return f'{text[:max_chars]}\n\n[truncated: showing first {max_chars:,} of {total:,} chars]'
+    tail_chars = total - _tail_line_start(text, keep_tail_lines) if keep_tail_lines else 0
+    if tail_chars > max_chars:
+        return truncate_tail(text, max_chars)
+    if tail_chars == max_chars:
+        return text[-max_chars:]
     if strategy is TruncationStrategy.tail:
-        return f'[truncated: showing last {max_chars:,} of {total:,} chars]\n\n{text[-max_chars:]}'
+        truncated = truncate_tail(text, max_chars)
+        if tail_chars and not truncated.endswith(text[total - tail_chars :]):
+            return text[-max_chars:]
+        return truncated
 
-    head_chars = max_chars * 2 // 5
-    tail_chars = max_chars - head_chars
-    omitted = total - head_chars - tail_chars
-    return (
-        f'{text[:head_chars]}\n\n'
-        f'[truncated: {omitted:,} chars omitted from the middle; '
-        f'showing first {head_chars:,} + last {tail_chars:,} of {total:,} chars]\n\n'
-        f'{text[-tail_chars:]}'
-    )
+    return _truncate_head_and_tail(text, max_chars, strategy, tail_chars)
+
+
+def _truncate_head_and_tail(text: str, max_chars: int, strategy: TruncationStrategy, tail_chars: int) -> str:
+    total = len(text)
+    head_share = 5 if strategy is TruncationStrategy.head else 2
+
+    # Check each count: digit and thousands-separator changes can shorten the marker.
+    for retained in range(max_chars, max(1, tail_chars) - 1, -1):
+        head_chars = (retained - tail_chars) * head_share // 5
+        if strategy is TruncationStrategy.head and not tail_chars:
+            marker = f'\n\n[truncated: showing first {retained:,} of {total:,} chars]'
+        else:
+            marker = (
+                f'\n\n[truncated: {total - retained:,} chars omitted from the middle; '
+                f'showing first {head_chars:,} + last {retained - head_chars:,} of {total:,} chars]\n\n'
+            )
+        if retained + len(marker) <= max_chars:
+            break
+    else:
+        if tail_chars:
+            return text[-max_chars:]
+        retained, marker = max_chars, ''
+        head_chars = retained * head_share // 5
+
+    return text[:head_chars] + marker + text[total - (retained - head_chars) :]

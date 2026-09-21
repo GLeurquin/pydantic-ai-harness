@@ -42,7 +42,7 @@ To plug a Pydantic AI agent into an ACP editor you would otherwise have to imple
 ## Installation
 
 ```bash
-uv add "pydantic-ai-harness[acp]"
+pip/uv-add "pydantic-ai-harness[acp]"
 ```
 
 This pulls in the [`agent-client-protocol`](https://pypi.org/project/agent-client-protocol/) SDK. The rest of the harness does not depend on it -- only `pydantic_ai_harness.experimental.acp` does.
@@ -94,9 +94,8 @@ A coding agent should read and write files in the workspace the editor opened, n
 
 ```python
 from pydantic_ai import Agent
+from pydantic_ai_harness import FileSystem, Shell
 from pydantic_ai_harness.experimental.acp import AcpSession, AcpSessionConfig, run_acp_stdio_sync
-from pydantic_ai_harness.filesystem import FileSystem
-from pydantic_ai_harness.shell import Shell
 
 agent = Agent('anthropic:claude-sonnet-4-6')
 
@@ -123,9 +122,8 @@ The factory runs once per session with the client's `AcpSession` setup (its `cwd
 The local [`FileSystem`](filesystem.md) and [`Shell`](shell.md) above operate on the agent process's own disk and subprocesses. An editor's source of truth is different: unsaved buffers, its own idea of the workspace layout, and -- for a remote or containerized editor -- the machine the code actually lives on. When the client advertises support, `acp_filesystem` and `acp_terminal` give the agent `read_file`/`write_file`/`run_command` tools that route through the client, so it acts where the user is:
 
 ```python
+from pydantic_ai_harness import FileSystem, Shell
 from pydantic_ai_harness.experimental.acp import AcpSession, AcpSessionConfig, acp_filesystem, acp_terminal
-from pydantic_ai_harness.filesystem import FileSystem
-from pydantic_ai_harness.shell import Shell
 
 
 def session_config(session: AcpSession) -> AcpSessionConfig[None]:
@@ -203,7 +201,7 @@ A model id is any string a Pydantic AI model accepts, so newer models not yet in
 ## Cancellation and limitations
 
 - **Cancellation.** `session/cancel` and `session/close` cancel the in-flight turn; close waits for it to unwind before returning. Cooperative async tools stop promptly. A synchronous tool already running in a worker thread cannot be force-stopped, so prefer async tools for cancellation-sensitive work.
-- **Approval detection.** Tools that require approval are recognized when they live in a `FunctionToolset` (which the harness `FileSystem`/`Shell` and `@agent.tool` all use). A tool whose approval requirement is decided dynamically per call (by raising `ApprovalRequired` from its body) starts as `in_progress`, and any side effects it ran before raising have already happened -- use an `ApprovalRequiredToolset` for actions that must not partially execute before approval.
+- **Approval detection.** Tools that require approval are recognized when they live in a `FunctionToolset` (which the harness `FileSystem`/`Shell` and `@agent.tool` all use). A tool whose approval requirement is decided dynamically per call (by raising `ApprovalRequired` from its body) starts as `in_progress`, and any side effects it ran before raising have already happened -- use an `ApprovalRequiredToolset` for actions that must not partially execute before approval. A tool added only per run (via a capability's `for_run()`, or the callable arm of an `AgentToolset`) is not recognized up front, but the run reports exactly which calls paused for approval, and the adapter corrects their announced status to `pending` before asking the client.
 - **Overwrite diffs.** `write_file` renders an overwrite as if creating a new file, so the diff understates what it replaced.
 - **Live terminal panes.** `acp_terminal` returns a command's captured output; it does not embed a live terminal pane in the tool call.
 - **Images.** Prompt image blocks are off by default and must be enabled via `prompt_capabilities` with a model that accepts them.

@@ -1,14 +1,5 @@
 # Subagents
 
-> [!NOTE]
-> Import this capability from its submodule -- there is no top-level `pydantic_ai_harness` re-export:
->
-> ```python
-> from pydantic_ai_harness.subagents import SubAgent, SubAgents
-> ```
->
-> The API may change between releases. Where practical, breaking changes ship with a deprecation warning.
-
 Let an agent delegate self-contained tasks to named child agents.
 
 [Source](https://github.com/pydantic/pydantic-ai-harness/tree/main/pydantic_ai_harness/subagents/)
@@ -23,7 +14,7 @@ A single agent that does everything accumulates a large tool set and a long cont
 
 ```python
 from pydantic_ai import Agent
-from pydantic_ai_harness.subagents import SubAgent, SubAgents
+from pydantic_ai_harness import SubAgent, SubAgents
 
 researcher = Agent('anthropic:claude-sonnet-4-6', name='researcher', description='Researches a topic and reports findings')
 writer = Agent('anthropic:claude-sonnet-4-6', name='writer', description='Turns notes into polished prose')
@@ -65,7 +56,7 @@ Each `SubAgent` carries its own budgets, so one delegate's controls do not touch
 ```python
 from pydantic_ai import Agent
 from pydantic_ai.usage import UsageLimits
-from pydantic_ai_harness.subagents import SubAgent, SubAgents
+from pydantic_ai_harness import SubAgent, SubAgents
 
 reproducer = Agent('anthropic:claude-sonnet-4-6', instructions='Reproduce the reported bug from a minimal script.')
 librarian = Agent('anthropic:claude-sonnet-4-6', instructions='Find relevant docs, issues, and prior art.')
@@ -99,7 +90,8 @@ The orchestrator knows how hard a task is at the moment it writes the brief, so 
 ```python
 from pydantic_ai import Agent
 from pydantic_ai.settings import ModelSettings
-from pydantic_ai_harness.subagents import ModelOption, SubAgent, SubAgents
+from pydantic_ai_harness import SubAgent, SubAgents
+from pydantic_ai_harness.subagents import ModelOption
 
 reviewer = Agent('anthropic:claude-sonnet-4-6', name='reviewer', description='Reviews a diff')
 linter = Agent('anthropic:claude-sonnet-4-6', name='linter', description='Runs the linter and reports failures')
@@ -138,7 +130,47 @@ A sub-agent run that fails with a *soft model error* (`ModelRetry`, `UnexpectedM
 
 Hard errors propagate to stop the whole run. A `UsageLimitExceeded` from a child that has *no* per-delegate `usage_limits` (so it shares the parent's accounting) means the whole tree is out of budget and propagates; a child reaching its *own* `usage_limits` is soft, as above.
 
-An *unexpected crash* -- any other exception the child raises, such as a provider `ModelAPIError`/`FallbackExceptionGroup` or a plain `ValueError` from a bad tool argument -- propagates by default and aborts the parent run. Set `contain_errors=True` (per delegate, or as the `SubAgents` default) to catch it and return it to the parent as a bounded `ModelRetry` instead, so one delegate crash cannot kill the whole run. Containment stays loud: the exception rides the retry message (`Sub-agent '<name>' crashed: ...`), it is logged via the standard `logging` module, and `tool_retries` still bounds consecutive crashes into an abort. This is orthogonal to `on_failure` -- a contained crash always raises the loud retry, never the soft `on_failure` return, so a genuine bug is never masked as success. Cancellation, a shared `UsageLimitExceeded`, pydantic-ai control-flow signals (`CallDeferred`, `ApprovalRequired`, the `Skip*` signals), and `UserError` always propagate regardless of `contain_errors`.
+An *unexpected crash* -- any other exception the child raises, such as a provider `ModelAPIError`/`FallbackExceptionGroup` or a plain `ValueError` from a bad tool argument -- propagates by default and aborts the parent run. Set `contain_errors=True` (per delegate, or as the `SubAgents` default) to catch it and return it to the parent as a bounded `ModelRetry` instead, so one delegate crash cannot kill the whole run. Containment stays loud: the exception rides the retry message (`Sub-agent '<name>' crashed: ...`), it is logged via the standard `logging` module, and `tool_retries` still bounds consecutive crashes into an abort. This is orthogonal to `on_failure` -- a contained crash always raises the loud retry, never the soft `on_failure` return, so a genuine bug is never masked as success. Cancellation, a shared `UsageLimitExceeded`, pydantic-ai control-flow signals (`CallDeferred`, `ApprovalRequired`, the `Skip*` signals), and `UserError` bypass containment regardless of `contain_errors`. Cancellation covers both kinds: external cancellation (`asyncio.CancelledError`) propagates as-is, and a child's own first-party cancellation (`RunContext.cancel()` inside the child, raising `RunCancelled`) leaves the delegate tool uncontained, after which pydantic-ai isolates it as a failed `delegate_task` return the parent model can react to, not a crash retry that invites re-delegation.
+
+## Events
+
+`SubAgents` emits typed capability events in the `sub_agents` namespace so a host can show a delegation as it runs, and how it ended, without parsing the delegate tool's arguments and result:
+
+| Event | Dispatch | When | Payload |
+|---|---|---|---|
+| `DelegationStartEvent` | stream | a delegation passed every check and the child run is about to start | `agent_name`, `task`, `truncated`, `model` (the menu key, or `None`), `inherits_tools` |
+| `DelegationEndEvent` | stream | the delegation settled into what the parent receives | `agent_name`, `outcome`, `output`, `truncated`, `usage`, `duration_seconds` |
+
+Both are notifications. One delegation is one `delegate_task` call, so a start and its end share the `tool_call_id` core stamps on every event; that is how a subscriber pairs them when the model delegates in parallel.
+
+`outcome` follows the failure handling above: `ok` (the child's output went back to the parent), `timeout`, `budget` (the child's own `usage_limits`), `failed` (a soft model error, returned as `on_failure` or raised as a `ModelRetry`), or `contained` (a crash `contain_errors` caught). `output` is what the delegate tool hands back to the parent in each case: the child's output, the steering message, or the retry text. It is emitted from inside the tool, before any `ToolGuardrail` result guard screens that text for the model; a host that needs the screened version reads the `ToolReturnPart` in core's `FunctionToolResultEvent`. `usage` is the child's own `RunUsage` when it has separate accounting (`usage_limits` set, or `forward_usage=False`) and `None` when it accrues into the parent's usage, where its share is not separable.
+
+A delegation refused before the child runs (an unknown sub-agent, a model key off the menu, an exhausted `max_calls` budget) emits nothing; the tool result says why. An exception that propagates out of the delegate tool (a shared usage limit, an uncontained crash, a cancellation) ends without an end event. A `SubAgentToolset` registered directly in `Agent(toolsets=[...])` has no owning capability and emits nothing. As with any capability event, a listener that raises aborts the parent run.
+
+`task` and `output` are cut at `MAX_EVENT_TEXT_CHARS` (4096) with a `truncated` flag, so a persisted or forwarded event stream cannot be flooded by one verbose delegation.
+
+```python
+from pydantic_ai import Agent
+from pydantic_ai.capabilities import AbstractCapability, on_event
+from pydantic_ai_harness.subagents import DelegationEndEvent, SubAgent, SubAgents
+
+
+class ReportDelegations(AbstractCapability):
+    @on_event(DelegationEndEvent)
+    async def on_delegation_end(self, ctx, event: DelegationEndEvent) -> None:
+        print(f'{event.agent_name}: {event.outcome} in {event.duration_seconds:.1f}s')
+
+
+researcher = Agent('anthropic:claude-sonnet-4-6', name='researcher')
+agent = Agent(
+    'anthropic:claude-opus-4-7',
+    capabilities=[SubAgents(agents=[SubAgent(researcher)]), ReportDelegations()],
+)
+```
+
+Nested model streaming from the child run is not an event concern; pass an `event_stream_handler` for that.
+
+`SubAgents` emits no OpenTelemetry spans of its own: the child run is a core agent run with its own spans nested under the parent's tool-call span, and the events above carry the outcome a trace would only show as an exception or a tool result.
 
 ## Discovery
 
@@ -150,7 +182,7 @@ A repo's markdown agent definitions become delegates without writing any `Agent`
 
 ```python
 from pydantic_ai import Agent
-from pydantic_ai_harness.subagents import SubAgents
+from pydantic_ai_harness import SubAgents
 
 orchestrator = Agent(
     'anthropic:claude-opus-4-7',
@@ -190,7 +222,8 @@ Frontmatter is read by a small, dependency-free parser limited to those keys (`p
 Disk agents inherit the parent run's model by default. Per agent, the caller can override the model and set a thinking/effort level via `agent_overrides`, keyed by the agent's name:
 
 ```python
-from pydantic_ai_harness.subagents import AgentOverride, SubAgents
+from pydantic_ai_harness import SubAgents
+from pydantic_ai_harness.subagents import AgentOverride
 
 SubAgents(
     agent_folders='agents',
@@ -205,7 +238,7 @@ Every agent the capability builds runs at a minimum thinking-effort floor. `MINI
 A disk agent gets no tools by default (`inherit_tools` is `False`); set `inherit_tools=True` to expose the parent's tools to it through the `inherit_tools` mechanism, in which case its `tools` frontmatter is ignored. To map the frontmatter tool names to specific toolsets instead, pass a `tool_resolver`: it receives each tool name (so it can honor entries like `Bash(git:*)`) and returns the toolsets that provide it, or `None` for an unknown name, which is skipped with a warning.
 
 ```python
-from pydantic_ai_harness.experimental.subagents import SubAgents
+from pydantic_ai_harness import SubAgents
 
 def resolve(tool_name: str):
     return TOOLSETS.get(tool_name)  # -> Sequence[AgentToolset[object]] | None

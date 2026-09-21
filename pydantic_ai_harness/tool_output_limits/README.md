@@ -1,14 +1,5 @@
 # Tool Output Limits
 
-> [!NOTE]
-> Import this capability from its submodule -- there is no top-level `pydantic_ai_harness` re-export:
->
-> ```python
-> from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
-> ```
->
-> The API may change between releases. Where practical, breaking changes ship with a deprecation warning.
-
 A tool can return a payload large enough to dominate the context window. Tool returns
 persist in history as `ToolReturnPart`s, so an oversized one is re-sent on every later
 model request -- paying its token cost for the rest of the run. `ToolOutputLimits`
@@ -45,6 +36,15 @@ reduces both with the same band logic (they spill to distinct handles). Text `co
 reduced in place; non-text `content` (multimodal parts) that overflows is left unreduced with
 a `warnings.warn`, since it cannot be safely truncated.
 
+### `ToolReturn.metadata` is preserved
+
+Spill keys (`overflow_handle`, `overflow_bytes`, `overflow_content_handle`) live in
+`ToolReturn.metadata` alongside whatever the tool put there. A pre-existing mapping is copied
+in with stringified keys; a pre-existing non-mapping value (a string, a dataclass, anything
+that is not a `Mapping`) is kept under `original_metadata` rather than dropped. Either way the
+caller's own metadata survives a spill and is readable from `metadata` on the resulting
+`ToolReturnPart` after `Agent.run`.
+
 ## Bands: combine the modes
 
 Configure an ordered list of size `bands`. Each band is a `(over, action)` pair: when a
@@ -53,13 +53,8 @@ that fits wins; anything below the smallest threshold passes through.
 
 ```python
 from pydantic_ai import Agent
-from pydantic_ai_harness.tool_output_limits import (
-    Band,
-    ToolOutputLimits,
-    Spill,
-    Summarize,
-    Truncate,
-)
+from pydantic_ai_harness import ToolOutputLimits
+from pydantic_ai_harness.tool_output_limits import Band, Spill, Summarize, Truncate
 
 agent = Agent(
     'openai:gpt-4o',
@@ -96,12 +91,8 @@ spill -> truncate.
 
 ```python
 from pydantic_ai import Agent
-from pydantic_ai_harness.tool_output_limits import (
-    Band,
-    ToolOutputLimits,
-    Truncate,
-    TruncationStrategy,
-)
+from pydantic_ai_harness import ToolOutputLimits
+from pydantic_ai_harness.tool_output_limits import Band, Truncate, TruncationStrategy
 
 agent = Agent(
     'openai:gpt-4o',
@@ -117,13 +108,122 @@ agent = Agent(
 )
 ```
 
+### Prefer complete tail lines
+
+Set `Truncate(keep_tail_lines=N)` to reserve the final N lines before allocating the rest of
+the character budget. The default is zero, which leaves existing truncation behavior unchanged.
+
+```python
+from pydantic_ai_harness.tool_output_limits import Band, ToolOutputLimits, Truncate, TruncationStrategy
+
+truncate = Truncate(max_chars=4_000, strategy=TruncationStrategy.head, keep_tail_lines=2)
+limits = ToolOutputLimits(bands=[], per_tool={'run_command': [Band(over=4_000, action=truncate)]})
+```
+
+With `head`, the remaining content budget keeps the beginning of the output. With
+`head_tail`, it is split 2:3 between the beginning and the text immediately before the
+reserved lines. `tail` continues to keep the end. Markers and all retained characters count
+toward `max_chars`.
+
+The cap takes priority. If the requested lines exceed it, truncation falls back to the
+usual tail strategy; if they fit but a full marker would displace them, the result is a
+bare tail slice within the cap. This does not invoke `then` or guarantee that an oversized
+control trailer remains intact.
+
+Lines are separated by LF or CRLF, and their existing endings are retained. A terminating
+newline does not add a line, but a blank final line counts. Requesting more lines than exist
+selects the whole text, subject to the same cap. Negative `keep_tail_lines` values are rejected.
+
+This applies to the text after serialization and optional ANSI stripping, independently
+for `ToolReturn.return_value` and textual `content`. Binary fallbacks are unchanged.
+Tail-line selection adds no telemetry spans: it is a slicing choice within the existing
+tool-result reduction, rather than a separate operation.
+
+## Layering with Shell
+
+Keep Shell's native `max_output_chars` above the `ToolOutputLimits` thresholds. Use
+`tail` truncation for moderate command output and `Spill` for large output:
+
+```python
+from pydantic_ai import Agent
+
+from pydantic_ai_harness.shell import Shell
+from pydantic_ai_harness.tool_output_limits import (
+    Band,
+    Spill,
+    ToolOutputLimits,
+    Truncate,
+    TruncationStrategy,
+)
+
+tail = Truncate(max_chars=4_000, strategy=TruncationStrategy.tail)
+agent = Agent(
+    'openai:gpt-5.6-sol',
+    capabilities=[
+        Shell(allowed_commands=['git', 'rg', 'pytest'], max_output_chars=100_000),
+        ToolOutputLimits(
+            bands=[],
+            per_tool={
+                'run_command': [
+                    Band(over=20_000, action=Spill(then=tail)),
+                    Band(over=4_000, action=tail),
+                ],
+            },
+        ),
+    ],
+)
+```
+
+Only `run_command` uses these bands; `bands=[]` leaves other tools to their native limits.
+A tail slice retains an exit-code trailer when it fits in the retained suffix. It does not
+guarantee that an entire line survives a small budget; `head` can remove the trailer.
+
+Shell applies its native cap before `ToolOutputLimits` sees the result. With the spill
+threshold below that cap, a natively truncated result is stored instead of being truncated
+again, unless the store fails. The spill preview shows both ends and the model can use
+`read_tool_result` to inspect the stored text.
+
+Spilling preserves only the result received from Shell. It cannot recover content already
+removed by the native cap. A preview can contain both spill and native truncation notices;
+a native notice describes the stored result, not the shorter preview. A positive
+`Spill.preview_chars` value controls the preview's content budget; its header and omission
+marker add to that length.
+
 ## Size unit
 
 Thresholds are measured in characters by default. Set `over_tokens=True` to measure in
 estimated tokens (the same ~4-chars-per-token heuristic as `compaction`); pass a `tokenizer`
 callable for accuracy. `Truncate.max_chars` is always characters -- truncation is a
-character operation regardless of the threshold unit. Set `strip_ansi=True` to strip ANSI
-escape sequences from text returns before measuring and reducing.
+character operation regardless of the threshold unit. The cap includes the truncation marker
+and applies separately to each reduced text value. If the budget cannot fit both retained
+content and a complete marker, truncation keeps the selected slice without a marker. A
+non-positive cap returns an empty string. Set `strip_ansi=True` to strip ANSI escape sequences
+from text returns before measuring and reducing.
+
+## Pageable structured spills
+
+A spilled structured return is stored as compact JSON: one long line. `read_tool_result`
+pages by line, so page 1 returns the whole payload and page 2 is empty. Setting `serializer`
+stores the value in a layout with real lines instead:
+
+```python
+from pydantic_ai_harness.tool_output_limits import ToolOutputLimits, indented_json, json_lines
+
+ToolOutputLimits(serializer=indented_json)  # one field per line
+ToolOutputLimits(serializer=json_lines)  # one record per line
+```
+
+Use `json_lines` for tools that return lists of records: line N is record N, so page offsets
+and `pattern` matches line up with whole records. Anything that is not a list-like sequence
+falls back to `indented_json` -- including a list wrapped in a dict, so return the list
+directly for per-record paging. Use `indented_json` for everything else.
+
+Any `(value) -> str` callable works too, but prefer the presets: they escape the Unicode
+line separators (U+0085/U+2028/U+2029) that would otherwise knock read-back offsets off the
+line grid. The serialized text is also what gets measured, so an indented layout can cross
+a size band that compact JSON would not. Strings and binary returns are never serialized,
+returns below the smallest band pass through untouched, and a serializer that raises or
+returns non-text warns and falls back to compact JSON rather than losing the tool output.
 
 ## Spill store
 
@@ -161,7 +261,8 @@ agent that still wants to read a spill. To bound disk use, opt into age-based pr
 from datetime import timedelta
 
 from pydantic_ai import Agent
-from pydantic_ai_harness.tool_output_limits import LocalFileStore, ToolOutputLimits
+from pydantic_ai_harness import ToolOutputLimits
+from pydantic_ai_harness.tool_output_limits import LocalFileStore
 
 store = LocalFileStore(cleanup_after=timedelta(hours=6))  # default: None = keep forever
 agent = Agent('openai:gpt-4o', capabilities=[ToolOutputLimits(store=store)])
@@ -189,14 +290,25 @@ for path in root.rglob('*'):
 
 ## Usage accounting
 
-A `Summarize` call is a real request to the model, so its full usage -- tokens and the
-request itself -- folds into the run's `ctx.usage`, exactly like `SummarizingCompaction`. No
-token caps are imposed on the summary call. A `UsageLimits` request limit will see it.
+A built-in `Summarize` call is a real request to the model, so its full usage -- tokens and the
+request itself -- folds into the run's `ctx.usage`, exactly like `SummarizingCompaction`. Its nested
+run receives the parent limits unchanged except that a finite request limit reserves one request for
+the pending parent request.
 
 By default `Summarize` inherits the running agent's model (`ctx.model`). Pass a model id or
 instance to `Summarize(model=...)` to override, or a `summarize` callable to bypass the
 built-in prompt entirely. The `summary_prompt` template on the capability must contain both
 `{tool_name}` and `{output}` placeholders.
+
+With a durable-execution capability attached, built-in model summarization is a journaled
+capability operation. `ToolOutputLimits` carries the stable default `id='tool_output_limits'`, so
+durable recovery works without configuration.
+
+Two details matter when choosing a band under durability. The text being summarized is part of the
+journaled operation input, so prefer `Spill` over built-in `Summarize` for outputs near the
+engine's payload limit. And a custom `summarize` callable runs directly rather than as a durable
+operation -- arbitrary callables cannot be reconstructed on the worker side -- so it may be called
+again on replay.
 
 ## Edge cases
 

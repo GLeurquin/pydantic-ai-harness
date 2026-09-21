@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -11,8 +12,14 @@ from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.tools import RunContext
 
+from pydantic_ai_harness._warn import HarnessDeprecationWarning
+from pydantic_ai_harness.compaction._context_usage_events import ContextUsageEvent
 from pydantic_ai_harness.compaction._context_window import DEFAULT_CONTEXT_WINDOW, resolve_context_window
-from pydantic_ai_harness.compaction._shared import estimate_token_count
+from pydantic_ai_harness.compaction._shared import (
+    estimate_context_tokens,
+    get_compaction_reclaim,
+    has_context_usage_anchor,
+)
 
 if TYPE_CHECKING:
     from pydantic_ai.models import ModelRequestContext
@@ -25,10 +32,11 @@ class ContextUsage:
     used_tokens: int
     """Estimated tokens in the message history about to be sent.
 
-    Counted by `estimate_token_count`: every message part that is sent, plus the most recent
-    `ModelRequest.instructions` once. Tool schemas are outside the count, so a gauge built on
-    this reads lower than what the provider bills. Tool-schema accounting is tracked separately
-    in pydantic/pydantic-ai-harness#100.
+    Counted by `estimate_context_tokens`: the provider-reported usage of the most recent model
+    response (tool schemas included) plus an estimate of messages and newly revealed tool schemas
+    added since. With no reported usage, message text falls back to the character heuristic;
+    schemas named by availability deltas are still estimated from the pending request
+    parameters, but other tool schemas remain outside that heuristic.
     """
 
     window_tokens: int
@@ -59,7 +67,9 @@ class ReportContextUsage(AbstractCapability[AgentDepsT]):
     It only observes -- it never edits the history.
 
     Order matters: register it *after* a compaction capability to see the compacted history,
-    or before it to see what triggered the compaction.
+    or before it to see what triggered the compaction. After a preceding compactor rewrites
+    anchored history, the reading subtracts that compactor's heuristic reclaim while retaining
+    the anchor's fixed provider overhead.
 
     Example:
         ```python
@@ -70,17 +80,17 @@ class ReportContextUsage(AbstractCapability[AgentDepsT]):
             'anthropic:claude-sonnet-4-6',
             capabilities=[
                 SummarizingCompaction(max_fraction=0.9, keep_messages=20),
-                ReportContextUsage(on_usage=lambda usage: print(f'{usage.fraction:.0%}')),
+                ReportContextUsage(),
             ],
         )
         ```
     """
 
-    on_usage: Callable[[ContextUsage], None | Awaitable[None]]
-    """Called with a fresh reading before every model request.
+    on_usage: Callable[[ContextUsage], None | Awaitable[None]] | None = None
+    """Deprecated callback with a fresh reading before every model request.
 
-    A coroutine function is awaited, so a gauge that pushes over a socket does not need a
-    sync bridge. An exception raised here propagates and fails the run.
+    Subscribe to `ContextUsageEvent` instead. A coroutine function is awaited and an exception
+    raised here propagates and fails the run.
     """
 
     context_window: int | None = None
@@ -93,6 +103,13 @@ class ReportContextUsage(AbstractCapability[AgentDepsT]):
     """Optional tokenizer, matching the one your compaction strategy uses."""
 
     def __post_init__(self) -> None:
+        if self.on_usage is not None:
+            warnings.warn(
+                '`ReportContextUsage.on_usage` is deprecated; subscribe to `ContextUsageEvent` with '
+                '`@agent.on_event` instead, or with `@on_event` on a capability of your own.',
+                HarnessDeprecationWarning,
+                stacklevel=2,
+            )
         if self.context_window is not None and self.context_window < 1:
             raise ValueError('context_window must be positive.')
         if self.fallback_context_window < 1:
@@ -101,7 +118,13 @@ class ReportContextUsage(AbstractCapability[AgentDepsT]):
     def _measure(self, request_context: ModelRequestContext) -> ContextUsage:
         """Build a reading for the request as it stands."""
         messages: list[ModelMessage] = list(request_context.messages)
-        used = estimate_token_count(messages, self.tokenizer)
+        used = estimate_context_tokens(
+            messages,
+            self.tokenizer,
+            model_request_parameters=request_context.model_request_parameters,
+        )
+        if has_context_usage_anchor(messages):
+            used = max(used - get_compaction_reclaim(request_context), 0)
         if self.context_window is not None:
             return ContextUsage(used_tokens=used, window_tokens=self.context_window, resolved=True)
         # Resolved from the request's model rather than the run's: a capability may replace
@@ -118,8 +141,18 @@ class ReportContextUsage(AbstractCapability[AgentDepsT]):
         ctx: RunContext[AgentDepsT],
         request_context: ModelRequestContext,
     ) -> ModelRequestContext:
-        """Measure the pending history and hand the reading to `on_usage`."""
-        outcome = self.on_usage(self._measure(request_context))
-        if isinstance(outcome, Awaitable):
-            await outcome
+        """Measure the pending history, emit it, and invoke the compatibility callback."""
+        reading = self._measure(request_context)
+        await ctx.emit(
+            ContextUsageEvent(
+                used_tokens=reading.used_tokens,
+                window_tokens=reading.window_tokens,
+                resolved=reading.resolved,
+                fraction=reading.fraction,
+            )
+        )
+        if self.on_usage is not None:
+            outcome = self.on_usage(reading)
+            if isinstance(outcome, Awaitable):
+                await outcome
         return request_context

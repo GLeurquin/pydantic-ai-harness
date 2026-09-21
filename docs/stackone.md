@@ -11,7 +11,7 @@ Salesforce, or Zendesk. Each instance is scoped to one linked account, which is 
 
 [Source](https://github.com/pydantic/pydantic-ai-harness/tree/main/pydantic_ai_harness/stackone/)
 
-> The API may change between releases. Where practical, breaking changes ship with a deprecation warning.
+> While Pydantic AI Harness is on 0.x releases, the API may change between minor releases; when it does, deprecation warnings and release-note migration guidance tell you (or your agent) exactly how to upgrade. See the [version policy](index.md#version-policy).
 
 ## Before you start
 
@@ -26,7 +26,7 @@ You also need an API key for the model your agent uses.
 ## Installation
 
 ```bash
-uv add "pydantic-ai-harness[stackone]" "pydantic-ai-slim[openai,spec]"
+pip/uv-add "pydantic-ai-harness[stackone]" "pydantic-ai-slim[openai,spec]"
 ```
 
 The `openai` and `spec` extras support the model and agent-spec examples below. Install the provider extra for a
@@ -49,7 +49,7 @@ ID is not hard-coded. You can pass `api_key=` directly instead, but keep secrets
 import os
 
 from pydantic_ai import Agent
-from pydantic_ai_harness.stackone import StackOne
+from pydantic_ai_harness import StackOne
 
 agent = Agent(
     'openai:gpt-5',
@@ -74,7 +74,7 @@ Use `actions` when you also want to limit which tools the model sees. Patterns u
 the full `{connector}_{action}_{entity}` tool name:
 
 ```python
-from pydantic_ai_harness.stackone import StackOne
+from pydantic_ai_harness import StackOne
 
 StackOne(account_id='your-linked-account-id', actions=['*_list_*'])            # All matching list tools
 StackOne(account_id='your-linked-account-id', actions=['workday_get_worker'])  # One exact tool
@@ -93,15 +93,51 @@ Passing `actions` selects `individual` mode automatically. Explicitly combining 
 In `search_execute` mode, action IDs are returned by the search tool at runtime and should not be guessed. In
 `individual` mode, all selected tool schemas are sent to the model, so filter large action sets with `actions`.
 
-To keep StackOne tools out of the model context until they are needed, pass `defer_loading=True`. The capability uses
-`id='stackone'` by default so it can be loaded on demand. Give each instance a distinct `id` when one agent uses
-multiple StackOne accounts:
+To keep StackOne tools out of the model context until they are needed, pass `defer_loading=True`. The capability needs
+an `id` to be loaded on demand, and derives one from the linked account -- `StackOne(account_id='45320')` is
+`stackone-45320` -- so one agent can reach several accounts without naming each one:
 
 ```python
-from pydantic_ai_harness.stackone import StackOne
+from pydantic_ai_harness import StackOne
 
 StackOne(account_id='your-linked-account-id', defer_loading=True)
 ```
+
+Two capabilities on the *same* account share that id and are rejected at agent construction, which is what you want:
+one linked account is one connection. Pass an explicit `id=` if you need to override the derived one.
+
+### Two accounts on one agent
+
+Distinct ids keep the two capabilities apart, but they do not rename their tools. StackOne's server
+names the tools after the connector and action (`bamboohr_list_employees`), so two accounts on the
+same provider list the same names and the run fails on the tool name rather than the id:
+
+```
+UserError: StackOneToolset 'stackone-crm-account' defines a tool whose name conflicts with
+existing tool from StackOneToolset: 'bamboohr_list_employees'
+```
+
+Namespace them with [`PrefixTools`](https://pydantic.dev/docs/ai/capabilities/overview/), which is
+what it is for:
+
+```python
+from pydantic_ai import Agent
+from pydantic_ai.capabilities import PrefixTools
+
+from pydantic_ai_harness import StackOne
+
+agent = Agent(
+    'openai:gpt-5.6-sol',
+    capabilities=[
+        PrefixTools(StackOne(account_id='hr-account'), prefix='hr'),
+        PrefixTools(StackOne(account_id='crm-account'), prefix='crm'),
+    ],
+)
+```
+
+The model sees `hr_bamboohr_list_employees` and `crm_bamboohr_list_employees`, and each routes to
+its own linked account. Two accounts on *different* providers list different tool names already, so
+they need no prefix.
 
 ### Bound large tool results
 
@@ -110,8 +146,7 @@ capability to reduce oversized tool returns agent-wide:
 
 ```python
 from pydantic_ai import Agent
-from pydantic_ai_harness.stackone import StackOne
-from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
+from pydantic_ai_harness import StackOne, ToolOutputLimits
 
 agent = Agent(
     'openai:gpt-5',
@@ -159,7 +194,7 @@ capabilities:
 
 ```python
 from pydantic_ai import Agent
-from pydantic_ai_harness.stackone import StackOne
+from pydantic_ai_harness import StackOne
 
 agent = Agent.from_file('agent.yaml', custom_capability_types=[StackOne])
 ```

@@ -9,7 +9,7 @@ from pathlib import Path
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.tools import AgentDepsT
 
-from pydantic_ai_harness.shell._toolset import ShellToolset
+from pydantic_ai_harness.shell._toolset import RUN_SCOPED_TOOL_NAMES, ShellToolset
 
 _DEFAULT_DENIED_COMMANDS: tuple[str, ...] = (
     'rm',
@@ -36,11 +36,14 @@ LLM_API_KEY_ENV_PATTERNS: tuple[str, ...] = (
 )
 """Glob patterns for common LLM provider credentials, for `denied_env_patterns`.
 
-Pass these when an agent runs untrusted commands that must not read the host's
-LLM API keys. Covers provider prefixes only -- not other host secrets, and the
-prefixes are coarse (`GOOGLE_*` also strips `GOOGLE_APPLICATION_CREDENTIALS`),
-so treat it as a starting point. Not a default: stripping env silently would
-break agents that rely on inherited credentials, so opt in explicitly.
+Pass these to keep provider credentials out of the subprocess's own environment.
+This is not a security boundary: a command running under the same OS identity
+may still read the parent process's environment through system interfaces such
+as Linux procfs. Use OS-level isolation for untrusted commands. Covers provider
+prefixes only -- not other host secrets, and the prefixes are coarse (`GOOGLE_*`
+also strips `GOOGLE_APPLICATION_CREDENTIALS`), so treat it as a starting point.
+Not a default: stripping env silently would break agents that rely on inherited
+credentials, so opt in explicitly.
 """
 
 
@@ -85,8 +88,9 @@ class Shell(AbstractCapability[AgentDepsT]):
 
     When `None` (default) the subprocess inherits the parent environment. Set
     this to a fixed mapping to start subprocesses with exactly these variables
-    and nothing else -- a hard boundary that keeps host secrets (LLM API keys,
-    tokens) out of commands the agent runs.
+    in its own environment. This is not a security boundary: a command running
+    as the same OS user may read secrets from the parent process through system
+    interfaces such as Linux procfs. Use OS-level isolation for untrusted commands.
     """
 
     denied_env_patterns: Sequence[str] = field(default_factory=list[str])
@@ -98,6 +102,18 @@ class Shell(AbstractCapability[AgentDepsT]):
     any pattern are removed from the base environment; applied on top of `env`
     when both are set, so patterns filter an explicit `env` too. See
     `LLM_API_KEY_ENV_PATTERNS` for a ready-made provider-credential denylist.
+    """
+
+    tools: Sequence[str] = RUN_SCOPED_TOOL_NAMES
+    """Which tools to register, from `SHELL_TOOL_NAMES`.
+
+    The default is the run-scoped family: `run_command`, `start_command`,
+    `check_command`, and `stop_command`, whose processes are killed when the run
+    ends. Name `shell` to register the persistent tool instead: its commands
+    outlive the run, a foreground call waits at most `default_timeout` seconds
+    (capped at 270) before returning handles to the still-running process, and
+    the model reads the returned log and status files with its other tools.
+    `persist_cwd` does not apply to `shell`; each command starts at `cwd`.
     """
 
     def __post_init__(self) -> None:
@@ -118,4 +134,5 @@ class Shell(AbstractCapability[AgentDepsT]):
             allow_interactive=self.allow_interactive,
             env=self.env,
             denied_env_patterns=self.denied_env_patterns,
+            tools=self.tools,
         )

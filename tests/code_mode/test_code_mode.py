@@ -10,13 +10,19 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import sys
+import warnings as _warnings
 from collections.abc import AsyncIterator
+from dataclasses import replace as dc_replace
+from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 from unittest.mock import MagicMock
+from uuid import UUID
 
+import anyio
 import pytest
+from pydantic import BaseModel
 from pydantic_ai import (
     AbstractToolset,
     Agent,
@@ -24,27 +30,48 @@ from pydantic_ai import (
     Tool,
     ToolDefinition,
 )
-from pydantic_ai.exceptions import ModelRetry
-from pydantic_ai.messages import ToolCallPart
+from pydantic_ai.capabilities import AbstractCapability, Capability, Instrumentation, ToolSearch
+from pydantic_ai.exceptions import ApprovalRequired as _ApprovalRequired
+from pydantic_ai.exceptions import ModelRetry, UserError
+from pydantic_ai.messages import (
+    BinaryContent,
+    InstructionPart,
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    NativeToolReturnPart,
+    NativeToolSearchReturnPart,
+    SystemPromptPart,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+    ToolSearchReturnPart,
+    UserPromptPart,
+)
+from pydantic_ai.messages import ToolReturn as ToolReturnMsg
+from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.models.instrumented import InstrumentationSettings
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.tool_manager import ParallelExecutionMode, ToolManager
+from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults, ToolApproved, ToolDenied
+from pydantic_ai.toolsets._tool_search import _SEARCH_TOOLS_NAME, ToolSearchToolset, parse_discovered_tools
 from pydantic_ai.toolsets.abstract import ToolsetTool
+from pydantic_ai.toolsets.combined import CombinedToolset
 from pydantic_ai.toolsets.function import FunctionToolset
-from pydantic_ai.usage import RunUsage
+from pydantic_ai.usage import RequestUsage, RunUsage
 from pydantic_core import SchemaValidator, core_schema
-from pydantic_monty import NOT_HANDLED, AsyncMonty, MountDir, OSAccess, OsFunction
+from pydantic_monty import NOT_HANDLED, Monty, MountDir, OSAccess, OsFunction
 from typing_extensions import Never, TypedDict
 
 from pydantic_ai_harness import CodeMode
-from pydantic_ai_harness.code_mode import CodeModeToolset
+from pydantic_ai_harness.code_mode import CodeModeResourceLimits, CodeModeToolset
+from pydantic_ai_harness.code_mode._capability import (
+    _extract_discovered_names,  # pyright: ignore[reportPrivateUsage]
+)
 from pydantic_ai_harness.code_mode._toolset import (  # pyright: ignore[reportPrivateUsage]
     _SEARCH_TOOLS_MODIFIER,
     _TOOL_SEARCH_ADDENDUM,
-    _DispatchGate,
-    _DispatchTracker,
-    _GateRequest,
     _global_mode_is_sequential,
-    _in_temporal_workflow,
     _sanitize_tool_name,
 )
 
@@ -100,7 +127,6 @@ async def build_ctx(
     Use this for tests that call `call_tool` -- `CodeModeToolset` requires
     `ctx.tool_manager` to be set.
     """
-    from pydantic_ai.tool_manager import ToolManager
 
     await toolset.__aenter__()
     _entered_toolsets.append(toolset)
@@ -144,6 +170,48 @@ class Person(TypedDict):
 def lookup_person(person: Person, count: int = 1) -> str:
     """Look up details for a person."""
     return f'{count}x {person["name"]} @ {person["home"]["street"]}'
+
+
+class Receipt(BaseModel):
+    """Fields whose Python type is not a JSON scalar."""
+
+    amount: Decimal
+    ident: UUID
+    when: datetime
+
+
+def get_receipt() -> Receipt:
+    """Fetch a receipt."""
+    return Receipt(
+        amount=Decimal('1.50'),
+        ident=UUID('00000000-0000-0000-0000-000000000001'),
+        when=datetime(2026, 1, 1),
+    )
+
+
+def get_prices() -> dict[Decimal, str]:
+    """Fetch prices by amount."""
+    return {Decimal('1.50'): 'USD'}
+
+
+def get_labels() -> dict[int, str]:
+    """Fetch labels by id."""
+    return {1: 'one'}
+
+
+def get_blobs() -> set[bytes]:
+    """Fetch binary blobs."""
+    return {b'\xff\xfe'}
+
+
+def get_sentinel() -> Any:
+    """Fetch a sentinel."""
+    return ...
+
+
+def get_colliding_labels() -> Any:
+    """Fetch labels whose keys collide once stringified."""
+    return {1: 'from-int', '1': 'from-str'}
 
 
 # Hand-built `ToolDefinition` objects + a tiny stub toolset are used by
@@ -351,6 +419,94 @@ class TestCodeMode:
         )
         assert result.return_value == {'output': 'Hello, Alice!\n'}
 
+    async def test_tool_result_crosses_in_the_shape_the_stub_declares(self) -> None:
+        """`Decimal`, `UUID` and `datetime` reach the sandbox as their JSON form.
+
+        `_build_type_check_stubs` derives the stub from the tool's JSON schema, so
+        those fields are declared `str`. Dumping in Python mode disagreed with that:
+        Monty rejects `Decimal` and `UUID` outright, and a `datetime` arrived where
+        the stub promised a `str`, so the type check passed and the snippet failed
+        at runtime.
+        """
+        wrapper = CodeMode[object]().get_wrapper_toolset(_build_function_toolset(get_receipt))
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+        code = "r = await get_receipt()\n[r['amount'], r['ident'], r['when']]"
+        result = await wrapper.call_tool('run_code', {'code': code}, ctx, tools['run_code'])
+        assert result.return_value == [
+            '1.50',
+            '00000000-0000-0000-0000-000000000001',
+            '2026-01-01T00:00:00',
+        ]
+
+        # The un-dumped result is still what the message history records.
+        assert result.metadata['tool_returns']['pyd_ai_code_mode__1'].content == get_receipt()
+
+    async def test_mapping_keys_cross_as_the_strings_the_stub_declares(self) -> None:
+        """A `Decimal` key reaches the sandbox as `'1.50'`, not as a `Decimal`.
+
+        JSON object keys are always strings, so the stub declares `dict[str, str]`
+        whatever the Python key type is. Leaving the key alone hit the same two
+        failures as the values: Monty rejects a `Decimal` key outright.
+        """
+        wrapper = CodeMode[object]().get_wrapper_toolset(_build_function_toolset(get_prices))
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+        code = "p = await get_prices()\np['1.50']"
+        result = await wrapper.call_tool('run_code', {'code': code}, ctx, tools['run_code'])
+        assert result.return_value == 'USD'
+
+    async def test_int_mapping_keys_cross_as_the_strings_the_stub_declares(self) -> None:
+        """An `int` key reaches the sandbox as `'1'`, so indexing with the declared `str` works.
+
+        This is the silent half: the stub declares `dict[str, str]`, so a snippet
+        indexing with a `str` type-checked and then raised `KeyError` against the
+        `int` key that actually arrived.
+        """
+        wrapper = CodeMode[object]().get_wrapper_toolset(_build_function_toolset(get_labels))
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+        code = "labels = await get_labels()\n[labels['1'], list(labels.keys())]"
+        result = await wrapper.call_tool('run_code', {'code': code}, ctx, tools['run_code'])
+        assert result.return_value == ['one', ['1']]
+
+    async def test_binary_survives_inside_a_set(self) -> None:
+        """A `set` recurses like the other array containers, so its binary leaves stay `bytes`.
+
+        Sending the set to `to_jsonable_python` whole would utf-8 decode the payload,
+        which arbitrary bytes fail.
+        """
+        wrapper = CodeMode[object]().get_wrapper_toolset(_build_function_toolset(get_blobs))
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+        code = 'blobs = await get_blobs()\nblobs'
+        result = await wrapper.call_tool('run_code', {'code': code}, ctx, tools['run_code'])
+        assert result.return_value == [b'\xff\xfe']
+
+    async def test_ellipsis_crosses_as_itself(self) -> None:
+        """Monty holds `Ellipsis`, and JSON has no form for it, so it is left alone."""
+        wrapper = CodeMode[object]().get_wrapper_toolset(_build_function_toolset(get_sentinel))
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+        code = 'x = await get_sentinel()\nx is ...'
+        result = await wrapper.call_tool('run_code', {'code': code}, ctx, tools['run_code'])
+        assert result.return_value is True
+
+    async def test_mapping_keys_that_collide_once_stringified_are_rejected(self) -> None:
+        """`1` and `'1'` both render as `'1'`, which would drop one value silently."""
+        wrapper = CodeMode[object]().get_wrapper_toolset(_build_function_toolset(get_colliding_labels))
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+        code = 'await get_colliding_labels()'
+        with pytest.raises(ModelRetry, match='renders as the JSON key'):
+            await wrapper.call_tool('run_code', {'code': code}, ctx, tools['run_code'])
+
     async def test_run_code_can_chain_multiple_tool_calls_in_one_snippet(self) -> None:
         """A realistic LLM snippet that calls two tools in one `run_code` invocation."""
         wrapper = CodeMode[object]().get_wrapper_toolset(_build_function_toolset(add, greet))
@@ -376,40 +532,6 @@ class TestCodeMode:
         returns = result.metadata['tool_returns']
         assert len(calls) == 2
         assert len(returns) == 2
-
-    async def test_run_code_parallel_tool_calls_overlap(self) -> None:
-        """Two ordinary externals can both make progress before either finishes."""
-        both_started = asyncio.Event()
-        release = asyncio.Event()
-        active = 0
-
-        async def slow(label: str) -> str:
-            nonlocal active
-            active += 1
-            if active == 2:
-                both_started.set()
-            await release.wait()
-            active -= 1
-            return label
-
-        wrapper = CodeMode[object]().get_wrapper_toolset(_build_function_toolset(slow))
-        assert isinstance(wrapper, CodeModeToolset)
-        ctx = await build_ctx(None, wrapper)
-        tools = await wrapper.get_tools(ctx)
-
-        call = asyncio.create_task(
-            wrapper.call_tool(
-                'run_code',
-                {'code': ('import asyncio\nawait asyncio.gather(slow(label="first"), slow(label="second"))')},
-                ctx,
-                tools['run_code'],
-            )
-        )
-        await asyncio.wait_for(both_started.wait(), timeout=1)
-        release.set()
-
-        result = await call
-        assert result.return_value == ['first', 'second']
 
     async def test_run_code_parallel_tool_calls_one_fails(self) -> None:
         """When one of several parallel tool calls fails, the error surfaces as ModelRetry."""
@@ -539,6 +661,678 @@ class TestCodeMode:
         result = await wrapper.call_tool('run_code', {'code': 'x + 1'}, ctx, tools['run_code'])
         assert result.return_value == 8
 
+    async def test_run_code_caps_nested_tool_calls(self) -> None:
+        """A snippet that exceeds `max_tool_calls` ends with a retry naming the limit."""
+        wrapper = CodeMode[object](max_tool_calls=2).get_wrapper_toolset(_build_function_toolset(add))
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+
+        with pytest.raises(ModelRetry, match=r'allows 2 nested tool calls'):
+            await wrapper.call_tool(
+                'run_code',
+                {'code': 'import asyncio\nawait asyncio.gather(add(a=1, b=1), add(a=2, b=2), add(a=3, b=3))'},
+                ctx,
+                tools['run_code'],
+            )
+
+    async def test_nested_call_budget_is_reserved_before_dispatch(self) -> None:
+        """Calls past the budget never run, so a gather cannot outrun the limit before it bites.
+
+        The executor schedules each deferred call as a task without yielding in between, so a
+        budget checked inside the dispatch coroutine would admit every call in the gather.
+        """
+        executed: list[int] = []
+
+        def record(value: int) -> int:
+            """Record a call."""
+            executed.append(value)
+            return value
+
+        wrapper = CodeMode[object](max_tool_calls=3).get_wrapper_toolset(_build_function_toolset(record))
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+
+        await wrapper.call_tool(
+            'run_code',
+            {'code': 'import asyncio\nawait asyncio.gather(*[record(value=i) for i in range(3)])'},
+            ctx,
+            tools['run_code'],
+        )
+        assert sorted(executed) == [0, 1, 2]
+
+        executed.clear()
+        with pytest.raises(ModelRetry, match=r'allows 3 nested tool calls'):
+            await wrapper.call_tool(
+                'run_code',
+                {'code': 'import asyncio\nawait asyncio.gather(*[record(value=i) for i in range(50)])'},
+                ctx,
+                tools['run_code'],
+            )
+
+        # The refusal happens while the executor is still scheduling, before any dispatched task
+        # has been given the event loop, so none of the 50 calls reaches the tool.
+        assert executed == []
+
+    async def test_exhausted_budget_preserves_completed_calls(self) -> None:
+        """A refused call fails inside the sandbox, so work already done is not thrown away.
+
+        Sequential `await`s complete one at a time, so the calls before the budget runs out have
+        really happened and may have had side effects. Aborting the snippet there would lose the
+        record of them and invite the model to repeat them on its retry.
+        """
+        executed: list[int] = []
+
+        def record(value: int) -> int:
+            """Record a call."""
+            executed.append(value)
+            return value
+
+        wrapper = CodeMode[object](max_tool_calls=3).get_wrapper_toolset(_build_function_toolset(record))
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+
+        result = await wrapper.call_tool(
+            'run_code',
+            {
+                'code': (
+                    'done = []\n'
+                    'for i in range(10):\n'
+                    '    try:\n'
+                    '        done.append(await record(value=i))\n'
+                    '    except Exception:\n'
+                    '        break\n'
+                    'done'
+                )
+            },
+            ctx,
+            tools['run_code'],
+        )
+
+        assert executed == [0, 1, 2]
+        assert result.return_value == [0, 1, 2]
+        assert len(result.metadata['tool_calls']) == 3
+        assert len(result.metadata['tool_returns']) == 3
+
+    async def test_uncaught_budget_exhaustion_names_completed_calls(self) -> None:
+        """An uncaught refusal still tells the model which calls already ran.
+
+        This is the shape a model actually writes: a plain sequential loop with no `try`. The
+        retry is the only record it gets, so without the completed calls it reruns their side
+        effects when it retries with a smaller batch.
+        """
+        executed: list[int] = []
+
+        def record(value: int) -> int:
+            """Record a call."""
+            executed.append(value)
+            return value
+
+        wrapper = CodeMode[object](max_tool_calls=3).get_wrapper_toolset(_build_function_toolset(record))
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+
+        with pytest.raises(ModelRetry) as exc_info:
+            await wrapper.call_tool(
+                'run_code',
+                {'code': 'out = []\nfor i in range(10):\n    out.append(await record(value=i))\nout'},
+                ctx,
+                tools['run_code'],
+            )
+
+        assert executed == [0, 1, 2]
+        message = exc_info.value.message
+        assert '3 nested tool calls started before execution stopped' in message
+        for value in (0, 1, 2):
+            assert f"record({{'value': {value}}}) returned {value}" in message
+
+    async def test_suspensions_are_cumulative_and_need_explicit_restart(self) -> None:
+        executed: list[int] = []
+
+        def record(value: int) -> int:
+            executed.append(value)
+            return value
+
+        wrapper = CodeMode[object](resource_limits={'max_suspensions': 4}).get_wrapper_toolset(
+            _build_function_toolset(record)
+        )
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+
+        first = await wrapper.call_tool(
+            'run_code', {'code': 'saved = await record(value=0)\nsaved'}, ctx, tools['run_code']
+        )
+        assert first.return_value == 0
+        with pytest.raises(ModelRetry) as exhausted:
+            await wrapper.call_tool(
+                'run_code', {'code': 'for i in range(1, 4):\n    await record(value=i)'}, ctx, tools['run_code']
+            )
+        assert executed == [0, 1]
+        message = exhausted.value.message
+        assert 'suspension limit 4 exceeded' in message
+        assert "record({'value': 1}) returned 1" in message
+        assert '`max_suspensions`' in message
+        assert '`restart: true`' in message
+        assert 'discards all REPL variables, imports and definitions' in message
+        assert 'do not replay completed side effects' in message
+
+        with pytest.raises(ModelRetry, match='suspension limit 4 exceeded'):
+            await wrapper.call_tool('run_code', {'code': 'await record(value=2)'}, ctx, tools['run_code'])
+        assert executed == [0, 1]
+        kept = await wrapper.call_tool('run_code', {'code': 'saved'}, ctx, tools['run_code'])
+        assert kept.return_value == 0
+
+        fresh = await wrapper.call_tool(
+            'run_code', {'code': 'await record(value=99)', 'restart': True}, ctx, tools['run_code']
+        )
+        assert fresh.return_value == 99
+        assert executed == [0, 1, 99]
+        with pytest.raises(ModelRetry, match="name 'saved' is not defined"):
+            await wrapper.call_tool('run_code', {'code': 'saved'}, ctx, tools['run_code'])
+
+    async def test_suspension_wording_in_tool_error_does_not_require_restart(self) -> None:
+        def boom() -> None:
+            raise RuntimeError('suspension limit 1000 exceeded')
+
+        wrapper = CodeMode[object]().get_wrapper_toolset(_build_function_toolset(boom))
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+        await wrapper.call_tool('run_code', {'code': 'saved = 42'}, ctx, tools['run_code'])
+        with pytest.raises(ModelRetry) as error:
+            await wrapper.call_tool('run_code', {'code': 'await boom()'}, ctx, tools['run_code'])
+        assert "If this reports the sandbox session's `max_suspensions` limit" in error.value.message
+        assert 'before the limit was reached' not in error.value.message
+        result = await wrapper.call_tool('run_code', {'code': 'saved'}, ctx, tools['run_code'])
+        assert result.return_value == 42
+
+    @pytest.mark.parametrize('limit', [0, -1])
+    async def test_suspension_budget_must_be_positive(self, limit: int) -> None:
+        wrapper = CodeModeToolset[object](
+            wrapped=_build_function_toolset(add), resource_limits={'max_suspensions': limit}
+        )
+        with pytest.raises(UserError, match='`max_suspensions` must be at least 1'):
+            await wrapper.__aenter__()
+
+    async def test_duration_exhaustion_points_at_restart(self) -> None:
+        """A spent duration allowance tells the model to restart, not to rewrite the snippet.
+
+        The allowance is per session and this error keeps the session, so every later call fails
+        on arrival; only `restart: true` recovers it. Detection matches Monty's rendered timeout
+        text, so this drives a real exhausted session rather than a fixed string: if Monty rewords
+        the message, this test fails instead of the hint quietly disappearing.
+        """
+        wrapper = CodeMode[object](resource_limits={'max_duration_secs': 0.3}).get_wrapper_toolset(
+            _build_function_toolset(add)
+        )
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+        spend_it = 'y = 0\nfor i in range(100_000_000):\n    y += i\ny'
+
+        with pytest.raises(ModelRetry) as exc_info:
+            await wrapper.call_tool('run_code', {'code': spend_it}, ctx, tools['run_code'])
+        assert '`restart: true`' in exc_info.value.message
+
+        # The session is kept, so a later trivial snippet fails on arrival and needs the same hint.
+        with pytest.raises(ModelRetry) as later:
+            await wrapper.call_tool('run_code', {'code': '1 + 1'}, ctx, tools['run_code'])
+        assert '`restart: true`' in later.value.message
+
+        # And restarting really does clear it, which is what the hint promises.
+        result = await wrapper.call_tool('run_code', {'code': '1 + 1', 'restart': True}, ctx, tools['run_code'])
+        assert result.return_value == 2
+
+    async def test_tool_error_resembling_a_timeout_is_not_treated_as_exhaustion(self) -> None:
+        """A nested tool failing with the sandbox's timeout wording must not trigger the hint.
+
+        Monty re-raises a tool's exception at the sandbox call site keeping its message, so text
+        alone cannot tell the two apart. A false positive is worse than a miss here: it tells the
+        model to restart, discarding REPL state the session is still perfectly able to use.
+        """
+
+        def boom() -> str:
+            """Fail with wording that matches the sandbox's own timeout."""
+            raise ValueError('time limit exceeded: 999s > 1s')
+
+        wrapper = CodeMode[object]().get_wrapper_toolset(_build_function_toolset(boom))
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+
+        seeded = await wrapper.call_tool('run_code', {'code': 'saved = 42\nsaved'}, ctx, tools['run_code'])
+        assert seeded.return_value == 42
+
+        with pytest.raises(ModelRetry) as exc_info:
+            await wrapper.call_tool('run_code', {'code': 'await boom()'}, ctx, tools['run_code'])
+        assert 'time limit exceeded' in exc_info.value.message
+        assert 'restart' not in exc_info.value.message
+
+        # The session was never exhausted, so its REPL state is still there to use.
+        kept = await wrapper.call_tool('run_code', {'code': 'saved'}, ctx, tools['run_code'])
+        assert kept.return_value == 42
+
+    async def test_duration_exhaustion_reports_calls_already_made(self) -> None:
+        """Restarting discards REPL state, so the retry has to say what already ran.
+
+        Otherwise the advice is to throw away the only record of the work while giving the model
+        nothing to reconstruct it from.
+        """
+        wrapper = CodeMode[object](resource_limits={'max_duration_secs': 0.3}).get_wrapper_toolset(
+            _build_function_toolset(add)
+        )
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+
+        with pytest.raises(ModelRetry) as exc_info:
+            await wrapper.call_tool(
+                'run_code',
+                {'code': ('r = await add(a=1, b=2)\ny = 0\nfor i in range(100_000_000):\n    y += i\ny')},
+                ctx,
+                tools['run_code'],
+            )
+
+        message = exc_info.value.message
+        assert '`restart: true`' in message
+        assert '1 nested tool calls started' in message
+        assert "add({'a': 1, 'b': 2}) returned 3" in message
+
+    async def test_memory_exhaustion_reports_calls_without_advising_restart(self) -> None:
+        """Exceeding `max_memory` reports what already ran, but is not a reason to restart.
+
+        The session still has its duration allowance and later calls work, so the restart advice
+        would be wrong here even though the summary is just as necessary.
+        """
+        wrapper = CodeMode[object](resource_limits={'max_memory': 8 * 1024 * 1024}).get_wrapper_toolset(
+            _build_function_toolset(add)
+        )
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+
+        with pytest.raises(ModelRetry) as exc_info:
+            await wrapper.call_tool(
+                'run_code',
+                {'code': 'r = await add(a=1, b=2)\nx = [0] * 50_000_000\nlen(x)'},
+                ctx,
+                tools['run_code'],
+            )
+
+        message = exc_info.value.message
+        assert 'memory limit exceeded' in message
+        assert "add({'a': 1, 'b': 2}) returned 3" in message
+        assert 'restart' not in message
+
+    async def test_every_resource_limit_reports_started_calls_when_exhausted(self) -> None:
+        """Exhausting any option a caller can set still reports the calls that already ran.
+
+        Driven per limit rather than by inspecting the recognizer, so it tests the behaviour the
+        recognizer exists to provide. Adding an option to `CodeModeResourceLimits` without a case
+        here fails the coverage assertion below, which is what stops a new limit from silently
+        losing its summary.
+        """
+        exhaust_by_limit: dict[str, tuple[CodeModeResourceLimits, str]] = {
+            'max_duration_secs': (
+                {'max_duration_secs': 0.3},
+                'y = 0\nfor i in range(100_000_000):\n    y += i\ny',
+            ),
+            'max_memory': ({'max_memory': 8 * 1024 * 1024}, 'x = [0] * 50_000_000\nlen(x)'),
+            'max_suspensions': ({'max_suspensions': 2}, 'await add(a=3, b=4)'),
+        }
+        assert set(exhaust_by_limit) == set(CodeModeResourceLimits.__annotations__), (
+            'a new resource limit needs a case here, so that exhausting it is shown to still '
+            'report the nested calls that already ran'
+        )
+
+        for limits, exhaust in exhaust_by_limit.values():
+            wrapper = CodeMode[object](resource_limits=limits).get_wrapper_toolset(_build_function_toolset(add))
+            assert isinstance(wrapper, CodeModeToolset)
+            ctx = await build_ctx(None, wrapper)
+            tools = await wrapper.get_tools(ctx)
+
+            with pytest.raises(ModelRetry) as exc_info:
+                await wrapper.call_tool(
+                    'run_code',
+                    {'code': f'r = await add(a=1, b=2)\n{exhaust}'},
+                    ctx,
+                    tools['run_code'],
+                )
+            assert "add({'a': 1, 'b': 2}) returned 3" in exc_info.value.message
+
+    async def test_preview_bounds_every_payload_shape(self) -> None:
+        """Previews cut each shape at the source, including ones whose `repr` would be huge.
+
+        `BinaryContent` is the case that motivates naming a value by type: it reaches the summary
+        as the raw object, so rendering it would put its whole payload in the retry.
+        """
+
+        def shapes(tag: str, rows: list[int], opts: dict[str, int]) -> dict[str, Any]:
+            """Return a mix of payload shapes."""
+            return {
+                'text': 'z' * 50_000,
+                'raw': b'\xff' * 50_000,
+                'blob': BinaryContent(data=b'\x89PNG' * 20_000, media_type='image/png'),
+                'nested': {'a': 1, 'b': 2},
+                'count': 7,
+            }
+
+        def many_rows() -> list[int]:
+            """Return a long list."""
+            return list(range(50))
+
+        def many_mapping() -> dict[str, int]:
+            """Return a mapping whose preview must not materialize every item."""
+            return {str(item): item for item in range(10_000)}
+
+        wrapper = CodeMode[object](max_tool_calls=3).get_wrapper_toolset(
+            _build_function_toolset(shapes, many_rows, many_mapping)
+        )
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+
+        with pytest.raises(ModelRetry) as exc_info:
+            await wrapper.call_tool(
+                'run_code',
+                {
+                    'code': (
+                        "a = await shapes(tag='t', rows=[1, 2], opts={'k': 1})\n"
+                        'b = await many_mapping()\n'
+                        'c = await many_rows()\n'
+                        'd = await many_rows()\n'
+                        'a'
+                    )
+                },
+                ctx,
+                tools['run_code'],
+            )
+
+        message = exc_info.value.message
+        assert len(message) < 3_000, f'preview grew to {len(message)} chars'
+        assert '50000 chars total' in message  # long text cut at the source
+        assert '50000 bytes total' in message  # long bytes cut at the source
+        assert '<BinaryContent>' in message  # named by type, never rendered
+        assert '{2 items}' in message  # nested container reported by size
+        assert '[2 items]' in message  # nested list argument likewise
+        assert '(50 items total)' in message  # long list cut to its first few
+        assert '(10000 items total)' in message  # mapping items are cut before rendering
+
+    async def test_temporal_disables_elapsed_time_limits(self) -> None:
+        """Temporal replays `run_code`, so its elapsed timer cannot decide workflow control flow."""
+
+        class TemporalDurability(AbstractCapability[None]):
+            in_durable_context = True
+
+        TemporalDurability.__module__ = 'pydantic_ai.durable_exec.temporal'
+        options: tuple[CodeModeResourceLimits | None, ...] = (None, {'max_duration_secs': 0.001})
+        for limits in options:
+            wrapper = CodeMode[object](resource_limits=limits).get_wrapper_toolset(_build_function_toolset(add))
+            assert isinstance(wrapper, CodeModeToolset)
+            ctx = await build_ctx(None, wrapper)
+            ctx.capabilities['temporal'] = TemporalDurability()
+            tools = await wrapper.get_tools(ctx)
+
+            result = await wrapper.call_tool(
+                'run_code',
+                {'code': 'total = 0\nfor item in range(100_000):\n    total += item\ntotal'},
+                ctx,
+                tools['run_code'],
+            )
+
+            assert result.return_value == 4_999_950_000
+
+    async def test_temporal_subclass_disables_duration_but_keeps_memory_limit(self) -> None:
+        """A Temporal subclass outside its package remains replay-safe without removing the heap cap."""
+
+        class TemporalDurability(AbstractCapability[None]):
+            in_durable_context = True
+
+        TemporalDurability.__module__ = 'pydantic_ai.durable_exec.temporal'
+
+        class CustomTemporalDurability(TemporalDurability):
+            pass
+
+        CustomTemporalDurability.__module__ = '__main__'
+        wrapper = CodeMode[object](
+            resource_limits={'max_duration_secs': 0.001, 'max_memory': 8 * 1024 * 1024}
+        ).get_wrapper_toolset(_build_function_toolset(add))
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        ctx.capabilities['temporal'] = CustomTemporalDurability()
+        tools = await wrapper.get_tools(ctx)
+
+        result = await wrapper.call_tool(
+            'run_code',
+            {'code': 'total = 0\nfor item in range(100_000):\n    total += item\ntotal'},
+            ctx,
+            tools['run_code'],
+        )
+
+        assert result.return_value == 4_999_950_000
+        with pytest.raises(ModelRetry, match='memory limit exceeded'):
+            await wrapper.call_tool(
+                'run_code',
+                {'code': 'values = [0] * 50_000_000\nlen(values)'},
+                ctx,
+                tools['run_code'],
+            )
+
+    async def test_ordinary_runtime_error_does_not_mention_restart(self) -> None:
+        """A plain exception keeps the message it always had; the hint is not bolted onto everything."""
+        wrapper = CodeMode[object]().get_wrapper_toolset(_build_function_toolset(add))
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+
+        with pytest.raises(ModelRetry) as exc_info:
+            await wrapper.call_tool('run_code', {'code': 'raise ValueError("boom")'}, ctx, tools['run_code'])
+
+        message = exc_info.value.message
+        assert 'boom' in message
+        assert 'restart' not in message
+
+    async def test_budget_retry_names_calls_that_raised(self) -> None:
+        """A call that raised is listed too, since a tool can apply a change before failing.
+
+        It has no recorded return, so summarizing from the returns alone would stay silent about
+        exactly the calls most likely to have left partial state.
+        """
+
+        def flaky(value: int) -> int:
+            """Raise for one particular value."""
+            if value == 1:
+                raise ValueError('failed after doing work')
+            return value
+
+        wrapper = CodeMode[object](max_tool_calls=3).get_wrapper_toolset(_build_function_toolset(flaky))
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+
+        with pytest.raises(ModelRetry) as exc_info:
+            await wrapper.call_tool(
+                'run_code',
+                {
+                    'code': (
+                        'o = []\n'
+                        'for i in range(10):\n'
+                        '    try:\n'
+                        '        o.append(await flaky(value=i))\n'
+                        '    except ValueError:\n'
+                        '        pass\n'
+                        'o'
+                    )
+                },
+                ctx,
+                tools['run_code'],
+            )
+
+        message = exc_info.value.message
+        assert "flaky({'value': 1}) raised, so it may have applied a partial change" in message
+        assert "flaky({'value': 0}) returned 0" in message
+
+    async def test_budget_retry_marks_denied_calls_as_not_run(self) -> None:
+        """A denied call is called out as not having run.
+
+        It has a recorded return, so lumping it in with the successes would tell the model not to
+        repeat a call whose tool never executed.
+        """
+
+        def needs_approval(value: int) -> str:
+            """A tool that requires approval."""
+            raise _ApprovalRequired()
+
+        async def handler(ctx: RunContext[object], requests: DeferredToolRequests) -> DeferredToolResults:
+            return DeferredToolResults(
+                approvals={call.tool_call_id: ToolDenied(message='nope') for call in requests.approvals}
+            )
+
+        from pydantic_ai.capabilities import HandleDeferredToolCalls  # noqa: PLC0415  # optional-version probe
+
+        wrapper = CodeMode[object](max_tool_calls=1).get_wrapper_toolset(_build_function_toolset(needs_approval))
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper, root_capability=HandleDeferredToolCalls(handler=handler))
+        tools = await wrapper.get_tools(ctx)
+
+        with pytest.raises(ModelRetry) as exc_info:
+            await wrapper.call_tool(
+                'run_code',
+                {
+                    'code': (
+                        'try:\n'
+                        '    await needs_approval(value=1)\n'
+                        'except Exception:\n'
+                        '    pass\n'
+                        'await needs_approval(value=2)'
+                    )
+                },
+                ctx,
+                tools['run_code'],
+            )
+
+        assert "needs_approval({'value': 1}) was denied and did not run" in exc_info.value.message
+
+    async def test_budget_retry_bounds_previews_and_total_size(self) -> None:
+        """Arguments and results are previewed, and the whole summary is capped.
+
+        Without both bounds a snippet returning large payloads turns the retry into a prompt far
+        larger than the output the model asked for.
+        """
+
+        def bulky(value: int) -> str:
+            """Return a large payload."""
+            return 'x' * 50_000
+
+        wrapper = CodeMode[object](max_tool_calls=30).get_wrapper_toolset(_build_function_toolset(bulky))
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+
+        with pytest.raises(ModelRetry) as exc_info:
+            await wrapper.call_tool(
+                'run_code',
+                {'code': 'o = []\nfor i in range(40):\n    o.append(await bulky(value=i))\no'},
+                ctx,
+                tools['run_code'],
+            )
+
+        message = exc_info.value.message
+        assert len(message) < 5_000, f'summary grew to {len(message)} chars'
+        assert 'chars total)' in message
+        assert 'more not shown' in message
+        # The count is the part that survives truncation, so it has to stay exact: it is what
+        # tells the model the visible list is incomplete.
+        assert '30 nested tool calls started before execution stopped' in message
+        assert 'Account for all 30 before retrying' in message
+
+    async def test_exhausted_budget_on_sequential_tool_preserves_completed_calls(self) -> None:
+        """The budget refusal reaches the sandbox for inline-resolved tools too.
+
+        A `sequential=True` tool is rendered as `def` and resolved inline rather than deferred,
+        so it takes a different dispatch path than the parallel case.
+        """
+        executed: list[int] = []
+
+        def record(value: int) -> int:
+            """Record a call."""
+            executed.append(value)
+            return value
+
+        wrapper = CodeMode[object](max_tool_calls=2).get_wrapper_toolset(
+            FunctionToolset[object](tools=[Tool(record, sequential=True)])
+        )
+        assert isinstance(wrapper, CodeModeToolset)
+        ctx = await build_ctx(None, wrapper)
+        tools = await wrapper.get_tools(ctx)
+
+        result = await wrapper.call_tool(
+            'run_code',
+            {
+                'code': (
+                    'done = []\n'
+                    'for i in range(6):\n'
+                    '    try:\n'
+                    '        done.append(record(value=i))\n'
+                    '    except Exception:\n'
+                    '        break\n'
+                    'done'
+                )
+            },
+            ctx,
+            tools['run_code'],
+        )
+
+        assert executed == [0, 1]
+        assert result.return_value == [0, 1]
+
+    async def test_new_options_do_not_shift_positional_arguments(self) -> None:
+        """`CodeModeToolset` is public advanced API, so its positional order has to stay put.
+
+        `os_access`, `mount`, and `dynamic_catalog` shipped as positional parameters. Adding
+        options ahead of them would silently rebind existing callers' arguments rather than fail.
+        """
+        os_access = OSAccess(environ={'TOKEN': 'secret'})
+        mount = MountDir(virtual_path='/work', host_path='/tmp', mode='read-only')
+
+        toolset = CodeModeToolset[object](_build_function_toolset(add), 'all', 3, os_access, mount, True)
+
+        assert toolset.os_access is os_access
+        assert toolset.mount is mount
+        assert toolset.dynamic_catalog is True
+        assert toolset.max_tool_calls == 100
+        assert toolset.resource_limits is None
+
+    async def test_resource_limits_accept_overrides_and_unlimited(self) -> None:
+        """Both an explicit cap and `'unlimited'` reach the sandbox session."""
+        options: list[CodeModeResourceLimits | Literal['unlimited']] = [
+            {'max_duration_secs': 5, 'max_memory': 64 * 1024 * 1024},
+            'unlimited',
+        ]
+        for limits in options:
+            wrapper = CodeMode[object](resource_limits=limits).get_wrapper_toolset(_build_function_toolset(add))
+            assert isinstance(wrapper, CodeModeToolset)
+            ctx = await build_ctx(None, wrapper)
+            tools = await wrapper.get_tools(ctx)
+            result = await wrapper.call_tool('run_code', {'code': 'await add(a=2, b=3)'}, ctx, tools['run_code'])
+            assert result.return_value == 5
+
+    async def test_resource_limit_configuration_is_validated_on_enter(self) -> None:
+        invalid = CodeModeToolset[object](
+            wrapped=_build_function_toolset(add),
+            resource_limits={'unknown': 1},  # pyright: ignore[reportArgumentType]
+        )
+        with pytest.raises(UserError, match='Unknown `resource_limits` key'):
+            await invalid.__aenter__()
+
+        zero_calls = CodeModeToolset[object](wrapped=_build_function_toolset(add), max_tool_calls=0)
+        with pytest.raises(UserError, match='`max_tool_calls` must be at least 1'):
+            await zero_calls.__aenter__()
+
     async def test_run_code_syntax_error_becomes_model_retry(self) -> None:
         """A Python syntax error is surfaced as `ModelRetry` so the model can fix it."""
         wrapper = CodeMode[object]().get_wrapper_toolset(_build_function_toolset(add))
@@ -551,7 +1345,7 @@ class TestCodeMode:
         with pytest.raises(ModelRetry, match=r'Type error in code'):
             await wrapper.call_tool('run_code', {'code': 'def ('}, ctx, run_code)
 
-        # Non-fresh REPL: type checking is skipped, so feed_run raises
+        # Non-fresh REPL: type checking is skipped, so feed_start raises
         # MontySyntaxError and the retry is labelled a syntax error.
         await wrapper.call_tool('run_code', {'code': '1 + 1', 'restart': True}, ctx, run_code)
         with pytest.raises(ModelRetry, match=r'Syntax error in code'):
@@ -576,7 +1370,7 @@ class TestCodeMode:
         """A `MontyTypingError` from static type checking is translated into `ModelRetry`.
 
         On a fresh REPL (first call or after restart), the code is type-checked
-        at checkout/feed time against the tool stubs before execution.
+        at `feed_start` against the tool stubs before execution.
         """
 
         def later(x: int) -> str:
@@ -617,7 +1411,7 @@ class TestCodeMode:
                 raise RuntimeError('wrapped enter failed')
 
         monty = MagicMock()
-        monkeypatch.setattr('pydantic_ai_harness.code_mode._toolset.AsyncMonty', monty)
+        monkeypatch.setattr('pydantic_ai_harness.code_mode._toolset.Monty', monty)
         wrapper = CodeMode[object]().get_wrapper_toolset(FailingToolset())
         assert isinstance(wrapper, CodeModeToolset)
 
@@ -626,25 +1420,25 @@ class TestCodeMode:
 
         monty.assert_not_called()
 
-    async def test_async_exit_releases_resources_in_reverse_entry_order(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_exit_releases_resources_in_reverse_entry_order(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The wrapped toolset exits before the Monty pool it may depend on."""
         events: list[str] = []
 
-        class TrackingAsyncMonty:
-            async def __aenter__(self) -> TrackingAsyncMonty:
+        class TrackingMonty:
+            def __enter__(self) -> TrackingMonty:
                 events.append('monty enter')
                 return self
 
-            async def __aexit__(self, *args: Any) -> None:
+            def __exit__(self, *args: Any) -> None:
                 events.append('monty exit')
 
             def checkout(self, *args: Any, **kwargs: Any) -> Any:
                 class TrackingSession:
-                    async def __aenter__(self) -> TrackingSession:
+                    def __enter__(self) -> TrackingSession:
                         events.append('session enter')
                         return self
 
-                    async def __aexit__(self, *args: Any) -> None:
+                    def __exit__(self, *args: Any) -> None:
                         events.append('session exit')
 
                 return TrackingSession()
@@ -658,7 +1452,7 @@ class TestCodeMode:
                 events.append('wrapped exit')
                 return None
 
-        monkeypatch.setattr('pydantic_ai_harness.code_mode._toolset.AsyncMonty', TrackingAsyncMonty)
+        monkeypatch.setattr('pydantic_ai_harness.code_mode._toolset.Monty', TrackingMonty)
         wrapper = CodeMode[object]().get_wrapper_toolset(TrackingToolset())
         assert isinstance(wrapper, CodeModeToolset)
 
@@ -666,7 +1460,7 @@ class TestCodeMode:
             assert events == ['wrapped enter']
             assert wrapper._run_state is not None  # pyright: ignore[reportPrivateUsage]
             await wrapper._run_state.get_session(  # pyright: ignore[reportPrivateUsage]
-                type_check=False, type_check_stubs=None
+                type_check=False, type_check_stubs=None, limits={}
             )
             assert events == ['wrapped enter', 'monty enter', 'session enter']
 
@@ -681,15 +1475,6 @@ class TestCodeMode:
 
     async def test_agent_run_preserves_repl_between_code_calls(self) -> None:
         """Code Mode keeps one REPL across model steps in an agent run."""
-        from pydantic_ai.messages import (
-            ModelMessage,
-            ModelRequest,
-            ModelResponse,
-            TextPart,
-            ToolCallPart,
-            ToolReturnPart,
-        )
-        from pydantic_ai.models.function import AgentInfo, FunctionModel
 
         def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
             response_count = sum(isinstance(message, ModelResponse) for message in messages)
@@ -818,7 +1603,6 @@ class TestCodeMode:
 
     async def test_native_tool_named_run_code_raises_user_error(self) -> None:
         """A native tool named `run_code` raises UserError (reserved name)."""
-        from pydantic_ai.exceptions import UserError
 
         def run_code() -> str:
             """A tool that collides with the reserved name."""
@@ -833,7 +1617,6 @@ class TestCodeMode:
 
     async def test_sandboxed_tool_named_run_code_raises_user_error(self) -> None:
         """A sandboxed tool named `run_code` raises UserError (conflicts with meta-tool)."""
-        from pydantic_ai.exceptions import UserError
 
         def run_code() -> str:
             """A tool that collides with the meta-tool name."""
@@ -1029,7 +1812,9 @@ class TestCodeMode:
 
         Folding one code-execution tool into `run_code` would make the model pass a script as a
         string argument to a function inside another script. Such a tool (e.g. DynamicWorkflow's
-        `run_workflow`) is a peer of `run_code`, exposed alongside it, not inside it.
+        `run_workflow`) is a peer of `run_code`, exposed alongside it, not inside it. The guard
+        keys off `code_arg_name` alone, whatever `code_arg_language` says, so shell surfaces
+        marked with a `command` argument stay native the same way.
         """
         td_run_workflow = ToolDefinition(
             name='run_workflow',
@@ -1162,7 +1947,6 @@ class TestCodeMode:
         assert 'async def search' in description
 
         # Second call must not warn again.
-        import warnings as _warnings
 
         with _warnings.catch_warnings():
             _warnings.simplefilter('error')
@@ -1170,7 +1954,6 @@ class TestCodeMode:
 
     async def test_tool_with_return_schema_does_not_warn(self) -> None:
         """A sandboxed tool WITH a return_schema does not trigger the warning."""
-        import warnings as _warnings
 
         td = ToolDefinition(
             name='get_user',
@@ -1195,15 +1978,6 @@ class TestCodeMode:
         sandbox dispatches to a wrapped tool, and the second model turn observes the
         tool's return value before producing the final text output.
         """
-        from pydantic_ai.messages import (
-            ModelMessage,
-            ModelRequest,
-            ModelResponse,
-            TextPart,
-            ToolCallPart,
-            ToolReturnPart,
-        )
-        from pydantic_ai.models.function import AgentInfo, FunctionModel
 
         observed_tool_calls: list[str] = []
         observed_tool_returns: list[Any] = []
@@ -1267,7 +2041,6 @@ class TestCodeMode:
         `test_tool_search_toolset_deferred_tool_not_in_run_code`; this exercises the
         end-to-end path through `Agent`.)
         """
-        from pydantic_ai.capabilities import Capability
 
         capability = Capability[object](
             id='demo',
@@ -1294,13 +2067,13 @@ class TestCodeMode:
         assert 'load_capability' in by_name
         assert 'run_code' in by_name
 
-        # The deferred member tool stays out of `run_code` until loaded. How it stays
-        # hidden natively depends on the model's tool-search support: `TestModel` gained
-        # it in pydantic-ai 2.26, where the unrevealed tool is sent on the wire flagged
-        # `defer_loading=True` (present but unloaded); before that it is dropped from the
-        # request entirely, with a synthetic `search_tools` tool standing in.
-        if 'demo_tool' in by_name:  # pragma: lax no cover
-            assert by_name['demo_tool'].defer_loading
+        # The deferred member tool stays hidden until loaded: not folded into `run_code`
+        # and not surfaced as a plain native tool. Assert on reveal state rather than on the
+        # name being absent from `function_tools` -- once pydantic-ai splits declaration from
+        # visibility, `function_tools` keeps the hidden declaration and only the reveal set
+        # distinguishes the two. `revealed_tool_names` means the same thing on both sides of
+        # that change, so this holds without version-sniffing.
+        assert 'demo_tool' not in model.last_model_request_parameters.revealed_tool_names
         run_code_desc = by_name['run_code'].description or ''
         assert 'demo_tool' not in run_code_desc
         assert 'load_capability' not in run_code_desc
@@ -1312,9 +2085,6 @@ class TestCodeMode:
         tool keeps `defer_loading=True` across the reveal (it records what the capability asked
         for), so the fold-in has to key on the run's revealed-tool set instead.
         """
-        from pydantic_ai.capabilities import Capability
-        from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart
-        from pydantic_ai.models.function import AgentInfo, FunctionModel
 
         capability = Capability[object](
             id='demo',
@@ -1511,7 +2281,6 @@ class TestCodeMode:
 
     async def test_tool_returning_tool_return_is_unwrapped(self) -> None:
         """A wrapped tool that returns a `ToolReturn` has its value unwrapped for the sandbox."""
-        from pydantic_ai.messages import ToolReturn as ToolReturnMsg
 
         def fancy() -> Any:
             """Return a ToolReturn with metadata."""
@@ -1533,7 +2302,6 @@ class TestCodeMode:
 
     async def test_approval_required_surfaces_as_model_retry(self) -> None:
         """Tools that raise ApprovalRequired inside the sandbox surface as ModelRetry."""
-        from pydantic_ai.exceptions import ApprovalRequired as _ApprovalRequired
 
         def needs_approval() -> str:
             """A tool that requires approval."""
@@ -1556,12 +2324,9 @@ class TestCodeMode:
         with the original denial message preserved in the trace.
         """
         try:
-            from pydantic_ai.capabilities import HandleDeferredToolCalls
+            from pydantic_ai.capabilities import HandleDeferredToolCalls  # noqa: PLC0415  # optional-version probe
         except ImportError:  # pragma: no cover -- only fires on floor-slim CI, which doesn't gate on coverage
             pytest.skip('Requires pydantic-ai-slim with `HandleDeferredToolCalls` (next release after 1.86.1)')
-
-        from pydantic_ai.exceptions import ApprovalRequired as _ApprovalRequired
-        from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults, ToolDenied
 
         def needs_approval() -> str:
             """A tool that requires approval."""
@@ -1588,12 +2353,9 @@ class TestCodeMode:
         deferral after approval is *not* re-resolved -- it bubbles up to the caller.
         """
         try:
-            from pydantic_ai.capabilities import HandleDeferredToolCalls
+            from pydantic_ai.capabilities import HandleDeferredToolCalls  # noqa: PLC0415  # optional-version probe
         except ImportError:  # pragma: no cover -- only fires on floor-slim CI, which doesn't gate on coverage
             pytest.skip('Requires pydantic-ai-slim with `HandleDeferredToolCalls` (next release after 1.86.1)')
-
-        from pydantic_ai.exceptions import ApprovalRequired as _ApprovalRequired
-        from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults, ToolApproved
 
         def always_needs_approval(ctx: RunContext[object]) -> str:
             """Raises `ApprovalRequired` every time, even after being approved."""
@@ -1656,7 +2418,6 @@ class TestCodeMode:
     async def test_tool_returning_binary_image_is_returned_directly(self) -> None:
         """A tool that returns BinaryContent passes through the sandbox and is
         returned as native multimodal content (not wrapped in a dict)."""
-        from pydantic_ai.messages import BinaryContent
 
         image_bytes = b'\x89PNG\r\n\x1a\n fake image data'
 
@@ -1679,7 +2440,6 @@ class TestCodeMode:
     async def test_tool_returning_binary_image_with_print_uses_list_format(self) -> None:
         """When print output accompanies a multimodal return, the result is a list
         so _split_content can extract the image for native delivery."""
-        from pydantic_ai.messages import BinaryContent
 
         image_bytes = b'\x89PNG fake'
 
@@ -1708,7 +2468,6 @@ class TestCodeMode:
     async def test_tool_returning_list_with_binary_image_and_print(self) -> None:
         """A list result containing multimodal items with print output gets flattened
         so _split_content can find each multimodal item at the top level."""
-        from pydantic_ai.messages import BinaryContent
 
         image_bytes = b'\x89PNG list'
 
@@ -1738,8 +2497,6 @@ class TestCodeMode:
     async def test_tool_returning_tool_return_with_binary_content(self) -> None:
         """A tool that wraps a BinaryContent in a ToolReturn has the image properly unwrapped
         and returned as native multimodal content."""
-        from pydantic_ai.messages import BinaryContent
-        from pydantic_ai.messages import ToolReturn as ToolReturnMsg
 
         image_bytes = b'\x89PNG wrapped'
 
@@ -1769,15 +2526,6 @@ class TestCodeMode:
     @pytest.mark.skipif(not logfire_installed, reason='logfire not installed')
     async def test_sandboxed_tool_calls_produce_otel_spans(self, capfire: CaptureLogfire) -> None:
         """Sandboxed tool calls dispatched through ToolManager produce OTel execute_tool spans."""
-        from pydantic_ai.capabilities import Instrumentation
-        from pydantic_ai.messages import (
-            ModelMessage,
-            ModelResponse,
-            TextPart,
-            ToolCallPart,
-        )
-        from pydantic_ai.models.function import AgentInfo, FunctionModel
-        from pydantic_ai.models.instrumented import InstrumentationSettings
 
         call_count = 0
 
@@ -1838,7 +2586,7 @@ class TestCodeMode:
 
         # After a successful call, type checking is skipped -- falls to runtime NameError.
         await wrapper.call_tool('run_code', {'code': '1 + 1', 'restart': True}, ctx, run_code)
-        with pytest.raises(ModelRetry, match=r"name 'nonexistent_tool' is not defined"):
+        with pytest.raises(ModelRetry, match='Runtime error'):
             await wrapper.call_tool('run_code', {'code': 'await nonexistent_tool(x=1)'}, ctx, run_code)
 
     async def test_positional_args_rejected(self) -> None:
@@ -1898,7 +2646,7 @@ class TestCodeMode:
         class PanicException(BaseException):
             """Named to match the pyo3 panic class `is_sandbox_panic` recognizes."""
 
-        async def _panic(*args: Any, **kwargs: Any) -> Any:
+        async def _panic(self: Any, state: Any) -> Any:
             raise PanicException('sandbox aborted')
 
         wrapper = CodeMode[None]().get_wrapper_toolset(_build_function_toolset(add))
@@ -1909,7 +2657,7 @@ class TestCodeMode:
 
         await wrapper.call_tool('run_code', {'code': 'x = 1'}, ctx, run_code)
         with monkeypatch.context() as patcher:
-            patcher.setattr('pydantic_ai_harness.code_mode._toolset._run_async_feed', _panic)
+            patcher.setattr('pydantic_ai_harness._monty_exec.MontyExecutor.run', _panic)
             with pytest.raises(ModelRetry, match='aborted inside the sandbox'):
                 await wrapper.call_tool('run_code', {'code': 'x'}, ctx, run_code)
         with pytest.raises(ModelRetry, match='Type error in code'):
@@ -1924,7 +2672,7 @@ class TestCodeMode:
         `RuntimeError` when the traceback payload fails span validation).
         """
 
-        async def _fail(*args: Any, **kwargs: Any) -> Any:
+        async def _fail(self: Any, state: Any) -> Any:
             raise RuntimeError('invalid exception payload')
 
         wrapper = CodeMode[None]().get_wrapper_toolset(_build_function_toolset(add))
@@ -1936,7 +2684,7 @@ class TestCodeMode:
         # Seed REPL state that the model would rely on in later feeds.
         await wrapper.call_tool('run_code', {'code': 'x = 1'}, ctx, run_code)
         with monkeypatch.context() as patcher:
-            patcher.setattr('pydantic_ai_harness.code_mode._toolset._run_async_feed', _fail)
+            patcher.setattr('pydantic_ai_harness._monty_exec.MontyExecutor.run', _fail)
             with pytest.raises(ModelRetry, match='session was reset') as exc_info:
                 await wrapper.call_tool('run_code', {'code': 'x'}, ctx, run_code)
         # The retry message is the only record of the host-side error, so it must name it.
@@ -1974,80 +2722,101 @@ class TestCodeMode:
         with pytest.raises(ModelRetry, match='Type error in code'):
             await wrapper.call_tool('run_code', {'code': 'x'}, ctx, tools['run_code'])
 
-    async def test_temporal_sync_snapshot_dispatch_paths(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """The workflow-only executor retains its external dispatch and error behavior."""
-        parallel_started = asyncio.Event()
-        release_parallel = asyncio.Event()
-        events: list[str] = []
+    async def test_cancelled_scope_teardown_awaits_dispatched_work(self) -> None:
+        """The executor's cleanup `gather` is shielded from an already-cancelled anyio
+        scope, so still-pending dispatched work unwinds gracefully before `run_code`
+        returns (#559).
 
-        async def parallel_call(label: str) -> str:
-            events.append(f'{label} start')
-            parallel_started.set()
-            await release_parallel.wait()
-            events.append(f'{label} end')
-            return label
+        The sandbox defers `blocker()` and `cleanup_tool()`, then calls the sequential
+        `barrier()`. The barrier awaits `blocker` first, leaving `cleanup_tool`'s task
+        in `_pending`; cancelling the scope kills `blocker` at the barrier await, so
+        the executor's cleanup owns a still-running dispatched task while the enclosing
+        scope stays cancelled. Without the shield, that scope re-cancels the host every
+        event-loop cycle: either the cleanup `gather` is abandoned outright (the pending
+        task outlives `run_code`) or each re-cancel is forwarded through the `gather` to
+        the pending task, breaking every await of its cancellation handler. With the
+        shield the task sees exactly one cancellation, its handler's awaits survive, and
+        the runner stays blocked in the cleanup until the handler is released. Sequencing
+        is event-driven; the yield loop only gives an unshielded cleanup cycles to
+        misbehave.
+        """
+        blocker_started = asyncio.Event()
+        cleanup_started = asyncio.Event()
+        cancel_seen = asyncio.Event()
+        release = asyncio.Event()
+        unwound = asyncio.Event()
+        extra_cancels = 0
 
-        async def sequential_call(fail: bool = False) -> str:
-            events.append('sequential')
-            if fail:
-                raise RuntimeError('sequential failed')
-            return 'barrier'
+        async def blocker() -> str:
+            blocker_started.set()
+            await asyncio.Event().wait()
+            return 'unreachable'  # pragma: no cover
 
-        def os_callback(fn: OsFunction, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-            if fn == 'os.getenv':
-                return 'sync-os'
-            return NOT_HANDLED  # pragma: no cover
+        async def cleanup_tool() -> str:
+            nonlocal extra_cancels
+            cleanup_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancel_seen.set()
+                while not release.is_set():
+                    try:
+                        await release.wait()
+                    except asyncio.CancelledError:  # pragma: no cover - regression path without the teardown shield
+                        extra_cancels += 1
+                unwound.set()
+                raise
+            return 'unreachable'  # pragma: no cover
 
-        monkeypatch.setattr('pydantic_ai_harness.code_mode._toolset._in_temporal_workflow', lambda: True)
-        toolset = FunctionToolset[object](tools=[Tool(parallel_call), Tool(sequential_call, sequential=True)])
-        wrapper = CodeMode[object](os_access=os_callback).get_wrapper_toolset(toolset)
-        assert isinstance(wrapper, CodeModeToolset)
+        def barrier() -> str:
+            return 'unreachable'  # pragma: no cover - cancelled at the barrier, never dispatched
+
+        class _SeqToolset(AbstractToolset[object]):
+            """Marks `barrier` as sequential; the other tools stay parallel."""
+
+            def __init__(self) -> None:
+                self._inner = _build_function_toolset(blocker, cleanup_tool, barrier)
+
+            @property
+            def id(self) -> str | None:
+                return None  # pragma: no cover
+
+            async def get_tools(self, ctx: RunContext[object]) -> dict[str, ToolsetTool[object]]:
+                tools = await self._inner.get_tools(ctx)
+                return {
+                    n: dc_replace(t, tool_def=dc_replace(t.tool_def, sequential=True)) if n == 'barrier' else t
+                    for n, t in tools.items()
+                }
+
+            async def call_tool(
+                self, name: str, tool_args: dict[str, Any], ctx: RunContext[object], tool: ToolsetTool[object]
+            ) -> Any:
+                return await self._inner.call_tool(name, tool_args, ctx, tool)
+
+        wrapper = CodeModeToolset[object](wrapped=_SeqToolset(), tool_selector='all')
         ctx = await build_ctx(None, wrapper)
         tools = await wrapper.get_tools(ctx)
-        run_code = tools['run_code']
 
-        await wrapper.call_tool('run_code', {'code': '1 + 1'}, ctx, run_code)
-        os_result = await wrapper.call_tool(
-            'run_code',
-            {'code': 'import os\nos.getenv("THING")'},
-            ctx,
-            run_code,
-        )
-        assert os_result.return_value == 'sync-os'
+        scope = anyio.CancelScope()
 
-        with pytest.raises(ModelRetry, match=r"name 'undefined_var' is not defined"):
-            await wrapper.call_tool('run_code', {'code': 'undefined_var'}, ctx, run_code)
-        with pytest.raises(ModelRetry, match='Unknown function: missing_tool'):
-            await wrapper.call_tool('run_code', {'code': 'await missing_tool(value=1)'}, ctx, run_code)
-        with pytest.raises(ModelRetry, match='does not accept positional arguments'):
-            await wrapper.call_tool('run_code', {'code': 'await parallel_call("bad")'}, ctx, run_code)
+        async def runner() -> None:
+            with scope:
+                code = 'a = blocker()\nb = cleanup_tool()\nbarrier()'
+                await wrapper.call_tool('run_code', {'code': code}, ctx, tools['run_code'])
 
-        call = asyncio.create_task(
-            wrapper.call_tool(
-                'run_code',
-                {
-                    'code': (
-                        'pending = parallel_call(label="first")\nbarrier = sequential_call()\n[await pending, barrier]'
-                    )
-                },
-                ctx,
-                run_code,
-            )
-        )
-        await parallel_started.wait()
-        assert events == ['first start']
-        release_parallel.set()
-        result = await call
-        assert result.return_value == ['first', 'barrier']
-        assert events == ['first start', 'first end', 'sequential']
-
-        with pytest.raises(ModelRetry, match='sequential failed'):
-            await wrapper.call_tool(
-                'run_code',
-                {'code': 'sequential_call(fail=True)'},
-                ctx,
-                run_code,
-            )
+        task = asyncio.create_task(runner())
+        await blocker_started.wait()
+        await cleanup_started.wait()
+        scope.cancel()
+        await cancel_seen.wait()
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert not task.done(), 'cleanup must wait for dispatched work to finish unwinding'
+        release.set()
+        await task
+        assert scope.cancelled_caught
+        assert unwound.is_set()
+        assert extra_cancels == 0, f'cancelled scope must not re-cancel dispatched work, got {extra_cancels} re-cancels'
 
     async def test_worker_crash_becomes_model_retry_and_resets_state(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A `MontyCrashedError` (worker death) becomes a retry with the session reset.
@@ -2057,8 +2826,7 @@ class TestCodeMode:
         `MontyCrashedError` cannot be constructed or subclassed from Python.
         """
         monkeypatch.setattr(
-            'pydantic_ai_harness.code_mode._toolset.AsyncMonty',
-            functools.partial(AsyncMonty, request_timeout=0.5),
+            'pydantic_ai_harness.code_mode._toolset.Monty', functools.partial(Monty, request_timeout=0.5)
         )
         wrapper = CodeMode[None]().get_wrapper_toolset(_build_function_toolset(add))
         assert isinstance(wrapper, CodeModeToolset)
@@ -2080,8 +2848,7 @@ class TestCodeMode:
 
     async def test_sequential_tool_rendered_as_sync_and_resolved_inline(self) -> None:
         """A tool with `sequential=True` is rendered as `def` (sync) and
-        bridged from Monty's worker thread into an exclusive host dispatch."""
-        from dataclasses import replace as dc_replace
+        resolved inline at FunctionSnapshot via `resume({'return_value': ...})`."""
 
         class _SeqToolset(AbstractToolset[object]):
             """Marks add as sequential; greet stays parallel."""
@@ -2140,55 +2907,65 @@ class TestCodeMode:
             assert returns[tc_id].tool_name == call.tool_name
 
     async def test_sequential_tool_barrier_awaits_pending_parallel_tasks(self) -> None:
-        """A sequential call waits for active parallel work and blocks later readers."""
-        parallel_started = asyncio.Event()
-        release_parallel = asyncio.Event()
-        events: list[str] = []
+        """When a sequential tool is called while parallel tasks are pending,
+        the pending tasks are awaited first (barrier) before dispatching."""
 
-        async def parallel_call(label: str) -> str:
-            events.append(f'{label} start')
-            parallel_started.set()
-            await release_parallel.wait()
-            events.append(f'{label} end')
-            return label
+        class _SeqToolset(AbstractToolset[object]):
+            def __init__(self) -> None:
+                self._inner = _build_function_toolset(add, greet)
 
-        async def sequential_call() -> str:
-            events.append('sequential')
-            return 'barrier'
+            @property
+            def id(self) -> str | None:
+                return None  # pragma: no cover
 
-        toolset = FunctionToolset[object](tools=[Tool(parallel_call), Tool(sequential_call, sequential=True)])
-        seq_wrapper = CodeModeToolset[object](wrapped=toolset, tool_selector='all')
+            async def get_tools(self, ctx: RunContext[object]) -> dict[str, ToolsetTool[object]]:
+                tools = await self._inner.get_tools(ctx)
+                return {
+                    n: dc_replace(t, tool_def=dc_replace(t.tool_def, sequential=True)) if n == 'add' else t
+                    for n, t in tools.items()
+                }
+
+            async def call_tool(
+                self, name: str, tool_args: dict[str, Any], ctx: RunContext[object], tool: ToolsetTool[object]
+            ) -> Any:
+                return await self._inner.call_tool(name, tool_args, ctx, tool)
+
+        seq_wrapper = CodeModeToolset[object](wrapped=_SeqToolset(), tool_selector='all')
         ctx = await build_ctx(None, seq_wrapper)
         tools = await seq_wrapper.get_tools(ctx)
 
-        call = asyncio.create_task(
-            seq_wrapper.call_tool(
-                'run_code',
-                {
-                    'code': (
-                        'first = parallel_call(label="first")\n'
-                        'barrier = sequential_call()\n'
-                        'second = parallel_call(label="second")\n'
-                        '[await first, barrier, await second]'
-                    )
-                },
-                ctx,
-                tools['run_code'],
-            )
+        # Start a parallel call (greet, async def), then call a sequential tool (add, def).
+        # The barrier should await greet before dispatching add.
+        result = await seq_wrapper.call_tool(
+            'run_code',
+            {
+                'code': (
+                    'future_greet = greet(name="World")\n'
+                    'result_add = add(a=1, b=2)\n'
+                    'result_greet = await future_greet\n'
+                    '[result_add, result_greet]'
+                )
+            },
+            ctx,
+            tools['run_code'],
         )
-        await parallel_started.wait()
-        await asyncio.sleep(0)
-        assert events == ['first start']
+        assert result.return_value == [3, 'Hello, World!']
 
-        release_parallel.set()
-        result = await call
-
-        assert result.return_value == ['first', 'barrier', 'second']
-        assert events == ['first start', 'first end', 'sequential', 'second start', 'second end']
+        # Both calls recorded in metadata -- greet resolved at barrier, add resolved inline.
+        assert result.metadata['code_mode'] is True
+        calls = result.metadata['tool_calls']
+        returns = result.metadata['tool_returns']
+        assert len(calls) == 2
+        assert len(returns) == 2
+        # greet was dispatched first (parallel), add second (sequential barrier).
+        call_list = list(calls.values())
+        assert call_list[0].tool_name == 'greet'
+        assert call_list[1].tool_name == 'add'
+        for tc_id in calls:
+            assert returns[tc_id].content in (3, 'Hello, World!')
 
     async def test_sequential_tool_error_surfaces_as_model_retry(self) -> None:
         """An error from a sequential tool (resolved inline) surfaces as ModelRetry."""
-        from dataclasses import replace as dc_replace
 
         class _SeqToolset(AbstractToolset[object]):
             def __init__(self) -> None:
@@ -2216,13 +2993,10 @@ class TestCodeMode:
         # Now bad args go through the runtime path in sequential resolution.
         with pytest.raises(ModelRetry, match='Runtime error'):
             await seq_wrapper.call_tool('run_code', {'code': "add(a='bad', b=3)"}, ctx, run_code)
-        with pytest.raises(ModelRetry, match='does not accept positional arguments'):
-            await seq_wrapper.call_tool('run_code', {'code': 'add(1, 2)'}, ctx, run_code)
 
     async def test_global_sequential_mode_forces_sequential_resolution(self) -> None:
         """When the parallel execution mode is `sequential`, tool calls inside the
-        sandbox acquire exclusive dispatch access. Signatures stay `async def`."""
-        from pydantic_ai.tool_manager import ToolManager
+        sandbox are resolved sequentially via FutureSnapshot. Signatures stay `async def`."""
 
         wrapper = CodeMode[object]().get_wrapper_toolset(_build_function_toolset(add))
         assert isinstance(wrapper, CodeModeToolset)
@@ -2245,57 +3019,9 @@ class TestCodeMode:
             )
             assert result.return_value == 30
 
-    async def test_global_sequential_mode_preserves_gather_call_order(self) -> None:
-        """Global sequential dispatch follows the sandbox's a, b, c call order."""
-        events: list[str] = []
-        first_started = asyncio.Event()
-        release_first = asyncio.Event()
-
-        async def a() -> str:
-            events.append('a')
-            first_started.set()
-            await release_first.wait()
-            return 'a'
-
-        async def b() -> str:
-            events.append('b')
-            await asyncio.sleep(0)
-            return 'b'
-
-        async def c() -> str:
-            events.append('c')
-            await asyncio.sleep(0)
-            return 'c'
-
-        wrapper = CodeMode[object]().get_wrapper_toolset(_build_function_toolset(a, b, c))
-        assert isinstance(wrapper, CodeModeToolset)
-        ctx = await build_ctx(None, wrapper)
-
-        with ToolManager.parallel_execution_mode('sequential'):
-            tools = await wrapper.get_tools(ctx)
-            call = asyncio.create_task(
-                wrapper.call_tool(
-                    'run_code',
-                    {'code': 'import asyncio\nawait asyncio.gather(a(), b(), c())'},
-                    ctx,
-                    tools['run_code'],
-                )
-            )
-            await asyncio.wait_for(first_started.wait(), timeout=1)
-            await asyncio.sleep(0)
-            assert events == ['a']
-            release_first.set()
-            result = await call
-
-        assert result.return_value == ['a', 'b', 'c']
-        assert events == ['a', 'b', 'c']
-
     async def test_global_sequential_overrides_per_tool_sequential(self) -> None:
         """When global sequential mode is active AND a tool has `sequential=True`,
-        the sync wrapper still bridges through the same exclusive dispatch gate."""
-        from dataclasses import replace as dc_replace
-
-        from pydantic_ai.tool_manager import ToolManager
+        the tool is deferred (not resolved inline) and handled via FutureSnapshot."""
 
         class _SeqToolset(AbstractToolset[object]):
             def __init__(self) -> None:
@@ -2321,12 +3047,12 @@ class TestCodeMode:
             tools = await seq_wrapper.get_tools(ctx)
             run_code = tools['run_code']
 
-            # Per-tool sequential renders as `def`; global mode keeps the dispatch exclusive.
+            # Per-tool sequential renders as `def`, but global mode uses deferred path.
             desc = run_code.tool_def.description or ''
             assert 'def add(' in desc
             assert 'async def add(' not in desc
 
-            # The tool still works through the exclusive dispatch path.
+            # The tool still works -- global sequential resolves at FutureSnapshot.
             result = await seq_wrapper.call_tool('run_code', {'code': 'add(a=5, b=7)'}, ctx, run_code)
             assert result.return_value == 12
 
@@ -2356,8 +3082,6 @@ class TestToolSearchIntegration:
 
     async def test_search_tool_stays_native(self) -> None:
         """search_tools is kept as a native tool even with tools='all'."""
-        from pydantic_ai.toolsets._tool_search import _SEARCH_TOOLS_NAME
-        from pydantic_ai.toolsets.combined import CombinedToolset
 
         search_toolset = _StaticToolset([_search_tool_def()])
         func_toolset = _build_function_toolset(add)
@@ -2376,7 +3100,6 @@ class TestToolSearchIntegration:
 
     async def test_search_tools_description_appended(self) -> None:
         """search_tools description gets a modifier appended about run_code functions."""
-        from pydantic_ai.toolsets._tool_search import _SEARCH_TOOLS_NAME
 
         original_desc = 'There are additional tools. Search here.'
         toolset = _StaticToolset([_search_tool_def(description=original_desc)])
@@ -2420,7 +3143,6 @@ class TestToolSearchIntegration:
         pass-through so those flags reach `Model.prepare_request` unaltered. `search_tools`
         is native alongside `run_code`.
         """
-        from pydantic_ai.toolsets._tool_search import _SEARCH_TOOLS_NAME, ToolSearchToolset
 
         def later(x: int) -> str:
             """A deferred-loading tool."""
@@ -2444,8 +3166,6 @@ class TestToolSearchIntegration:
 
     async def test_tool_search_toolset_discovered_tool_in_run_code(self) -> None:
         """End-to-end: once `search_tools` has discovered the deferred tool, it folds into `run_code`."""
-        from pydantic_ai.messages import ModelMessage, ModelRequest, ToolSearchReturnPart
-        from pydantic_ai.toolsets._tool_search import ToolSearchToolset, parse_discovered_tools
 
         def later(x: int) -> str:
             """A deferred-loading tool."""
@@ -2487,7 +3207,6 @@ class TestToolSearchIntegration:
 
     def test_code_mode_ordering(self) -> None:
         """CodeMode declares ordering: outermost position, wraps ToolSearch."""
-        from pydantic_ai.capabilities._tool_search import ToolSearch
 
         ordering = CodeMode().get_ordering()
         assert ordering is not None
@@ -2526,8 +3245,6 @@ class TestDynamicCatalog:
         await toolset.get_tools(ctx)
         instructions = await toolset.get_instructions(ctx)
 
-        from pydantic_ai.messages import InstructionPart
-
         # No upstream instructions → the catalog is the only InstructionPart returned.
         assert isinstance(instructions, InstructionPart)
         assert 'async def add' in instructions.content
@@ -2535,7 +3252,6 @@ class TestDynamicCatalog:
         assert instructions.dynamic is True
 
     async def test_get_instructions_appends_to_upstream_string(self) -> None:
-        from pydantic_ai.messages import InstructionPart
 
         class _UpstreamToolset(FunctionToolset[object]):
             async def get_instructions(self, ctx: RunContext[object]) -> str:  # pyright: ignore[reportIncompatibleMethodOverride]
@@ -2554,7 +3270,6 @@ class TestDynamicCatalog:
         assert 'async def add' in instructions[1].content
 
     async def test_get_instructions_appends_to_upstream_sequence(self) -> None:
-        from pydantic_ai.messages import InstructionPart
 
         class _UpstreamToolset(FunctionToolset[object]):
             async def get_instructions(  # pyright: ignore[reportIncompatibleMethodOverride]
@@ -2648,7 +3363,6 @@ class TestDynamicCatalog:
     # -- discovery announcement: local search path ------------------------
 
     async def test_announce_on_local_search_return(self) -> None:
-        from pydantic_ai.messages import ModelRequest, SystemPromptPart, ToolCallPart
 
         cap = CodeMode[object](dynamic_catalog=True)
         ctx = build_run_context(None)
@@ -2670,7 +3384,6 @@ class TestDynamicCatalog:
 
     async def test_no_announce_when_disabled(self) -> None:
         """With `dynamic_catalog=False`, the hooks are inert even on a real search return."""
-        from pydantic_ai.messages import ToolCallPart
 
         cap = CodeMode[object]()
         ctx = build_run_context(None)
@@ -2684,7 +3397,6 @@ class TestDynamicCatalog:
         assert ctx.pending_messages == []
 
     async def test_announce_skipped_when_no_discoveries(self) -> None:
-        from pydantic_ai.messages import ToolCallPart
 
         cap = CodeMode[object](dynamic_catalog=True)
         ctx = build_run_context(None)
@@ -2699,7 +3411,6 @@ class TestDynamicCatalog:
 
     async def test_no_announce_for_non_search_tool(self) -> None:
         """`tool_kind != 'tool-search'` short-circuits before reading the result."""
-        from pydantic_ai.messages import ToolCallPart
 
         cap = CodeMode[object](dynamic_catalog=True)
         ctx = build_run_context(None)
@@ -2715,7 +3426,6 @@ class TestDynamicCatalog:
         assert ctx.pending_messages == []
 
     async def test_no_duplicate_announcement_for_same_tool(self) -> None:
-        from pydantic_ai.messages import ToolCallPart
 
         cap = CodeMode[object](dynamic_catalog=True)
         ctx = build_run_context(None)
@@ -2735,8 +3445,6 @@ class TestDynamicCatalog:
     # -- discovery announcement: native search path -----------------------
 
     async def test_announce_on_native_search_return_part(self) -> None:
-        from pydantic_ai.messages import ModelRequest, ModelResponse, NativeToolSearchReturnPart, SystemPromptPart
-        from pydantic_ai.usage import RequestUsage
 
         cap = CodeMode[object](dynamic_catalog=True)
         ctx = build_run_context(None)
@@ -2760,8 +3468,6 @@ class TestDynamicCatalog:
         assert isinstance(part, SystemPromptPart) and '`weather`' in part.content
 
     async def test_no_announce_for_unrelated_response_parts(self) -> None:
-        from pydantic_ai.messages import ModelResponse, NativeToolReturnPart, TextPart
-        from pydantic_ai.usage import RequestUsage
 
         cap = CodeMode[object](dynamic_catalog=True)
         ctx = build_run_context(None)
@@ -2787,9 +3493,6 @@ class TestDynamicCatalog:
         ],
     )
     def test_extract_discovered_names_handles_malformed(self, content: Any, expected: list[str]) -> None:
-        from pydantic_ai_harness.code_mode._capability import (
-            _extract_discovered_names,  # pyright: ignore[reportPrivateUsage]
-        )
 
         assert _extract_discovered_names(content) == expected
 
@@ -2806,20 +3509,6 @@ class TestDynamicCatalog:
              system content is no longer hoisted (pydantic/pydantic-ai#5509) — so the model
              sees the announcement inline and replies.
         """
-        from pydantic_ai.capabilities import ToolSearch
-        from pydantic_ai.messages import (
-            ModelMessage,
-            ModelRequest,
-            ModelResponse,
-            SystemPromptPart,
-            TextPart,
-            ToolCallPart,
-            ToolReturnPart,
-            ToolSearchReturnPart,
-            UserPromptPart,
-        )
-        from pydantic_ai.models.function import AgentInfo, FunctionModel
-        from pydantic_ai.usage import RequestUsage
 
         captured_prompt_texts: list[list[str]] = []
         captured_descriptions: list[str] = []
@@ -2879,16 +3568,6 @@ class TestDynamicCatalog:
 
     async def test_run_code_calls_eager_tool_with_catalog_in_instructions(self) -> None:
         """An eager tool whose signature lives in instructions is still callable via `run_code`."""
-        from pydantic_ai.messages import (
-            ModelMessage,
-            ModelRequest,
-            ModelResponse,
-            TextPart,
-            ToolCallPart,
-            ToolReturnPart,
-        )
-        from pydantic_ai.models.function import AgentInfo, FunctionModel
-        from pydantic_ai.usage import RequestUsage
 
         def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
             run_code_def = next(td for td in info.function_tools if td.name == 'run_code')
@@ -2975,7 +3654,8 @@ class TestCodeModeOSAccess:
         assert 'Configured OS access' in description
 
     async def test_os_callback_dispatches_inside_run_code(self) -> None:
-        """The `os` passed to `feed_run` still handles calls after a tool round-trip."""
+        """The `os` captured at `feed_start` answers OS-call snapshots via `resume_auto()`,
+        so OS calls still dispatch after a tool-call suspend/resume round-trip."""
 
         def os_cb(fn: OsFunction, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
             if fn == 'os.getenv':
@@ -2986,14 +3666,14 @@ class TestCodeModeOSAccess:
         assert isinstance(wrapper, CodeModeToolset)
         ctx = await build_ctx(None, wrapper)
         tools = await wrapper.get_tools(ctx)
-        # The tool call crosses to the host before os.getenv proves the same feed
-        # still carries the callback.
+        # The tool call forces a FunctionSnapshot -> FutureSnapshot round-trip; the os.getenv
+        # afterwards only resolves if the captured `os` is still consulted after them.
         code = "import os\nx = await add(a=2, b=3)\nhome = os.getenv('THING')\n{'sum': x, 'home': home}"
         result = await wrapper.call_tool('run_code', {'code': code}, ctx, tools['run_code'])
         assert result.return_value == {'sum': 5, 'home': 'envval'}
 
     async def test_os_access_persists_across_run_code_calls(self) -> None:
-        """`os` is supplied on every `feed_run`, so OS access still works on a later
+        """`os` is supplied on every `feed_start`, so OS access still works on a later
         `run_code` call that reuses the persisted (non-fresh) REPL."""
 
         def os_cb(fn: OsFunction, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
@@ -3079,8 +3759,10 @@ class TestCodeModeOSAccess:
     async def test_mount_exposes_host_directory(self, tmp_path: Path) -> None:
         """A `mount` exposes a host directory inside the sandbox.
 
-        The `await add(...)` crosses to the host before the read, proving the
-        mount remains in effect after external dispatch within the same feed.
+        The mount is fixed at `feed_start` for the whole feed (Monty does not accept `mount=` on
+        `resume`), so the `await add(...)` here forces a FunctionSnapshot -> FutureSnapshot resume
+        round-trip before the read, proving the mount is still in effect after the sandbox suspends
+        and resumes.
         """
         (tmp_path / 'data.txt').write_text('hello-from-host')
         wrapper = CodeMode[object](mount=MountDir(virtual_path='/work', host_path=str(tmp_path))).get_wrapper_toolset(
@@ -3147,7 +3829,6 @@ def _search_tool_def(description: str = 'Search for tools.') -> ToolDefinition:
     Carries `tool_kind='tool-search'`, matching what pydantic-ai emits (since 1.95.0);
     CodeMode routes it native off `tool_kind`, not its name.
     """
-    from pydantic_ai.toolsets._tool_search import _SEARCH_TOOLS_NAME
 
     return ToolDefinition(
         name=_SEARCH_TOOLS_NAME,
@@ -3184,94 +3865,3 @@ class TestGlobalModeIsSequential:
 
         assert _global_mode_is_sequential(parallel) is False
         assert _global_mode_is_sequential(sequential) is True
-
-
-def test_temporal_detection_without_temporal_installed(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A missing optional Temporal dependency selects the normal async path."""
-    monkeypatch.setitem(sys.modules, 'temporalio', None)
-    assert _in_temporal_workflow() is False
-
-
-async def test_dispatch_gate_cancels_waiters_and_keeps_writers_fair() -> None:
-    """Queued readers cannot pass a writer, and canceled waiters leave the queue."""
-    gate = _DispatchGate()
-    first_shared = _GateRequest(exclusive=False)
-    second_shared = _GateRequest(exclusive=False)
-    gate._queue.extend((first_shared, second_shared))  # pyright: ignore[reportPrivateUsage]
-    assert gate._can_enter(second_shared) is True  # pyright: ignore[reportPrivateUsage]
-    gate._queue.clear()  # pyright: ignore[reportPrivateUsage]
-
-    reader_started = asyncio.Event()
-    release_reader = asyncio.Event()
-    writer_started = asyncio.Event()
-    release_writer = asyncio.Event()
-
-    async def hold_reader() -> None:
-        async with gate.hold(exclusive=False):
-            reader_started.set()
-            await release_reader.wait()
-
-    async def hold_writer() -> None:
-        async with gate.hold(exclusive=True):
-            writer_started.set()
-            await release_writer.wait()
-
-    async def wait_as_reader() -> None:
-        async with gate.hold(exclusive=False):
-            raise AssertionError('canceled reader acquired the gate')  # pragma: no cover
-
-    first_reader = asyncio.create_task(hold_reader())
-    await reader_started.wait()
-    writer = asyncio.create_task(hold_writer())
-    later_reader = asyncio.create_task(wait_as_reader())
-    await asyncio.sleep(0)
-    later_reader.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await later_reader
-
-    release_reader.set()
-    await first_reader
-    await writer_started.wait()
-
-    blocked_reader = asyncio.create_task(wait_as_reader())
-    await asyncio.sleep(0)
-    blocked_reader.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await blocked_reader
-
-    release_writer.set()
-    await writer
-
-
-async def test_dispatch_tracker_reaps_dropped_wrapper_via_cancel() -> None:
-    """Dropping a mid-feed wrapper leaves its dispatch task for `cancel` to reap.
-
-    Monty's driver may drop the external wrapper coroutine during feed teardown
-    (`coroutine.close()`, i.e. `GeneratorExit`), which does not stop the dispatch
-    task it is awaiting. The tracker must keep that task until `cancel` runs, so
-    host work cannot outlive the feed.
-    """
-    tracker = _DispatchTracker()
-    dispatch_started = asyncio.Event()
-    dispatch_cancelled = asyncio.Event()
-
-    async def dispatch() -> None:
-        dispatch_started.set()
-        try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            dispatch_cancelled.set()
-            raise
-
-    # Drive the wrapper to its `await task` suspension the way Monty invokes an
-    # external, then drop it, without ever cancelling the dispatch task ourselves.
-    wrapper = tracker.run(dispatch())
-    wrapper.send(None)
-    await asyncio.wait_for(dispatch_started.wait(), timeout=1)
-    wrapper.close()
-
-    assert not dispatch_cancelled.is_set()
-    assert tracker._tasks  # pyright: ignore[reportPrivateUsage]
-
-    await tracker.cancel()
-    assert dispatch_cancelled.is_set()

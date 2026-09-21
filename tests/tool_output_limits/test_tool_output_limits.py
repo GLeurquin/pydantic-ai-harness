@@ -7,11 +7,12 @@ import os
 import time
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock, patch
 
 import pytest
-from pydantic_ai import Agent
-from pydantic_ai.exceptions import ModelRetry
+from pydantic_ai import Agent, FunctionToolset
+from pydantic_ai.exceptions import ModelRetry, UserError
 from pydantic_ai.messages import (
     BinaryContent,
     ModelMessage,
@@ -20,11 +21,14 @@ from pydantic_ai.messages import (
     ToolCallPart,
     ToolReturn,
     ToolReturnPart,
+    UserPromptPart,
 )
+from pydantic_ai.models import AbstractModel
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import ToolDefinition
-from pydantic_ai.usage import RunUsage
+from pydantic_ai.usage import RunUsage, UsageLimits
+from pydantic_core import to_json
 
 from pydantic_ai_harness.tool_output_limits import (
     Band,
@@ -35,6 +39,8 @@ from pydantic_ai_harness.tool_output_limits import (
     ToolOutputLimits,
     Truncate,
     TruncationStrategy,
+    indented_json,
+    json_lines,
 )
 from pydantic_ai_harness.tool_output_limits._capability import (
     READ_TOOL_NAME,
@@ -53,16 +59,22 @@ from pydantic_ai_harness.tool_output_limits._payload import (
     strip_ansi,
     to_bytes,
     to_text,
-    truncate_text,
 )
 from pydantic_ai_harness.tool_output_limits._store import _safe_segment
+from tests._recording_durability import RecordingDurability  # pyright: ignore[reportMissingTypeStubs]
+from tests.conftest import agent_run_names  # pyright: ignore[reportMissingTypeStubs]
+
+if TYPE_CHECKING:
+    from logfire.testing import CaptureLogfire
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def _make_ctx(*, run_id: str | None = 'run-1', retry: int = 0, model: Any = None) -> Any:
+def _make_ctx(
+    *, run_id: str | None = 'run-1', retry: int = 0, model: Any = None, usage_limits: UsageLimits | None = None
+) -> Any:
     """Build a minimal RunContext-like object for testing the hook directly."""
 
     @dataclasses.dataclass
@@ -74,11 +86,12 @@ def _make_ctx(*, run_id: str | None = 'run-1', retry: int = 0, model: Any = None
         usage: RunUsage
         run_id: str | None
         retry: int
+        usage_limits: UsageLimits | None = None
         tool_call_id: str | None = 'call-1'
         model: Any = dataclasses.field(default_factory=_FakeModel)
         deps: None = None
 
-    ctx = _FakeCtx(usage=RunUsage(), run_id=run_id, retry=retry)
+    ctx = _FakeCtx(usage=RunUsage(), run_id=run_id, retry=retry, usage_limits=usage_limits)
     if model is not None:
         ctx.model = model
     return ctx
@@ -140,6 +153,27 @@ class TestPayloadHelpers:
         assert to_text('hi') == 'hi'
         assert to_text({'a': 1}) == '{"a":1}'
 
+    def test_indented_json(self):
+        assert indented_json({'a': 1}) == '{\n  "a": 1\n}'
+
+    def test_json_lines_list(self):
+        assert json_lines([{'a': 1}, {'b': 2}]) == '{"a":1}\n{"b":2}'
+
+    def test_json_lines_non_sequence_falls_back_to_indented(self):
+        assert json_lines({'a': 1}) == '{\n  "a": 1\n}'
+
+    def test_json_lines_tuple_is_a_sequence(self):
+        assert json_lines(({'a': 1}, {'b': 2})) == '{"a":1}\n{"b":2}'
+
+    def test_json_lines_empty_list(self):
+        assert json_lines([]) == ''
+
+    def test_presets_escape_line_separator_chars(self):
+        rendered = json_lines([{'text': 'a\N{LINE SEPARATOR}b'}, {'ok': True}])
+        assert rendered.splitlines() == ['{"text":"a\\u2028b"}', '{"ok":true}']
+        indented = indented_json({'text': 'a\N{PARAGRAPH SEPARATOR}b\x85c'})
+        assert indented.splitlines() == ['{', '  "text": "a\\u2029b\\u0085c"', '}']
+
     def test_measure_chars_and_tokens(self):
         assert measure('x' * 100, over_tokens=False, tokenizer=None) == 100
         assert measure('x' * 100, over_tokens=True, tokenizer=None) == 25
@@ -161,23 +195,6 @@ class TestPayloadHelpers:
     def test_json_sketch_scalar(self):
         assert json_sketch(42) == ''
         assert json_sketch('plain') == ''
-
-    def test_truncate_under_limit(self):
-        assert truncate_text('short', 100, TruncationStrategy.head_tail) == 'short'
-
-    def test_truncate_head(self):
-        out = truncate_text('a' * 100, 10, TruncationStrategy.head)
-        assert out.startswith('aaaaaaaaaa')
-        assert 'showing first 10' in out
-
-    def test_truncate_tail(self):
-        out = truncate_text('a' * 100, 10, TruncationStrategy.tail)
-        assert out.endswith('aaaaaaaaaa')
-        assert 'showing last 10' in out
-
-    def test_truncate_head_tail(self):
-        out = truncate_text('a' * 100, 10, TruncationStrategy.head_tail)
-        assert 'omitted from the middle' in out
 
 
 # ---------------------------------------------------------------------------
@@ -342,7 +359,7 @@ class TestPassthrough:
 
     async def test_callable_filter(self):
         cap: ToolOutputLimits[object] = ToolOutputLimits(
-            bands=[Band(over=1, action=Truncate(max_chars=2))],
+            bands=[Band(over=1, action=Truncate(max_chars=95))],
             tool_filter=lambda ctx, td: td.name == 'big_tool',
         )
         out = await _run(cap, 'x' * 100)
@@ -352,6 +369,13 @@ class TestPassthrough:
         cap: ToolOutputLimits[object] = ToolOutputLimits(bands=[Band(over=1000, action=Truncate())])
         out = await _run(cap, 'small')
         assert out == 'small'
+
+    async def test_below_threshold_structured_passthrough_with_serializer(self):
+        records = [{'record_id': 1}]
+        cap: ToolOutputLimits[object] = ToolOutputLimits(
+            bands=[Band(over=1000, action=Truncate())], serializer=indented_json
+        )
+        assert await _run(cap, records) is records
 
     async def test_exception_result_passthrough(self):
         cap: ToolOutputLimits[object] = ToolOutputLimits(bands=[Band(over=1, action=Truncate(max_chars=2))])
@@ -365,12 +389,106 @@ class TestPassthrough:
 
 
 class TestTruncate:
-    async def test_truncates_text(self):
+    @pytest.mark.parametrize('strategy', TruncationStrategy)
+    @pytest.mark.parametrize(
+        'total,kept',
+        [(1000, 1), (1000, 9), (1000, 10), (1000, 99), (1000, 100), (10000, 999), (10000, 1000), (1001, 2)],
+    )
+    async def test_marker_counts_toward_budget(self, strategy: TruncationStrategy, total: int, kept: int):
+        text = ''.join(chr(0x4E00 + i) for i in range(total))
+        if strategy is TruncationStrategy.head:
+            expected = text[:kept] + f'\n\n[truncated: showing first {kept:,} of {total:,} chars]'
+        elif strategy is TruncationStrategy.tail:
+            expected = f'[... output truncated, showing last {kept} chars]\n' + text[-kept:]
+        else:
+            head = kept * 2 // 5
+            tail = kept - head
+            expected = (
+                f'{text[:head]}\n\n[truncated: {total - kept:,} chars omitted from the middle; '
+                f'showing first {head:,} + last {tail:,} of {total:,} chars]\n\n{text[-tail:]}'
+            )
+        max_chars = len(expected)
         cap: ToolOutputLimits[object] = ToolOutputLimits(
-            bands=[Band(over=10, action=Truncate(max_chars=20, strategy=TruncationStrategy.head))]
+            bands=[Band(over=0, action=Truncate(max_chars=max_chars, strategy=strategy))]
         )
-        out = await _run(cap, 'a' * 100)
-        assert isinstance(out, str) and out.startswith('a' * 20)
+        agent = Agent(TestModel(call_tools=['big_tool']), capabilities=[cap])
+
+        @agent.tool_plain
+        def big_tool() -> str:
+            return text
+
+        result = await agent.run('go')
+        returns = [p for m in result.all_messages() for p in m.parts if isinstance(p, ToolReturnPart)]
+        assert len(returns) == 1
+        assert returns[0].content == expected
+
+    @pytest.mark.parametrize(
+        'strategy,max_chars',
+        [(strategy, cap) for strategy in TruncationStrategy for cap in [-1, 0, 1, 2, 10]]
+        + [(TruncationStrategy.head, 45), (TruncationStrategy.tail, 45), (TruncationStrategy.head_tail, 91)],
+    )
+    async def test_budget_too_small_for_marker(self, strategy: TruncationStrategy, max_chars: int):
+        text = ''.join(chr(0x4E00 + i) for i in range(1000))
+        kept = max(0, max_chars)
+        if strategy is TruncationStrategy.head:
+            expected = text[:kept]
+        elif strategy is TruncationStrategy.tail:
+            expected = text[len(text) - kept :]
+        else:
+            head = kept * 2 // 5
+            expected = text[:head] + text[len(text) - (kept - head) :]
+        cap: ToolOutputLimits[object] = ToolOutputLimits(
+            bands=[Band(over=0, action=Truncate(max_chars=max_chars, strategy=strategy))]
+        )
+        agent = Agent(TestModel(call_tools=['big_tool']), capabilities=[cap])
+
+        @agent.tool_plain
+        def big_tool() -> str:
+            return text
+
+        result = await agent.run('go')
+        returns = [p for m in result.all_messages() for p in m.parts if isinstance(p, ToolReturnPart)]
+        assert len(returns) == 1
+        assert returns[0].content == expected
+
+    @pytest.mark.parametrize('strategy', TruncationStrategy)
+    @pytest.mark.parametrize('max_chars', [5, 6])
+    async def test_output_that_fits_is_unchanged(self, strategy: TruncationStrategy, max_chars: int):
+        cap: ToolOutputLimits[object] = ToolOutputLimits(
+            bands=[Band(over=0, action=Truncate(max_chars=max_chars, strategy=strategy))]
+        )
+        agent = Agent(TestModel(call_tools=['small_tool']), capabilities=[cap])
+
+        @agent.tool_plain
+        def small_tool() -> str:
+            return 'short'
+
+        result = await agent.run('go')
+        returns = [p for m in result.all_messages() for p in m.parts if isinstance(p, ToolReturnPart)]
+        assert len(returns) == 1
+        assert returns[0].content == 'short'
+
+    @pytest.mark.parametrize('strategy', TruncationStrategy)
+    async def test_tool_return_value_and_content_are_bounded(self, strategy: TruncationStrategy):
+        cap: ToolOutputLimits[object] = ToolOutputLimits(
+            bands=[Band(over=0, action=Truncate(max_chars=200, strategy=strategy))]
+        )
+        agent = Agent(TestModel(call_tools=['big_tool']), capabilities=[cap])
+
+        @agent.tool_plain
+        def big_tool() -> ToolReturn:
+            return ToolReturn(return_value='v' * 1000, content='c' * 2000, metadata={'k': 1})
+
+        result = await agent.run('go')
+        returns = [p for m in result.all_messages() for p in m.parts if isinstance(p, ToolReturnPart)]
+        assert len(returns) == 1
+        assert returns[0].metadata == {'k': 1}
+        value = returns[0].content
+        assert isinstance(value, str) and len(value) <= 200 and 'truncated' in value
+        prompts = [p for m in result.all_messages() for p in m.parts if isinstance(p, UserPromptPart)]
+        assert len(prompts) == 2
+        content = prompts[-1].content
+        assert isinstance(content, str) and len(content) <= 200 and 'truncated' in content
 
     async def test_strip_ansi_applied(self):
         cap: ToolOutputLimits[object] = ToolOutputLimits(
@@ -427,9 +545,77 @@ class TestSpill:
         assert isinstance(out, ToolReturn)
         assert 'shape:' in out.return_value  # type: ignore[operator]
 
+    async def test_spill_serializer_json_lines_is_pageable(self, tmp_path: Path):
+        store = LocalFileStore(base_dir=tmp_path)
+        cap: ToolOutputLimits[object] = ToolOutputLimits(
+            bands=[Band(over=5, action=Spill(preview_chars=80))], serializer=json_lines, store=store
+        )
+        records = [{'record_id': record_id, 'item': f'item-{record_id}'} for record_id in range(10)]
+        out = await _run(cap, records)
+        assert isinstance(out, ToolReturn)
+        handle = out.metadata['overflow_handle']
+        assert await store.read(handle) == json_lines(records).encode('utf-8')
+        toolset = cap.get_toolset()
+        assert toolset is not None
+        read = toolset.tools[READ_TOOL_NAME].function  # type: ignore[union-attr]
+        page_1 = await read(_make_ctx(), handle, offset=0, limit=1)  # type: ignore[attr-defined]
+        page_2 = await read(_make_ctx(), handle, offset=1, limit=1)  # type: ignore[attr-defined]
+        assert '"record_id":0' in page_1 and '"record_id":1' not in page_1
+        assert '"record_id":1' in page_2 and '"record_id":0' not in page_2
+
+    async def test_spill_serializer_inside_tool_return_envelope(self, tmp_path: Path):
+        store = LocalFileStore(base_dir=tmp_path)
+        cap: ToolOutputLimits[object] = ToolOutputLimits(
+            bands=[Band(over=5, action=Spill())], serializer=json_lines, store=store
+        )
+        out = await _run(cap, ToolReturn(return_value=[{'record_id': 1}, {'record_id': 2}], metadata={'orig': True}))
+        assert isinstance(out, ToolReturn)
+        assert out.metadata['orig'] is True
+        assert await store.read(out.metadata['overflow_handle']) == b'{"record_id":1}\n{"record_id":2}'
+
+    async def test_serializer_layout_reaches_band_compact_would_not(self):
+        value = {'a': 1, 'b': 2, 'c': 3}
+        bands = [Band(over=25, action=Truncate(max_chars=10, strategy=TruncationStrategy.head))]
+        plain: ToolOutputLimits[object] = ToolOutputLimits(bands=bands)
+        assert await _run(plain, value) is value
+        cap: ToolOutputLimits[object] = ToolOutputLimits(bands=bands, serializer=indented_json)
+        out = await _run(cap, value)
+        assert isinstance(out, str) and out.startswith('{\n  "a": 1')
+
+    async def test_serializer_error_warns_and_falls_back_to_compact(self):
+        def broken(value: object) -> str:
+            raise RuntimeError('boom')
+
+        cap: ToolOutputLimits[object] = ToolOutputLimits(
+            bands=[Band(over=10, action=Truncate(max_chars=20, strategy=TruncationStrategy.head))],
+            serializer=broken,
+        )
+        with pytest.warns(UserWarning, match='serializer raised'):
+            out = await _run(cap, {'rows': list(range(100))})
+        assert isinstance(out, str) and out.startswith('{"rows":[0,1,')
+
+    async def test_serializer_non_text_return_warns_and_falls_back_to_compact(self):
+        cap: ToolOutputLimits[object] = ToolOutputLimits(
+            bands=[Band(over=10, action=Truncate(max_chars=20, strategy=TruncationStrategy.head))],
+            serializer=lambda value: to_json(value, indent=2),  # type: ignore[arg-type,return-value]
+        )
+        with pytest.warns(UserWarning, match='non-text'):
+            out = await _run(cap, {'rows': list(range(100))})
+        assert isinstance(out, str) and out.startswith('{"rows":[0,1,')
+
+    async def test_spill_serializer_skips_strings(self, tmp_path: Path):
+        store = LocalFileStore(base_dir=tmp_path)
+        cap: ToolOutputLimits[object] = ToolOutputLimits(
+            bands=[Band(over=5, action=Spill())], serializer=indented_json, store=store
+        )
+        text = 'line\n' * 100
+        out = await _run(cap, text)
+        assert isinstance(out, ToolReturn)
+        assert await store.read(out.metadata['overflow_handle']) == text.encode('utf-8')
+
     async def test_spill_failure_falls_back_to_truncate(self):
         cap: ToolOutputLimits[object] = ToolOutputLimits(
-            bands=[Band(over=10, action=Spill(then=Truncate(max_chars=15)))], store=_BrokenStore()
+            bands=[Band(over=10, action=Spill(then=Truncate(max_chars=95)))], store=_BrokenStore()
         )
         out = await _run(cap, 'a' * 100)
         assert isinstance(out, str) and 'truncated' in out
@@ -452,6 +638,14 @@ class TestSpill:
         out = await _run(cap, ToolReturn(return_value='a' * 100, metadata={'orig': True}))
         assert isinstance(out, ToolReturn)
         assert out.metadata['orig'] is True
+        assert 'overflow_handle' in out.metadata
+
+    async def test_spill_preserves_non_mapping_metadata(self, tmp_path: Path):
+        store = LocalFileStore(base_dir=tmp_path)
+        cap: ToolOutputLimits[object] = ToolOutputLimits(bands=[Band(over=5, action=Spill())], store=store)
+        out = await _run(cap, ToolReturn(return_value='a' * 100, metadata='app-request-id-123'))
+        assert isinstance(out, ToolReturn)
+        assert out.metadata['original_metadata'] == 'app-request-id-123'
         assert 'overflow_handle' in out.metadata
 
 
@@ -484,7 +678,7 @@ class TestContentReduction:
         assert await store.read(handle) == ('C' * 5000).encode('utf-8')
 
     async def test_large_content_truncated(self):
-        cap: ToolOutputLimits[object] = ToolOutputLimits(bands=[Band(over=10, action=Truncate(max_chars=20))])
+        cap: ToolOutputLimits[object] = ToolOutputLimits(bands=[Band(over=10, action=Truncate(max_chars=95))])
         out = await _run(cap, ToolReturn(return_value='small', content='C' * 200))
         assert isinstance(out, ToolReturn)
         assert isinstance(out.content, str) and 'truncated' in out.content
@@ -525,6 +719,75 @@ class TestContentReduction:
 
 
 class TestSummarize:
+    async def test_mutating_source_bands_does_not_desync_summarizer_resolution(self):
+        bands = [Band(over=5, action=Summarize(model=_fixed_model('THE SUMMARY')))]
+        cap: ToolOutputLimits[object] = ToolOutputLimits(bands=bands)
+        bands.clear()
+
+        out = await _run(cap, 'x' * 100)
+
+        assert out == 'THE SUMMARY'
+
+    @pytest.mark.usefixtures('instrument_all_agents')
+    async def test_summarizer_run_is_named_after_the_capability(self, capfire: CaptureLogfire):
+        def large_output() -> str:
+            return 'x' * 100
+
+        agent = Agent(
+            TestModel(call_tools='all'),
+            name='outer',
+            capabilities=[ToolOutputLimits(bands=[Band(over=5, action=Summarize(model=_fixed_model('THE SUMMARY')))])],
+            toolsets=[FunctionToolset(tools=[large_output], id='large-output')],
+        )
+        await agent.run('call the tool')
+
+        assert 'tool_output_limits' in agent_run_names(capfire)
+
+    async def test_model_summarizer_dispatches_as_durable_operation(self):
+        def large_output() -> str:
+            return 'x' * 100
+
+        durability = RecordingDurability()
+        cap: ToolOutputLimits[Any] = ToolOutputLimits(
+            bands=[Band(over=5, action=Summarize(model=_fixed_model('THE SUMMARY')))]
+        )
+        assert cap.id == 'tool_output_limits'
+
+        agent = Agent(
+            TestModel(call_tools='all'),
+            name='tool_output_limits',
+            capabilities=[cap, durability],
+            toolsets=[FunctionToolset(tools=[large_output], id='large-output')],
+        )
+        await agent.run('call the tool')
+
+        bound = RecordingDurability.from_agent(agent)
+        assert bound is not None
+        assert 'tool_output_limits__capability__tool_output_limits.summarize' in {name for name, _ in bound.calls}
+
+    async def test_custom_summarizer_bypasses_durable_operation(self):
+        def large_output() -> str:
+            return 'x' * 100
+
+        durability = RecordingDurability()
+        cap: ToolOutputLimits[Any] = ToolOutputLimits(
+            id='tool_output_limits', bands=[Band(over=5, action=Summarize(summarize=lambda _name, _text: 'summary'))]
+        )
+
+        agent = Agent(
+            TestModel(call_tools='all'),
+            name='custom_tool_output_limits',
+            capabilities=[cap, durability],
+            toolsets=[FunctionToolset(tools=[large_output], id='custom-large-output')],
+        )
+        await agent.run('call the tool')
+
+        bound = RecordingDurability.from_agent(agent)
+        assert bound is not None
+        assert 'custom_tool_output_limits__capability__tool_output_limits.summarize' not in {
+            name for name, _ in bound.calls
+        }
+
     async def test_custom_sync_summarizer(self):
         cap: ToolOutputLimits[object] = ToolOutputLimits(
             bands=[Band(over=5, action=Summarize(summarize=lambda name, text: f'{name}:{len(text)}'))]
@@ -548,6 +811,22 @@ class TestSummarize:
         assert out == 'THE SUMMARY'
         assert ctx.usage.requests == 1
 
+    async def test_inherited_model_reserves_parent_usage_limits(self):
+        ctx = _make_ctx(
+            model=_fixed_model('THE SUMMARY'), usage_limits=UsageLimits(request_limit=5, tool_calls_limit=2)
+        )
+        cap: ToolOutputLimits[object] = ToolOutputLimits(bands=[Band(over=5, action=Summarize())])
+        mock_result = AsyncMock()
+        mock_result.output = 'THE SUMMARY'
+        mock_agent = AsyncMock()
+        mock_agent.run.return_value = mock_result
+
+        with patch('pydantic_ai.Agent', return_value=mock_agent):
+            out = await _run(cap, 'x' * 100, ctx=ctx)
+
+        assert out == 'THE SUMMARY'
+        assert mock_agent.run.call_args.kwargs['usage_limits'] == UsageLimits(request_limit=4, tool_calls_limit=2)
+
     async def test_explicit_model_overrides_ctx(self):
         ctx = _make_ctx(model=_fixed_model('FROM CTX MODEL'))
         cap: ToolOutputLimits[object] = ToolOutputLimits(
@@ -556,6 +835,41 @@ class TestSummarize:
         out = await _run(cap, 'x' * 100, ctx=ctx)
         assert out == 'FROM EXPLICIT MODEL'
         assert ctx.usage.requests == 1
+
+    async def test_explicit_model_name_overrides_ctx(self):
+        ctx = _make_ctx(model=_fixed_model('FROM CTX MODEL'))
+        cap: ToolOutputLimits[object] = ToolOutputLimits(bands=[Band(over=5, action=Summarize(model='test:summary'))])
+        mock_result = AsyncMock(output='FROM NAMED MODEL')
+        mock_agent = AsyncMock()
+        mock_agent.run.return_value = mock_result
+
+        with patch('pydantic_ai.Agent', return_value=mock_agent) as agent_type:
+            assert await _run(cap, 'x' * 100, ctx=ctx) == 'FROM NAMED MODEL'
+
+        agent_type.assert_called_once_with(
+            'test:summary', name='tool_output_limits', instructions='You summarize oversized tool output.'
+        )
+
+    async def test_realtime_run_without_a_model_raises(self):
+        """A realtime run has no request-response model to summarize with; ask for one (#585)."""
+
+        class _RealtimeModel(AbstractModel):
+            @property
+            def model_name(self) -> str:
+                return 'gpt-4o-realtime-preview'
+
+            @property
+            def system(self) -> str:
+                return 'openai'
+
+        model = _RealtimeModel()
+        # A genuine `AbstractModel` identity, not a mock: it is rejected for being a non-`Model`.
+        assert model.model_id == 'openai:gpt-4o-realtime-preview'
+        ctx = _make_ctx(model=model)
+        cap: ToolOutputLimits[object] = ToolOutputLimits(bands=[Band(over=5, action=Summarize())])
+
+        with pytest.raises(UserError, match='needs a request-response model'):
+            await _run(cap, 'x' * 100, ctx=ctx)
 
     async def test_binary_summarize_falls_back(self):
         cap: ToolOutputLimits[object] = ToolOutputLimits(bands=[Band(over=1, action=Summarize(then=Passthrough()))])
@@ -567,10 +881,20 @@ class TestSummarize:
             raise RuntimeError('model down')
 
         cap: ToolOutputLimits[object] = ToolOutputLimits(
-            bands=[Band(over=5, action=Summarize(summarize=boom, then=Truncate(max_chars=10)))]
+            bands=[Band(over=5, action=Summarize(summarize=boom, then=Truncate(max_chars=95)))]
         )
         out = await _run(cap, 'a' * 100)
         assert isinstance(out, str) and 'truncated' in out
+
+    async def test_nested_per_tool_model_summarizer(self):
+        summarize = Summarize(model=_fixed_model('NESTED SUMMARY'))
+        cap: ToolOutputLimits[object] = ToolOutputLimits(
+            bands=[Band(over=5, action=Passthrough())],
+            per_tool={'big_tool': [Band(over=5, action=Spill(then=summarize))]},
+            store=_BrokenStore(),
+        )
+
+        assert await _run(cap, 'x' * 100) == 'NESTED SUMMARY'
 
 
 # ---------------------------------------------------------------------------
@@ -617,6 +941,10 @@ class TestInternals:
 
     def test_with_handles_non_mapping(self):
         meta = _with_handles('not-a-mapping', 'h/1.0', 42)
+        assert meta == {'original_metadata': 'not-a-mapping', 'overflow_handle': 'h/1.0', 'overflow_bytes': 42}
+
+    def test_with_handles_none(self):
+        meta = _with_handles(None, 'h/1.0', 42)
         assert meta == {'overflow_handle': 'h/1.0', 'overflow_bytes': 42}
 
     def test_with_handles_content_only(self):
@@ -736,6 +1064,24 @@ class TestAgentIntegration:
         assert isinstance(part.content, str) and 'too large' in part.content
         assert part.metadata is not None and 'overflow_handle' in part.metadata
         assert await store.read(part.metadata['overflow_handle']) == ('data line\n' * 500).encode('utf-8')
+
+    async def test_spill_preserves_non_mapping_metadata_through_agent_run(self, tmp_path: Path, anyio_backend: str):
+        store = LocalFileStore(base_dir=tmp_path)
+        cap: ToolOutputLimits[object] = ToolOutputLimits(bands=[Band(over=100, action=Spill())], store=store)
+        agent = Agent(TestModel(call_tools=['big_tool']), capabilities=[cap])
+
+        @agent.tool_plain
+        def big_tool() -> ToolReturn:
+            return ToolReturn(return_value='data line\n' * 500, metadata='app-request-id-123')
+
+        result = await agent.run('go')
+        returns = [p for m in result.all_messages() for p in m.parts if isinstance(p, ToolReturnPart)]
+        spilled = [p for p in returns if p.tool_name == 'big_tool']
+        assert spilled
+        part = spilled[0]
+        assert part.metadata is not None
+        assert part.metadata['original_metadata'] == 'app-request-id-123'
+        assert 'overflow_handle' in part.metadata
 
     async def test_small_output_untouched(self, tmp_path: Path, anyio_backend: str):
         cap: ToolOutputLimits[object] = ToolOutputLimits(

@@ -12,11 +12,19 @@ Use this before opening a PR or reviewing a capability change.
 ## Implementation
 
 - Public exports are intentional.
+- Every public capability class is lazily re-exported from the top-level
+  `pydantic_ai_harness` package (`__all__` + `TYPE_CHECKING` + `__getattr__`;
+  ACP/experimental excepted) — see `capability-authoring.md` "Capability
+  Submodules And Exports".
 - Private helpers stay private.
 - Types are precise; new public signatures do not use `Any`.
 - No casts are used to paper over type design.
 - The implementation uses Pydantic AI hooks/toolsets instead of duplicating core
   runtime behavior.
+- The change states what it emits to OpenTelemetry. A decision point an operator
+  needs (a refusal, a budget stop, a rewritten history) carries a span on
+  `ctx.tracer`; emitting nothing is documented with its reason. See
+  `capability-authoring.md` "Telemetry".
 - Capability ordering is justified when present.
 - Dependency changes are required, linked to an issue, and made through `uv`;
   every PR touching `pyproject.toml` or `uv.lock` carries
@@ -93,6 +101,9 @@ README, or source code.
 ## Tests
 
 - Tests cover the public `Agent(..., capabilities=[...])` path where possible.
+- Every `Agent` the capability constructs internally passes `name=` (the
+  capability's snake_case name) and a test asserts it on the run span. See
+  `capability-authoring.md` "Internal Agents Carry The Capability's Name".
 - Lower-level tests cover lifecycle, schemas, retries, and metadata when needed.
 - Error paths and important option combinations are covered.
 - For a stateful capability, or one that overrides `for_run`, require a public
@@ -100,7 +111,14 @@ README, or source code.
   explicit, tested incompatibility. Mocked lifecycle tests alone do not
   establish state continuity across activity, process, or replay boundaries.
 - Relevant protocol-shaped output is snapshotted.
-- `make lint`, `make typecheck`, and `make test` pass before handoff.
+- **Harness cassettes are re-recorded on composition change.** Each packaged
+  harness has a recorded end-to-end integration test (e.g.
+  `tests/coder/test_coder_integration.py`) that runs it against a real task.
+  Any change to that harness's composition, defaults, or instructions
+  re-records the cassette in the same PR
+  (`uv run --env-file .env --no-sync pytest -p no:cacheprovider <test> --record-mode=rewrite`) —
+  a green replay of a stale cassette proves nothing about the new definition.
+- Run the local verification commands in `AGENTS.md` before handoff.
 
 ## Docs
 
@@ -119,6 +137,12 @@ Checks:
 - Both the README and the unified doc are updated for any user-facing change
   (public class, params, defaults, tool names, extras, safety semantics). A
   change reflected in only one of them is a defect, not a follow-up.
+- **Harness blown-out parity.** A packaged harness (`Coder`, `Researcher`, ...)
+  has its composition written out in full — default instructions and allowlists
+  included, not imported — in its docs page's "Blown-out equivalent" AND in its
+  `examples/` counterpart. Any change to a harness's composition or defaults
+  updates all three together (implementation, docs page, example) in the same
+  PR; drift here is a defect, not a follow-up.
 - The two do not contradict each other or the source on extras, option names,
   defaults, or safety caveats.
 - Every snippet in both docs is runnable: all imports present, class/param names

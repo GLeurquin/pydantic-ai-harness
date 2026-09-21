@@ -1,31 +1,39 @@
-"""Sync Monty execution loop for dynamic workflows and Temporal CodeMode runs.
+"""Shared Monty execution loop for code-execution capabilities.
 
-Drives a Monty REPL via the synchronous snapshot API (`feed_start`/`resume`),
-dispatching external function calls back to a host-supplied async callback.
+Drives a Monty REPL via the snapshot API (`feed_start`/`resume`), dispatching external
+function calls back to a host-supplied async callback.
 
-Two execution paths use this loop:
+Two capabilities build on this:
 
+- `code_mode`: the dispatch callback runs the agent's own tools.
 - `dynamic_workflow`: the dispatch callback runs sub-agents.
-- `code_mode` inside a Temporal workflow: the callback runs the agent's own tools.
 
-Normal CodeMode runs use `AsyncMontySession.feed_run`, which resolves external
-calls in Monty's async bindings. Temporal's deterministic workflow loop cannot
-be woken by the worker I/O thread, so its CodeMode path deliberately keeps this
-sync snapshot API. The loop runs workflow-side and replays. Monty's passed-through
-native module owns its worker subprocess outside the restricted Python module
-sandbox, while nested durable-wrapped tools cross their configured activity
+The snapshot API (rather than `feed_run`) is used deliberately: it exposes each suspension
+to this host-controlled loop, which owns sequential barriers, dispatch cancellation, and
+trace context. The loop drives both of Monty's bindings: local workers hand it sync
+snapshots, and remote workers reached over `AsyncMontyWebsocket` hand it async snapshots
+whose `resume` is awaited. Under Temporal, this loop runs workflow-side and replays.
+Monty's passed-through native module owns its worker subprocess outside the restricted
+Python module sandbox, while nested durable-wrapped tools cross their configured activity
 boundaries.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Container, Coroutine
+from collections.abc import Awaitable, Callable, Container, Coroutine
 from dataclasses import dataclass, field
 from typing import Any
 
+import anyio
+from opentelemetry import context as otel_context
+
 try:
     from pydantic_monty import (
+        AsyncFunctionSnapshot,
+        AsyncFutureSnapshot,
+        AsyncNameLookupSnapshot,
+        AsyncSnapshot,
         CollectString,
         ExternalException,
         ExternalReturnValue,
@@ -34,6 +42,7 @@ try:
         FutureSnapshot,
         MontyComplete,
         NameLookupSnapshot,
+        SyncSnapshot,
     )
 except ImportError as _import_error:  # pragma: no cover
     raise ImportError(
@@ -45,10 +54,17 @@ except ImportError as _import_error:  # pragma: no cover
 # perform the host-side work (tool call or sub-agent run) and return the result.
 DispatchFn = Callable[[str, dict[str, Any]], Coroutine[Any, Any, Any]]
 
-MontyState = FunctionSnapshot | FutureSnapshot | NameLookupSnapshot | MontyComplete
+MontyState = SyncSnapshot | AsyncSnapshot
+# What `feed_start`/`resume` return: the next state (sync bindings) or an awaitable of it (async bindings).
+ResumeResult = SyncSnapshot | Awaitable[AsyncSnapshot]
 
-# A coroutine not yet scheduled on the event loop, or its running Task.
-PendingCall = asyncio.Task[Any] | Coroutine[Any, Any, Any]
+
+@dataclass
+class PendingCall:
+    """A dispatched call and the suspension context under which it executes."""
+
+    call: asyncio.Task[Any] | Coroutine[Any, Any, Any]
+    context: otel_context.Context
 
 
 def is_sandbox_panic(exc: BaseException) -> bool:
@@ -109,20 +125,22 @@ class MontyExecutor:
         default_factory=dict[int, ExternalSettledResult], init=False
     )
 
-    async def run(self, state: MontyState) -> MontyComplete:
-        """Drive the REPL from `state` until it completes."""
+    async def run(self, start: ResumeResult) -> MontyComplete:
+        """Drive the REPL from the `feed_start` result until it completes."""
         try:
+            state = await _settle(start)
             while not isinstance(state, MontyComplete):
-                if isinstance(state, NameLookupSnapshot):
+                if isinstance(state, (NameLookupSnapshot, AsyncNameLookupSnapshot)):
                     # Leave the name undefined so the sandbox raises `NameError`.
-                    state = state.resume()
-                elif isinstance(state, FunctionSnapshot):
+                    state = await _settle(state.resume())
+                elif isinstance(state, (FunctionSnapshot, AsyncFunctionSnapshot)):
                     state = await self._handle_function(state)
                 else:
                     state = await self._resolve_futures(state)
         finally:
             cancelled: list[asyncio.Task[Any]] = []
-            for call in self._pending.values():
+            for pending in self._pending.values():
+                call = pending.call
                 if isinstance(call, asyncio.Task):
                     call.cancel()
                     cancelled.append(call)
@@ -133,24 +151,33 @@ class MontyExecutor:
                 # point; await them so dispatched work (e.g. sub-agent runs mutating shared
                 # usage) has fully unwound before this returns. `return_exceptions=True` keeps
                 # one task's teardown error from masking the original exception, and the
-                # results are deliberately discarded.
-                await asyncio.gather(*cancelled, return_exceptions=True)
+                # results are deliberately discarded. Shielded: run cancellation can land here
+                # with an enclosing anyio scope already cancelled, and that scope re-cancels
+                # its tasks on every event-loop cycle -- each delivery either aborts this await
+                # outright (abandoning the tasks mid-unwind) or is forwarded through the
+                # `gather` into every task, breaking any await their cleanup performs. The
+                # shield holds for anyio-scope cancellation; a raw second `Task.cancel()` can
+                # still pierce it.
+                with anyio.CancelScope(shield=True):
+                    await asyncio.gather(*cancelled, return_exceptions=True)
         return state
 
-    async def _handle_function(self, snapshot: FunctionSnapshot) -> MontyState:
+    async def _handle_function(self, snapshot: FunctionSnapshot | AsyncFunctionSnapshot) -> MontyState:
         """Dispatch (or defer) a single external function call."""
         if snapshot.is_os_function:
             # OS calls (env, clock, filesystem) are answered from the feed's mounts and the
             # `os=` handler captured at `feed_start`, falling back to monty's unhandled default.
-            return snapshot.resume_auto()
+            return await _settle(snapshot.resume_auto())
 
         name = snapshot.function_name
         if name not in self.valid_names:
-            return snapshot.resume({'exception': NameError(f'Unknown function: {name}')})
+            return await _settle(snapshot.resume({'exception': NameError(f'Unknown function: {name}')}))
 
         if snapshot.args:
-            return snapshot.resume(
-                {'exception': TypeError(f'{name}() does not accept positional arguments; use keyword arguments')}
+            return await _settle(
+                snapshot.resume(
+                    {'exception': TypeError(f'{name}() does not accept positional arguments; use keyword arguments')}
+                )
             )
 
         if name in self.sequential_names:
@@ -161,21 +188,41 @@ class MontyExecutor:
             # there, `run`'s cleanup would never close it.
             for cid in list(self._pending):
                 self._pre_resolved[cid] = await _await_external(self._pending.pop(cid))
+            try:
+                call = self._dispatch(snapshot, parallel=False)
+            except Exception as exc:
+                return await _settle(snapshot.resume({'exception': exc}))
             # The wrapped outcome (`{'return_value': ...}` / `{'exception': ...}`) is already
             # exactly the payload `resume` expects.
-            return snapshot.resume(await _await_external(self.dispatch(name, snapshot.kwargs)))
+            return await _settle(snapshot.resume(await _await_external(call)))
 
         # Deferred execution -- resolved later at FutureSnapshot.
-        call = self.dispatch(name, snapshot.kwargs)
-        if self.global_sequential:
-            # Keep the bare coroutine unscheduled; it's awaited one-at-a-time to avoid interleaving.
-            self._pending[snapshot.call_id] = call
-        else:
-            # Schedule now as a Task so concurrently-deferred calls actually run in parallel.
-            self._pending[snapshot.call_id] = asyncio.ensure_future(call)
-        return snapshot.resume({'future': ...})
+        try:
+            call = self._dispatch(snapshot, parallel=not self.global_sequential)
+        except Exception as exc:
+            # `dispatch` refused the call before building its coroutine (e.g. an exhausted
+            # per-snippet budget). Deliver the error at the sandbox call site, the same way a
+            # failure raised inside the coroutine is delivered, rather than letting it abort the
+            # feed: calls that already completed keep the results the host recorded for them, and
+            # the snippet can still return them. Nothing was scheduled, so there is no task to
+            # clean up and no further work is admitted.
+            return await _settle(snapshot.resume({'exception': exc}))
+        self._pending[snapshot.call_id] = call
+        return await _settle(snapshot.resume({'future': ...}))
 
-    async def _resolve_futures(self, snapshot: FutureSnapshot) -> MontyState:
+    def _dispatch(self, snapshot: FunctionSnapshot | AsyncFunctionSnapshot, *, parallel: bool) -> PendingCall:
+        # Compatibility with Monty before https://github.com/pydantic/monty/pull/885.
+        trace_context: Callable[[], otel_context.Context] = getattr(snapshot, 'trace_context', otel_context.get_current)
+        context = trace_context()
+        token = otel_context.attach(context)
+        try:
+            call = self.dispatch(snapshot.function_name, snapshot.kwargs)
+            # Tasks inherit the active context; bare coroutines need it restored when awaited.
+            return PendingCall(asyncio.ensure_future(call) if parallel else call, context)
+        finally:
+            otel_context.detach(token)
+
+    async def _resolve_futures(self, snapshot: FutureSnapshot | AsyncFutureSnapshot) -> MontyState:
         """Resolve the deferred calls a `FutureSnapshot` is waiting on."""
         pending_ids = snapshot.pending_call_ids
         results: dict[int, ExternalSettledResult] = {}
@@ -189,20 +236,30 @@ class MontyExecutor:
         # gather returns, so the cleanup in `run` can still cancel them if this is cancelled.
         gather_ids = [cid for cid in pending_ids if cid not in results]
         if gather_ids:
-            settled = await asyncio.gather(*(self._pending[cid] for cid in gather_ids), return_exceptions=True)
+            settled = await asyncio.gather(*(self._pending[cid].call for cid in gather_ids), return_exceptions=True)
             for cid, outcome in zip(gather_ids, settled):
                 del self._pending[cid]
                 results[cid] = _wrap_gathered(outcome)
 
-        return snapshot.resume(results)
+        return await _settle(snapshot.resume(results))
+
+
+async def _settle(resumed: ResumeResult) -> MontyState:
+    """Return the next REPL state from either binding: sync `resume` returns it, async `resume` awaits it."""
+    if isinstance(resumed, Awaitable):
+        return await resumed
+    return resumed
 
 
 async def _await_external(call: PendingCall) -> ExternalReturnValue | ExternalException:
     """Await a single deferred call and wrap its outcome for Monty."""
+    token = otel_context.attach(call.context)
     try:
-        result = await call
+        result = await call.call
     except Exception as exc:
         return ExternalException(exception=exc)
+    finally:
+        otel_context.detach(token)
     return ExternalReturnValue(return_value=result)
 
 

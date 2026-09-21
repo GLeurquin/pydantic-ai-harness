@@ -75,7 +75,12 @@ async def test_code_mode_runs_over_websocket(
     websocket_relay_url: str,
     tmp_path: Path,
 ) -> None:
-    """Remote feeds retain state while host tools, prints, and mounts round-trip."""
+    """Remote feeds retain state while host tools, prints, mounts, and barriers round-trip.
+
+    The third snippet drives every async snapshot flavor through the shared executor: the
+    `gather` defers two calls (function snapshots) and collects them (a future snapshot),
+    then the sequential `barrier()` resolves inline after the deferred work settles.
+    """
     (tmp_path / 'input.txt').write_text('mounted data')
     observed_returns: list[Any] = []
 
@@ -113,6 +118,21 @@ async def test_code_mode_runs_over_websocket(
                     )
                 ]
             )
+        if len(returns) == 2:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        'run_code',
+                        {
+                            'code': (
+                                'import asyncio\n'
+                                'first, second = await asyncio.gather(add(a=1, b=1), add(a=2, b=2))\n'
+                                '[first, second, barrier()]'
+                            )
+                        },
+                    )
+                ]
+            )
         return ModelResponse(parts=[TextPart('done')])
 
     agent: Agent[None, str] = Agent(
@@ -129,12 +149,17 @@ async def test_code_mode_runs_over_websocket(
     async def add(a: int, b: int) -> int:  # pyright: ignore[reportUnusedFunction]
         return a + b
 
+    @agent.tool_plain(sequential=True)
+    def barrier() -> str:  # pyright: ignore[reportUnusedFunction]
+        return 'barrier'
+
     result = await agent.run('exercise the remote sandbox')
 
     assert result.output == 'done'
     assert observed_returns == [
         {'output': 'remote tool result 5\n'},
         {'output': 'mounted data\n', 'result': 50},
+        [2, 4, 'barrier'],
     ]
 
 

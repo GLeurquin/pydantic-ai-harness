@@ -35,7 +35,7 @@ from pydantic_ai.tools import AgentDepsT
 from pydantic_ai.toolsets import FunctionToolset
 
 from pydantic_ai_harness.experimental.acp._session import AcpSession
-from pydantic_ai_harness.filesystem import FileSystem
+from pydantic_ai_harness.filesystem import FileSystem, FileSystemToolset
 
 
 class _LocalFileWriter(Protocol):
@@ -117,7 +117,10 @@ def acp_filesystem(session: AcpSession) -> AcpFileSystemToolset[None] | None:
 
     ```python
     def session_config(session: AcpSession) -> AcpSessionConfig[None]:
-        fs = acp_filesystem(session) or FileSystem(root_dir=session.cwd).get_toolset()
+        fs = acp_filesystem(session)
+        if fs is None:
+            # No client filesystem: register the capability, so its tools keep their owner.
+            return AcpSessionConfig(deps=None, capabilities=[FileSystem(root_dir=session.cwd)])
         return AcpSessionConfig(deps=None, toolsets=[fs])
     ```
 
@@ -129,6 +132,7 @@ def acp_filesystem(session: AcpSession) -> AcpFileSystemToolset[None] | None:
     if fs is None or not fs.read_text_file:
         return None
     local_writer = None if fs.write_text_file else FileSystem(root_dir=session.cwd).get_toolset()
+    assert local_writer is None or isinstance(local_writer, FileSystemToolset)
     return AcpFileSystemToolset[None](
         client=session.client, session_id=session.session_id, cwd=session.cwd, local_writer=local_writer
     )
@@ -162,7 +166,11 @@ class AcpTerminalToolset(FunctionToolset[AgentDepsT]):
         self._client = client
         self._session_id = session_id
         self._cwd = cwd
-        self.add_function(self.run_command, name='run_command')
+        self.add_function(
+            self.run_command,
+            name='run_command',
+            metadata={'code_arg_name': 'command', 'code_arg_language': 'shell'},
+        )
 
     # Embedding a live terminal pane in the tool call would require the terminal id at
     # call-start, before the command runs; the captured output is returned instead.

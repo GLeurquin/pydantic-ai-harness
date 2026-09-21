@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import AsyncIterable, Sequence
 from dataclasses import KW_ONLY, dataclass, field, replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import TypeAdapter, ValidationError
 from pydantic_ai import AbstractToolset
 from pydantic_ai.capabilities import AbstractCapability, CapabilityOrdering
 from pydantic_ai.capabilities._tool_search import ToolSearch as _ToolSearch
-from pydantic_ai.messages import ModelResponse, NativeToolSearchReturnPart, SystemPromptPart
+from pydantic_ai.messages import AgentStreamEvent, ModelResponse, NativeToolSearchReturnPart, SystemPromptPart
 from pydantic_ai.tools import AgentDepsT, RunContext, ToolDefinition, ToolSelector
 from typing_extensions import TypedDict
 
-from pydantic_ai_harness.code_mode._toolset import CodeModeMount, CodeModeOS, CodeModeToolset
+from pydantic_ai_harness.code_mode._eager import EagerCodeModeToolset, in_durable_execution
+from pydantic_ai_harness.code_mode._toolset import (
+    CodeModeMount,
+    CodeModeOS,
+    CodeModeResourceLimits,
+    CodeModeToolset,
+)
 
 if TYPE_CHECKING:
     from pydantic_ai.capabilities.abstract import ValidatedToolArgs
@@ -87,23 +93,46 @@ class CodeMode(AbstractCapability[AgentDepsT]):
 
     _: KW_ONLY
 
+    max_tool_calls: int = 100
+    """Maximum nested tool calls dispatched by one `run_code` invocation.
+
+    Budget is reserved before each call is scheduled, so a snippet cannot allocate host tasks
+    beyond this many. Calls past the budget are refused at the sandbox call site.
+    """
+
     os_access: CodeModeOS | None = None
     """Give sandboxed code environment variables, the clock, and file I/O through a handler you provide; unset, they are unavailable."""
 
     mount: CodeModeMount | None = None
     """Host directories to expose to sandboxed `pathlib` code; each mount's `mode` controls whether writes reach the host."""
 
+    resource_limits: CodeModeResourceLimits | Literal['unlimited'] | None = None
+    """Sandbox execution limits, applied per Monty session.
+
+    `None` applies a 30-second execution and 256 MiB heap backstop. The guarantee is per snippet:
+    no single `run_code` snippet runs longer than `max_duration_secs`. It is not a run-wide budget,
+    since consecutive calls share one session allowance and any reset of the session (`restart:
+    true`, a crash, a type error, a host-side failure) starts a fresh one. `'unlimited'` removes
+    the time and memory caps, but Monty's finite suspension budget still applies. Set
+    `max_suspensions` to bound cumulative host interactions across consecutive snippets.
+    """
+
+    eager: bool = False
+    """Execute complete streamed statements before the `run_code` call finishes.
+
+    Needs asyncio, like the sandbox executor, and is inactive under durable execution. Side
+    effects cannot be rolled back and run before hooks on `run_code` see the completed call.
+    See the Code Mode guide for the execution and `restart` semantics.
+    """
+
     monty_sandbox_url: str | None = None
     """Run sandboxed code on remote Monty workers reached over this `ws://` or `wss://` URL.
 
-    The URL may point to a relay or any server that bridges the WebSocket to a
-    Monty worker. Mounts, `os_access`, prints, and tool calls are still serviced
-    by the host over the connection. Plaintext `ws://` is only accepted for
-    loopback hosts; remote workers require `wss://`. Remote turns use the
-    transport's 10-second default deadline; it covers worker-side execution only
-    (waiting on a host tool call does not count), and exceeding it surfaces as a
-    sandbox-crash retry. WebSocket transport cannot run inside a Temporal
-    workflow.
+    The URL points to a relay or any server that bridges each WebSocket connection to a Monty
+    worker. Only execution moves: tool dispatch, mounts, `os_access`, and print capture stay
+    host-side over the connection. Plaintext `ws://` is accepted for loopback hosts only.
+    Not available inside a Temporal workflow. See the Code Mode guide for the transport's
+    per-turn deadline.
     """
 
     dynamic_catalog: bool = False
@@ -150,15 +179,57 @@ class CodeMode(AbstractCapability[AgentDepsT]):
 
     def get_wrapper_toolset(self, toolset: AbstractToolset[AgentDepsT]) -> AbstractToolset[AgentDepsT] | None:
         """Wrap the agent's assembled toolset, splitting it into native + sandboxed subsets if needed."""
+        if self.eager:
+            return EagerCodeModeToolset(
+                wrapped=toolset,
+                tool_selector=self.tools,
+                max_retries=self.max_retries,
+                max_tool_calls=self.max_tool_calls,
+                resource_limits=self.resource_limits,
+                dynamic_catalog=self.dynamic_catalog,
+                os_access=self.os_access,
+                mount=self.mount,
+                monty_sandbox_url=self.monty_sandbox_url,
+            )
         return CodeModeToolset(
             wrapped=toolset,
             tool_selector=self.tools,
             max_retries=self.max_retries,
+            max_tool_calls=self.max_tool_calls,
+            resource_limits=self.resource_limits,
             dynamic_catalog=self.dynamic_catalog,
             os_access=self.os_access,
             mount=self.mount,
             monty_sandbox_url=self.monty_sandbox_url,
         )
+
+    @property
+    def has_wrap_run_event_stream(self) -> bool:
+        """Report the stream hook only when eager execution is enabled.
+
+        The base class detects a class-level override, which would put every `CodeMode` user in
+        streaming mode; gating on the instance keeps plain `CodeMode` runs non-streaming.
+        """
+        return self.eager
+
+    async def wrap_run_event_stream(
+        self,
+        ctx: RunContext[AgentDepsT],
+        *,
+        stream: AsyncIterable[AgentStreamEvent],
+    ) -> AsyncIterable[AgentStreamEvent]:
+        """Feed streamed `run_code` argument deltas to the eager statement pump.
+
+        Wrapped events pass through unmodified; the watcher acts purely by side effect,
+        enqueueing closed statements for execution in the live REPL. Inactive under durable
+        execution, where overlapping non-deterministic work with the stream has no place in
+        a replayed workflow.
+        """
+        toolset = None if in_durable_execution(ctx) else EagerCodeModeToolset.from_run_context(ctx)
+        async for event in stream:
+            yield event
+            if toolset is not None:
+                await toolset.observe_stream_event(event, ctx)
 
     async def after_tool_execute(
         self,

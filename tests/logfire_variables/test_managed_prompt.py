@@ -26,6 +26,7 @@ import pytest
 from inline_snapshot import snapshot
 from logfire.testing import CaptureLogfire
 from logfire.variables import LabeledValue, Rollout, VariableConfig, VariablesConfig
+from logfire.variables.abstract import NoOpVariableProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.capabilities import Instrumentation
@@ -114,6 +115,19 @@ def span_attributes(capfire: CaptureLogfire) -> list[dict[str, Any]]:
 
 def test_public_reexport() -> None:
     assert ManagedPrompt is ManagedPromptFromPackage
+
+
+def test_no_variable_provider_is_configured() -> None:
+    """The resolution tests in this module rely on the no-provider fallback; assert it.
+
+    With a Logfire credential in `os.environ`, `logfire.configure()` lazily resolves a
+    `LogfireRemoteVariableProvider` that writes to the real Logfire API from background
+    threads, and the resolution tests then fail on span contents far from the cause.
+    `conftest.py` removes ambient credentials; this test fails at the boundary if a
+    credential still reaches the provider.
+    """
+    provider = logfire.DEFAULT_LOGFIRE_INSTANCE.config.get_variable_provider()
+    assert isinstance(provider, NoOpVariableProvider)
 
 
 def test_slug_becomes_prompt_variable_name() -> None:
@@ -228,25 +242,19 @@ async def test_baggage_propagates_to_run_and_child_spans(capfire: CaptureLogfire
 
     await agent.run('hello')
 
-    assert span_attributes(capfire) == snapshot(
+    spans = span_attributes(capfire)
+
+    # The resolution span opens before `ManagedPrompt` attaches its baggage, so it must not carry
+    # the baggage attribute. Its remaining attributes are pinned by
+    # `test_records_variable_resolution_span`; they are excluded from the snapshot below because
+    # whether the span nests under the agent run span (picking up trace-derived attributes such as
+    # the `targeting_key` rollout fallback) depends on the installed pydantic-ai version.
+    resolution_span = spans.pop(0)
+    assert resolution_span['name'] == 'Resolve variable prompt__baggage_slug'
+    assert 'logfire.variables.prompt__baggage_slug' not in resolution_span['attributes']
+
+    assert spans == snapshot(
         [
-            {
-                'name': 'Resolve variable prompt__baggage_slug',
-                'attributes': {
-                    'code.filepath': '_managed_prompt.py',
-                    'code.function': 'wrap_run',
-                    'targeting_key': 'null',
-                    'logfire.msg_template': 'Resolve variable prompt__baggage_slug',
-                    'logfire.msg': 'Resolve variable prompt__baggage_slug',
-                    'logfire.span_type': 'span',
-                    'name': 'prompt__baggage_slug',
-                    'value': '"You are a helpful assistant."',
-                    'label': 'null',
-                    'version': 'null',
-                    'reason': 'no_provider',
-                    'logfire.json_schema': '{"type":"object","properties":{"name":{},"targeting_key":{"type":"null"},"attributes":{"type":"object"},"value":{},"label":{"type":"null"},"version":{"type":"null"},"reason":{}}}',
-                },
-            },
             {
                 'name': 'chat test',
                 'attributes': {

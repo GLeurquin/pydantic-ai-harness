@@ -10,14 +10,22 @@ Pydantic AI's `load_capability` tool to receive that skill's instructions.
 
 [Source](https://github.com/pydantic/pydantic-ai-harness/tree/main/pydantic_ai_harness/skills/)
 
-> The API may change between releases. Where practical, breaking changes ship with a deprecation warning.
+> While Pydantic AI Harness is on 0.x releases, the API may change between minor releases; when it does, deprecation warnings and release-note migration guidance tell you (or your agent) exactly how to upgrade. See the [version policy](https://github.com/pydantic/pydantic-ai-harness#version-policy).
 
 ## Installation
 
 Install the `skills` extra for YAML frontmatter support:
 
+uv:
+
 ```bash
 uv add "pydantic-ai-harness[skills]"
+```
+
+pip:
+
+```bash
+pip install "pydantic-ai-harness[skills]"
 ```
 
 ## Quick start
@@ -45,7 +53,7 @@ Then add the library to your agent:
 
 ```python {test="skip"}
 from pydantic_ai import Agent
-from pydantic_ai_harness.skills import Skills
+from pydantic_ai_harness import Skills
 
 agent = Agent(
     'anthropic:claude-sonnet-4-6',
@@ -81,7 +89,7 @@ By default, all discovered skills are included. Use `include` or `exclude` to
 change the catalog for a particular agent:
 
 ```python {test="skip"}
-from pydantic_ai_harness.skills import Skills
+from pydantic_ai_harness import Skills
 
 review_skills = Skills(
     '.agents/skills',
@@ -153,7 +161,7 @@ and child directories without `SKILL.md` are ignored.
 You can pass several libraries:
 
 ```python {test="skip"}
-from pydantic_ai_harness.skills import Skills
+from pydantic_ai_harness import Skills
 
 skills = Skills([
     '.agents/skills',
@@ -215,7 +223,7 @@ Register `Skills` when loading the spec:
 
 ```python {test="skip"}
 from pydantic_ai import Agent
-from pydantic_ai_harness.skills import Skills
+from pydantic_ai_harness import Skills
 
 agent = Agent.from_file('agent.yaml', custom_capability_types=[Skills])
 ```

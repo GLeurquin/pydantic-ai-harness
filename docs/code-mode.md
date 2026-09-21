@@ -9,6 +9,8 @@ description: Wrap an agent's tools into a single sandboxed run_code tool so the 
 
 [Source](https://github.com/pydantic/pydantic-ai-harness/tree/main/pydantic_ai_harness/code_mode/)
 
+> While Pydantic AI Harness is on 0.x releases, the API may change between minor releases; when it does, deprecation warnings and release-note migration guidance tell you (or your agent) exactly how to upgrade. See the [version policy](index.md#version-policy).
+
 ## The problem
 
 Standard tool calling often needs another model turn for each dependent batch of tool calls. An agent that needs to fetch 10 items and then process their results can require many model turns, increasing latency, cost, and context use. Intermediate results also grow the conversation history.
@@ -31,7 +33,7 @@ Durable execution integrations can record nested calls for deterministic replay.
 Code mode requires the Monty sandbox, available via the `codemode` extra (the `code-mode` extra is an equivalent alias):
 
 ```bash
-uv add "pydantic-ai-harness[codemode]"
+pip/uv-add "pydantic-ai-harness[codemode]"
 ```
 
 ## Usage
@@ -73,7 +75,7 @@ Both weather lookups run in parallel and the conversions run inside Monty, all w
 
 ## Selective tool sandboxing
 
-By default, `CodeMode(tools='all')` sandboxes every eligible regular tool. Framework control tools, undiscovered deferred tools, native fallbacks, and other code-execution tools remain native. The `tools` field is a Pydantic AI `ToolSelector`, so you can control which eligible tools go through the sandbox. Tools that match the selector become callables inside `run_code`; non-matching tools stay visible to the model as regular tool calls.
+By default, `CodeMode(tools='all')` sandboxes every eligible regular tool. Framework control tools, undiscovered deferred tools, native fallbacks, and other code-execution tools remain native. Shell surfaces count as code-execution tools: `Shell`'s `run_command` and `start_command`, and `ModalSandbox`'s `run_command`, sit beside `run_code` rather than inside it, so the model never has to quote a shell command inside a generated Python string. `CapabilityCreation`'s `author_capability` stays native for the same reason: its argument is a complete Python module. Their non-command tools (`read_file`, `check_command`, and so on) are folded into `run_code` like any other tool. The `tools` field is a Pydantic AI `ToolSelector`, so you can control which eligible tools go through the sandbox. Tools that match the selector become callables inside `run_code`; non-matching tools stay visible to the model as regular tool calls.
 
 ```python
 from pydantic_ai_harness import CodeMode
@@ -169,9 +171,118 @@ Reserve `print()` for supplementary logging: printed text is surfaced separately
 
 Printed output is limited to 10 MiB. Exceeding the limit makes `run_code` return a model retry.
 
+Sandbox execution is bounded by `resource_limits`, which defaults to 30 seconds of execution time
+and a 256 MiB heap. What this guarantees is a per-snippet ceiling: no single `run_code` snippet runs
+longer than `max_duration_secs` of sandbox time, which is what stops a runaway loop. Time spent
+awaiting a nested tool is excluded from that timer.
+
+It is not a run-wide CPU budget, and it cannot be relied on as one. Monty applies the limits per
+sandbox session, so consecutive `run_code` calls draw down one shared allowance and each new session
+starts with a full one. Sessions are replaced by `restart: true` and by the failures that reset the
+REPL: a worker crash, a type error, a host-side failure, and a syntax error before any code has run.
+Each of those renews the allowance without the model asking for a restart. An ordinary exception
+inside a snippet is not one of them.
+
+Once a session's duration allowance is spent, every later `run_code` call fails on arrival, including
+snippets that would cost almost nothing, because they reuse the same session. Rewriting the code
+does not help. `restart: true` is what recovers it, at the cost of the REPL state that session was
+holding, so any variables, imports, and definitions have to be recreated. `run_code` says as much
+in the retry it returns, and that retry also reports the nested calls the snippet already made, so
+restarting does not throw away the only record of them. The behaviour is worth knowing when
+choosing `max_duration_secs`: set it low and a long agent run will spend it on ordinary work and
+pay a restart to continue.
+
+Monty also limits cumulative suspensions with `max_suspensions` (default 1,000 per session).
+External calls, OS callbacks, name lookups and future resolutions each consume this budget, so
+it is not a tool-call count. Consecutive snippets share it. After exhaustion, further host
+interactions fail, although pure Python using existing state may still work. `run_code` includes
+the started-call summary and explicit restart guidance: inspect partial results before continuing,
+since `restart: true` discards REPL state and replaying completed calls repeats their side effects.
+There is no automatic restart or replay for exhaustion.
+
+Nested tool calls are bounded separately by `max_tool_calls`, which defaults to 100 per `run_code`
+call. The budget is reserved before each call is scheduled, so a snippet cannot dispatch more work
+than it allows. A call past the budget fails at its call site inside the sandbox. A snippet that
+catches the error keeps the results of the calls that already completed and can return them. A
+snippet that lets it propagate gets a model retry reporting how many nested calls started,
+followed by per-call detail: what each was called with, and whether it returned, raised, or was
+denied. Calls that raised are included rather than filtered out, since a tool can apply a change
+before failing. That detail is bounded -- arguments and results are previewed, and the list stops
+at a size cap and says how many entries it left out -- so a large payload cannot inflate the
+retry. The reported total stays exact whether or not the list was cut, which is what tells the
+model some calls are missing from what it can see. The list is context for the model, not a guard:
+nothing stops it from calling those tools again, so treat it as informing the next attempt rather
+than preventing a repeat.
+
+Override them with `resource_limits={'max_duration_secs': 10, 'max_memory': 134_217_728, 'max_suspensions': 10_000}` and
+`max_tool_calls=25`. Pass `resource_limits='unlimited'` only when another execution boundary
+supplies equivalent limits. It removes the time and memory caps, but leaves Monty's default
+suspension budget in place; suspensions cannot be unlimited.
+
+When `CodeMode` runs inside a Temporal workflow, it disables `max_duration_secs`, including an
+explicit override. `run_code` is replayed in workflow code, so measuring elapsed time there could
+make replay choose a different path from the recorded workflow. The memory and suspension caps still apply. Put
+time-bounded work behind a Temporal activity instead.
+
 ## REPL state
 
 State persists between `run_code` calls within the same agent run -- variables, imports, and function definitions carry over. Pass `restart: true` in the tool call to reset state. If a worker crash or host-side execution failure invalidates the session, `run_code` returns a model retry that reports the reset; the next snippet must recreate any required state.
+
+## Eager execution
+
+Normally, `CodeMode` waits for the model to finish writing a `run_code` call before it
+runs any code. Set `eager=True` to start sooner:
+
+```python
+from pydantic_ai import Agent
+from pydantic_ai_harness import CodeMode
+
+agent = Agent(
+    'openai:gpt-5.6-sol',
+    capabilities=[CodeMode(eager=True)],
+)
+```
+
+For example, suppose the model produces this code one line at a time:
+
+```python
+first = await fetch_item(item_id=1)
+second = await fetch_item(item_id=2)
+[first, second]
+```
+
+With eager mode, the first call to `fetch_item` can begin as soon as the first line is
+complete. `CodeMode` continues receiving the remaining lines at the same time. Without
+eager mode, neither call begins until the model has produced the whole snippet.
+
+The code still counts as one `run_code` call. It uses one REPL session, one tool-call limit,
+and one combined result. Hooks on `fetch_item` and other tools called by the code still run.
+Hooks around `run_code` itself run only after the model has finished writing the call, so
+they cannot approve or change lines that eager mode has already run.
+
+Configured Monty resource limits still apply. Eager fragments and the remaining code share
+the same session duration and memory allowances.
+
+Keep these limitations in mind:
+
+- Eager mode cannot undo side effects from code that has already run.
+- If the model later requests `restart: true`, some work may run again.
+- If the model changes an earlier line while streaming, `CodeMode` resets the REPL and asks
+  the model to send the code again.
+- Eager mode trusts that the provider preserves the streamed `run_code` part and its tool
+  name. If a provider removes or renames the part, the work that already ran cannot be
+  undone.
+- Eager execution is used only when `run_code` is the first tool call in a model response.
+  Later tool calls wait for normal dispatch so they run in the order the model requested.
+- Eager mode is disabled when using durable execution such as Temporal or DBOS.
+- Eager mode needs asyncio, like the rest of the sandbox executor.
+- If a statement is interrupted before it finishes, for example because the call failed
+  validation, the session restarts and the next snippet must recreate its state.
+- Nested tools called from eager statements must cooperate with asyncio cancellation. When
+  a run ends or a streamed call is invalidated, `CodeMode` cancels the in-flight work and
+  waits a bounded time (currently 5 seconds) for it to release. Work that does not release
+  in time is abandoned; it cannot start further tool calls.
+- Tools called from statements that ran early are traced before the `run_code` span opens.
 
 ## Remote workers over WebSockets
 
@@ -199,19 +310,22 @@ Only sandbox execution moves to the remote worker. Tool dispatch, mounted direct
 REPL session remains checked out for the agent run, so state persists across `run_code` calls as it
 does with local workers.
 
+Everything else is unchanged: the same host-side execution loop drives a remote session, so
+`sequential` tools, parallel `gather`, resource limits, eager execution, and DBOS durability
+behave exactly as they do with local workers. `monty_sandbox_url` cannot be used inside a
+Temporal workflow, whose replaying event loop cannot service the transport's worker I/O.
+
 The WebSocket transport has a 10-second deadline for each remote protocol turn. The deadline
 covers worker-side execution only: while the sandbox is suspended waiting for a host tool call, the
 clock is not running, so slow tools are safe. Sandbox code that computes for longer than the
-deadline between suspensions surfaces as a sandbox-crash retry and resets the session. `monty_sandbox_url` cannot be used
-inside a Temporal workflow because that workflow-side path requires Monty's synchronous snapshot
-API.
+deadline between suspensions surfaces as a sandbox-crash retry and resets the session.
 
 ## Temporal durability
 
 Install both integrations:
 
 ```bash
-uv add "pydantic-ai-harness[codemode,temporal]"
+pip/uv-add "pydantic-ai-harness[codemode,temporal]"
 ```
 
 Construct the named agent and its stable-ID toolsets outside the workflow, then attach
@@ -235,9 +349,8 @@ plain agent from a workflow and register its activities with `PydanticAIPlugin` 
 
 `PydanticAIPlugin` passes `pydantic_monty` through Temporal's workflow sandbox. This makes Monty
 runnable there, but `run_code` still executes in workflow code and is re-executed during replay.
-CodeMode deliberately uses Monty's synchronous snapshot API in this path because Temporal's
-deterministic workflow event loop cannot be woken by Monty's async worker I/O thread. For this
-reason, `monty_sandbox_url` is not available inside a Temporal workflow.
+`monty_sandbox_url` is not available here: the remote session's awaits are resolved from a
+worker I/O thread that the replaying workflow loop never services.
 Model requests and, by default, nested tool calls cross Temporal activity boundaries;
 `asyncio.gather` can schedule nested tool activities concurrently. The REPL is process-local state
 for one agent run, not durable storage. Replay reconstructs it by running the recorded snippets
@@ -249,11 +362,16 @@ workflow schedules and cause a `NondeterminismError`. Put external reads, writes
 other side effects in wrapped tools so Temporal records them as activities. Replay may not flag
 changed arguments when the same activity remains at the same history position, so replay validation
 is not a substitute for this boundary. Temporal activity timeouts apply to nested tools, not pure
-computation inside `run_code`, so keep sandbox loops bounded.
+computation inside `run_code`; move time-bounded computation behind an activity.
 
 ## Observability
 
 Nested tool calls inside `run_code` produce their own spans when instrumented with [Logfire](https://pydantic.dev/logfire) or any OpenTelemetry backend -- the easiest way to understand what code mode actually did, since each `run_code` span fans out into the tool calls the model issued from inside the sandbox. See the [Pydantic AI Logfire docs](/ai/integrations/logfire/) for setup.
+
+Suspension-limit retries use the existing `run_code` error span and nested tool spans, rather
+than a separate capability span. The retry includes bounded started-call context and recovery
+guidance. Monty has no typed exhaustion marker, so a tool error with identical wording receives
+conditional guidance rather than a definitive exhaustion event.
 
 The `run_code` tool return also carries metadata with every nested call, keyed by call id:
 
@@ -372,6 +490,7 @@ Code runs inside [Monty](https://github.com/pydantic/monty), a sandboxed Python 
 - No `import *`.
 - Filesystem I/O needs an `os_access` handler or a `mount`; `os.getenv` / `os.environ` need an `os_access` handler.
 - Tools requiring approval or with deferred (`CallDeferred`) execution are sandboxed like any other tool; without a `HandleDeferredToolCalls` (or equivalent) capability on the agent to resolve them inline, calling one from `run_code` raises an error that surfaces to the model as a retry.
+- Tool results reach the sandbox in the JSON shape their generated stub declares, since the stub is derived from the tool's JSON schema. `Decimal`, `UUID` and `datetime` arrive as strings, and mapping keys are stringified, so a `dict[int, str]` of `{1: 'a'}` arrives as `{'1': 'a'}`. `bytes` and `bytearray` are the exception: Monty carries binary natively, so they cross unchanged even though the stub declares `str` for them.
 
 ## Agent spec (YAML/JSON)
 
