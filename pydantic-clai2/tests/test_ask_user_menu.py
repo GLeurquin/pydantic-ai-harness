@@ -4,6 +4,7 @@ import asyncio
 import io
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from threading import Event
 
 import anyio
 import pytest
@@ -21,6 +22,7 @@ from pydantic_ai_harness.ask_user import (
     Question,
     QuestionOption,
 )
+from rich.cells import cell_len
 from rich.console import Console
 from rich.text import Text
 
@@ -259,12 +261,16 @@ def test_terminal_cleanup_on_input_failure() -> None:
 
 async def test_cancellation_joins_question_reader_before_releasing_screen(monkeypatch: pytest.MonkeyPatch) -> None:
     started = asyncio.Event()
-    stopped = asyncio.Event()
+    stopping = asyncio.Event()
+    stopped = Event()
+    input_ready = Event()
+    allow_exit = Event()
     loop = asyncio.get_running_loop()
     screen = ScreenLog()
 
     def read_key(*, timeout: float) -> str:
         loop.call_soon_threadsafe(started.set)
+        assert input_ready.wait(10)
         return ''
 
     def run(menu: QuestionMenu) -> tuple[str, ...] | None:
@@ -272,19 +278,33 @@ async def test_cancellation_joins_question_reader_before_releasing_screen(monkey
             while menu_key() != 'ctrl-c':
                 pass
         finally:
+            loop.call_soon_threadsafe(stopping.set)
+            assert allow_exit.wait(10)
             assert screen.events == ['taken']
-            loop.call_soon_threadsafe(stopped.set)
+            stopped.set()
         return None
+
+    async def cancel(scope: anyio.CancelScope) -> None:
+        try:
+            await started.wait()
+            scope.cancel()
+            input_ready.set()
+            await stopping.wait()
+            assert screen.events == ['taken']
+        finally:
+            input_ready.set()
+            allow_exit.set()
 
     monkeypatch.setattr('pydantic_clai2.menu_worker.read_key', read_key)
     answerer = TerminalAnswerer(full_screen=screen, runner=run)
     with anyio.fail_after(10):
         async with anyio.create_task_group() as tasks:
-            tasks.start_soon(answerer, AskUserRequest(questions=(APPROACH,)))
-            await started.wait()
-            tasks.cancel_scope.cancel()
-        assert stopped.is_set()
-        assert screen.events == ['taken', 'released']
+            scope = anyio.CancelScope()
+            tasks.start_soon(cancel, scope)
+            with scope:
+                await answerer(AskUserRequest(questions=(APPROACH,)))
+            assert stopped.is_set()
+            assert screen.events == ['taken', 'released']
 
 
 def test_wrapped_descriptions_and_literal_markup() -> None:
@@ -305,3 +325,33 @@ def test_wrapped_descriptions_and_literal_markup() -> None:
     assert all(len(Text.from_ansi(row).plain) <= 30 for row in rows)
     menu.choose('down')
     assert any('> 2.' in row for row in menu.frame(width=12, height=6))
+
+
+def test_option_description_preserves_explicit_line_breaks() -> None:
+    question = Question(
+        header='Steps',
+        question='Which sequence?',
+        options=(
+            QuestionOption(label='First', description='First step\n\nSecond step'),
+            QuestionOption(label='Other'),
+        ),
+    )
+    menu = QuestionMenu(question=question, position=1, total=1)
+    rows = [Text.from_ansi(row).plain for row in menu.frame(width=80, height=24)]
+    assert rows[1:4] == ['> 1. First - First step', '  ', '  Second step']
+
+
+def test_wide_characters_wrap_without_losing_choice_text() -> None:
+    label = '中文選項需要完整顯示'
+    description = '確認修復結果並保留所有文字 🎉🎉🎉'
+    question = Question(
+        header='Choices',
+        question='Which one?',
+        options=(QuestionOption(label=label, description=description), QuestionOption(label='Other')),
+    )
+    menu = QuestionMenu(question=question, position=1, total=1)
+    rows = [Text.from_ansi(row).plain for row in menu.frame(width=16, height=80)]
+    assert all(cell_len(row) <= 16 for row in rows)
+    choices = ''.join(row[2:].strip() for row in rows[1:-1])
+    assert label in choices
+    assert description.replace(' ', '') in choices.replace(' ', '')

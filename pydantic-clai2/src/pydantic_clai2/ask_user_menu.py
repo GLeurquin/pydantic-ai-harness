@@ -1,7 +1,6 @@
 """The built-in `ask_user` plugin: inline questions that keep the transcript visible."""
 
 import asyncio
-import textwrap
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
@@ -80,14 +79,15 @@ class QuestionMenu:
             choices.append(f'{len(choices) + 1}. Done' + ('' if self.selected else ' (select at least one)'))
         lines: list[str] = []
         focus = 0
+        console = Console()
         for index, choice in enumerate(choices):
             if index == self.cursor:
                 focus = len(lines)
-            wrapped = textwrap.wrap(choice, width=max(1, width - 2))
+            wrapped = Text(choice).wrap(console, width=max(1, width - 2), overflow='fold')
             for line_index, line in enumerate(wrapped):
                 prefix = '> ' if index == self.cursor and line_index == 0 else '  '
                 role = theme.ACCENT if index == self.cursor else theme.INFO
-                lines.append(theme.sgr(role) + truncate(prefix + line, width) + '\x1b[0m')
+                lines.append(theme.sgr(role) + truncate(prefix + line.plain, width) + '\x1b[0m')
         visible = max(1, budget - 2)
         start = min(focus, max(0, len(lines) - visible))
         title = truncate(self.title, width)
