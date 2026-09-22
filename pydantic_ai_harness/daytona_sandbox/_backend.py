@@ -56,14 +56,14 @@ if TYPE_CHECKING:
     from daytona._async.process import AsyncProcess
     from pydantic_ai.workspaces import WorkspaceCommand
 
-__all__ = ('DaytonaWorkspaceBackend',)
+__all__ = ('DaytonaSandboxBackend',)
 
 DEFAULT_AUTO_STOP_MINUTES = 60
 
 try:
     import daytona
 except ImportError as error:  # pragma: no cover - exercised by the isolated missing-extra test
-    raise ImportError('Install `pydantic-ai-harness[daytona]` to use DaytonaWorkspace.') from error
+    raise ImportError('Install `pydantic-ai-harness[daytona]` to use DaytonaSandbox.') from error
 
 _AUTH_MESSAGE = 'Daytona rejected the credentials. Set DAYTONA_API_KEY and try again.'
 # Bound sandbox acquisition so a wedged control plane cannot hang creation or connection.
@@ -112,7 +112,7 @@ class _DaytonaProcess:
     """Output and session identity for a single command."""
 
     _process: AsyncProcess
-    _backend: DaytonaWorkspaceBackend
+    _backend: DaytonaSandboxBackend
     _session_id: str
     _command_id: str
     stdout: list[str]
@@ -162,7 +162,7 @@ async def _kill_quietly(process: _DaytonaProcess) -> None:
         pass
 
 
-class DaytonaWorkspaceBackend(WorkspaceBackend, SupportsCommands, SupportsFilesystem):
+class DaytonaSandboxBackend(WorkspaceBackend, SupportsCommands, SupportsFilesystem):
     """A Daytona sandbox behind the Pydantic AI `WorkspaceBackend` protocol."""
 
     def __init__(

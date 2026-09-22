@@ -13,7 +13,7 @@ from pydantic_ai.tools import RunContext
 from pydantic_ai.usage import RunUsage
 from pydantic_ai.workspaces import ReadOnlyWorkspace, Workspace, WorkspaceRef
 
-from pydantic_ai_harness.daytona_workspace import DaytonaWorkspace, DaytonaWorkspaceBackend
+from pydantic_ai_harness.daytona_sandbox import DaytonaSandbox, DaytonaSandboxBackend
 
 from .fake_daytona import FakeDaytona
 
@@ -25,11 +25,11 @@ def _ctx() -> RunContext[None]:
 
 
 async def test_capability_is_lazy_and_forwards_options(fake_daytona: FakeDaytona) -> None:
-    capability = DaytonaWorkspace(
+    capability = DaytonaSandbox(
         snapshot='python', auto_stop_minutes=0, workdir='/work', env={'A': 'b'}, network_block_all=True
     )
     backend = capability.get_workspace(_ctx(), ref=None)
-    assert isinstance(backend, DaytonaWorkspaceBackend)
+    assert isinstance(backend, DaytonaSandboxBackend)
     assert not fake_daytona.create_params
     await backend.get_client()
     params = fake_daytona.create_params[0]
@@ -43,36 +43,36 @@ async def test_capability_is_lazy_and_forwards_options(fake_daytona: FakeDaytona
 
 async def test_explicit_ref_attaches_without_creation(fake_daytona: FakeDaytona) -> None:
     existing = fake_daytona.sandbox('existing')
-    backend = DaytonaWorkspaceBackend(ref=WorkspaceRef(provider='daytona', id=existing.id))
+    backend = DaytonaSandboxBackend(ref=WorkspaceRef(provider='daytona', id=existing.id))
     await backend.get_client()
     assert backend.ref == WorkspaceRef(provider='daytona', id=existing.id)
     assert not fake_daytona.create_params
 
 
 async def test_foreign_ref_is_declined_and_backend_rejects_it() -> None:
-    assert DaytonaWorkspace().get_workspace(_ctx(), ref=WorkspaceRef(provider='other', id='x')) is None
+    assert DaytonaSandbox().get_workspace(_ctx(), ref=WorkspaceRef(provider='other', id='x')) is None
     with pytest.raises(ValueError, match="expected 'daytona'"):
-        DaytonaWorkspaceBackend(ref=WorkspaceRef(provider='other', id='x'))
+        DaytonaSandboxBackend(ref=WorkspaceRef(provider='other', id='x'))
 
 
 async def test_native_ref_conflict_and_native_identity(fake_daytona: FakeDaytona) -> None:
-    seed = DaytonaWorkspaceBackend()
+    seed = DaytonaSandboxBackend()
     native = await seed.get_client()
-    backend = DaytonaWorkspaceBackend(workspace=native)
+    backend = DaytonaSandboxBackend(workspace=native)
     assert await backend.get_client() is native
     assert backend.ref == WorkspaceRef(provider='daytona', id=native.id)
     with pytest.raises(ValueError, match='either `workspace` or `ref`'):
-        DaytonaWorkspaceBackend(workspace=native, ref=backend.ref)
+        DaytonaSandboxBackend(workspace=native, ref=backend.ref)
 
 
 async def test_agent_without_workspace_use_does_not_create(fake_daytona: FakeDaytona) -> None:
-    result = await Agent(TestModel(custom_output_text='done'), capabilities=[DaytonaWorkspace()]).run('hello')
+    result = await Agent(TestModel(custom_output_text='done'), capabilities=[DaytonaSandbox()]).run('hello')
     assert result.output == 'done'
     assert not fake_daytona.create_params
 
 
 async def test_agent_runs_create_fresh_resources_without_history(fake_daytona: FakeDaytona) -> None:
-    agent = Agent(TestModel(call_tools=['run_command']), capabilities=[DaytonaWorkspace()])
+    agent = Agent(TestModel(call_tools=['run_command']), capabilities=[DaytonaSandbox()])
 
     @agent.tool
     async def run_command(ctx: RunContext[object]) -> str:
@@ -89,7 +89,7 @@ async def test_agent_history_attaches_persisted_workspace(fake_daytona: FakeDayt
             return ModelResponse(parts=[TextPart(content='done')])
         return ModelResponse(parts=[ToolCallPart(tool_name='remember', args={}, tool_call_id='call')])
 
-    agent = Agent(FunctionModel(model), capabilities=[DaytonaWorkspace()])
+    agent = Agent(FunctionModel(model), capabilities=[DaytonaSandbox()])
 
     @agent.tool
     async def remember(ctx: RunContext[object]) -> str:
@@ -107,9 +107,9 @@ async def test_agent_history_attaches_persisted_workspace(fake_daytona: FakeDayt
 
 
 async def test_read_only_facade_identity_and_denied_command(fake_daytona: FakeDaytona) -> None:
-    backend = DaytonaWorkspaceBackend()
+    backend = DaytonaSandboxBackend()
     facade = ReadOnlyWorkspace(Workspace(backend))
-    agent = Agent(TestModel(call_tools=['check']), capabilities=[DaytonaWorkspace()])
+    agent = Agent(TestModel(call_tools=['check']), capabilities=[DaytonaSandbox()])
 
     @agent.tool
     async def check(ctx: RunContext[object]) -> str:
@@ -125,7 +125,7 @@ async def test_read_only_facade_identity_and_denied_command(fake_daytona: FakeDa
 
 
 async def test_concurrent_acquisition_and_operation_overlap(fake_daytona: FakeDaytona) -> None:
-    backend = DaytonaWorkspaceBackend()
+    backend = DaytonaSandboxBackend()
     results: list[object] = []
 
     async def acquire() -> None:

@@ -21,8 +21,8 @@ from pydantic_ai.workspaces import (
     WorkspaceUnavailableError,
 )
 
-from pydantic_ai_harness.daytona_workspace import (
-    DaytonaWorkspaceBackend,
+from pydantic_ai_harness.daytona_sandbox import (
+    DaytonaSandboxBackend,
 )
 
 from .fake_daytona import FakeDaytona
@@ -30,20 +30,20 @@ from .fake_daytona import FakeDaytona
 pytestmark = pytest.mark.anyio(backends=['asyncio'])
 
 
-async def started(**settings: Any) -> DaytonaWorkspaceBackend:
+async def started(**settings: Any) -> DaytonaSandboxBackend:
     """Build a backend and resolve it now.
 
     Constructing one does no I/O, so a test that wants to assert on what creating or attaching
     did has to touch the sandbox first. Awaiting `get_client()` is that touch.
     """
-    backend = DaytonaWorkspaceBackend(**settings)
+    backend = DaytonaSandboxBackend(**settings)
     await backend.get_client()
     return backend
 
 
 class TestConformance:
     async def test_get_client_is_lazy_and_reuses_the_sandbox(self, fake_daytona: FakeDaytona) -> None:
-        backend = DaytonaWorkspaceBackend()
+        backend = DaytonaSandboxBackend()
         assert not fake_daytona.sandboxes
         sandbox = await backend.get_client()
         assert await backend.get_client() is sandbox
@@ -135,7 +135,7 @@ class TestCommands:
     ) -> None:
         backend = await started()
         fake_daytona.sandboxes[0].process_create_gate = asyncio.Event()
-        monkeypatch.setattr('pydantic_ai_harness.daytona_workspace._backend._REQUEST_TIMEOUT', 0.01)
+        monkeypatch.setattr('pydantic_ai_harness.daytona_sandbox._backend._REQUEST_TIMEOUT', 0.01)
         with pytest.raises(WorkspaceError, match='session setup timed out') as exc_info:
             await backend.run(['true'])
         assert not isinstance(exc_info.value, WorkspaceTimeoutError)
@@ -254,18 +254,18 @@ class TestErrorsAndFilesystem:
 
 class TestLazyOperations:
     async def test_default_cwd_is_applied_to_commands(self, fake_daytona: FakeDaytona) -> None:
-        backend = DaytonaWorkspaceBackend(working_dir='/work dir')
+        backend = DaytonaSandboxBackend(working_dir='/work dir')
         await backend.run(['true'])
         assert fake_daytona.sandboxes[0].process_command == "cd -- '/work dir' && true"
 
     async def test_working_dir_initializes_identity(self, fake_daytona: FakeDaytona) -> None:
-        backend = DaytonaWorkspaceBackend(working_dir='/workspace')
+        backend = DaytonaSandboxBackend(working_dir='/workspace')
         assert await backend.working_dir() == '/workspace'
         assert backend.ref is not None
 
     @pytest.mark.parametrize('operation', ['run', 'write_bytes'])
     async def test_ref_is_recorded_by_the_first_operation(self, fake_daytona: FakeDaytona, operation: str) -> None:
-        backend = DaytonaWorkspaceBackend()
+        backend = DaytonaSandboxBackend()
         assert backend.ref is None
         if operation == 'run':
             await backend.run(['true'])
@@ -275,7 +275,7 @@ class TestLazyOperations:
 
     @pytest.mark.parametrize('operation', ['run', 'read_bytes', 'exists', 'working_dir'])
     async def test_missing_sandbox_remains_terminal(self, fake_daytona: FakeDaytona, operation: str) -> None:
-        backend = DaytonaWorkspaceBackend(ref=WorkspaceRef(provider='daytona', id='missing'))
+        backend = DaytonaSandboxBackend(ref=WorkspaceRef(provider='daytona', id='missing'))
         for _ in range(2):
             with pytest.raises(WorkspaceUnavailableError):
                 if operation == 'run':
@@ -294,7 +294,7 @@ class TestLazyOperations:
     async def test_deadline_bounds_acquisition(self, fake_daytona: FakeDaytona) -> None:
         fake_daytona.create_gate = asyncio.Event()
         with pytest.raises(WorkspaceTimeoutError):
-            await DaytonaWorkspaceBackend().run(['true'], timeout=0.01)
+            await DaytonaSandboxBackend().run(['true'], timeout=0.01)
         assert fake_daytona.closed_clients == 1
 
     async def test_deadline_bounds_session_setup(self, fake_daytona: FakeDaytona) -> None:
@@ -309,7 +309,7 @@ def test_missing_daytona_extra_has_an_install_hint() -> None:
         [
             sys.executable,
             '-c',
-            "import sys; sys.modules['daytona'] = None; import pydantic_ai_harness.daytona_workspace",
+            "import sys; sys.modules['daytona'] = None; import pydantic_ai_harness.daytona_sandbox",
         ],
         capture_output=True,
         text=True,
@@ -321,7 +321,7 @@ def test_missing_daytona_extra_has_an_install_hint() -> None:
 
 async def test_argv_rejects_shell_mode(fake_daytona: FakeDaytona) -> None:
     with pytest.raises(TypeError, match='argv sequence'):
-        await DaytonaWorkspaceBackend().run(['true'], shell=True)
+        await DaytonaSandboxBackend().run(['true'], shell=True)
 
 
 async def test_client_cleanup_failure_can_be_retried(fake_daytona: FakeDaytona) -> None:
@@ -337,37 +337,37 @@ async def test_client_cleanup_failure_can_be_retried(fake_daytona: FakeDaytona) 
 
 
 async def test_working_directory_is_cached(fake_daytona: FakeDaytona) -> None:
-    backend = DaytonaWorkspaceBackend()
+    backend = DaytonaSandboxBackend()
     first = await backend.working_dir()
     fake_daytona.sandboxes[0].workdir = '/changed'
     assert await backend.working_dir() == first
 
 
 async def test_shell_command_is_passed_to_the_session(fake_daytona: FakeDaytona) -> None:
-    await DaytonaWorkspaceBackend().run('printf hello | cat', shell=True)
+    await DaytonaSandboxBackend().run('printf hello | cat', shell=True)
     assert fake_daytona.sandboxes[0].process_command == 'printf hello | cat'
 
 
 async def test_str_command_requires_shell(fake_daytona: FakeDaytona) -> None:
     with pytest.raises(TypeError, match='requires shell=True'):
-        await DaytonaWorkspaceBackend().run('echo hi')
+        await DaytonaSandboxBackend().run('echo hi')
 
 
 async def test_empty_argv_is_rejected(fake_daytona: FakeDaytona) -> None:
     with pytest.raises(TypeError, match='at least the program'):
-        await DaytonaWorkspaceBackend().run([])
+        await DaytonaSandboxBackend().run([])
 
 
 async def test_attach_finds_target_among_several(fake_daytona: FakeDaytona) -> None:
     fake_daytona.sandbox('sb-decoy')
     target = fake_daytona.sandbox('sb-target')
-    backend = DaytonaWorkspaceBackend(ref=WorkspaceRef(provider='daytona', id=target.id))
+    backend = DaytonaSandboxBackend(ref=WorkspaceRef(provider='daytona', id=target.id))
     assert (await backend.get_client()).id == target.id
 
 
 async def test_supplied_client_is_used_and_never_closed(fake_daytona: FakeDaytona) -> None:
     client = daytona.AsyncDaytona()
-    backend = DaytonaWorkspaceBackend(client=client)
+    backend = DaytonaSandboxBackend(client=client)
     await backend.get_client()
     assert fake_daytona.sandboxes[0].client is client
     await backend.disconnect()
@@ -378,31 +378,31 @@ async def test_supplied_client_survives_acquisition_failure(fake_daytona: FakeDa
     client = daytona.AsyncDaytona()
     fake_daytona.create_error = DaytonaConnectionError('boom')
     with pytest.raises(WorkspaceError):
-        await DaytonaWorkspaceBackend(client=client).get_client()
+        await DaytonaSandboxBackend(client=client).get_client()
     assert fake_daytona.closed_clients == 0
 
 
 async def test_create_timeout_is_translated(fake_daytona: FakeDaytona, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr('pydantic_ai_harness.daytona_workspace._backend._CREATE_TIMEOUT', 0.05)
+    monkeypatch.setattr('pydantic_ai_harness.daytona_sandbox._backend._CREATE_TIMEOUT', 0.05)
     fake_daytona.create_gate = asyncio.Event()
     with pytest.raises(WorkspaceTimeoutError, match='creation did not complete'):
-        await DaytonaWorkspaceBackend().get_client()
+        await DaytonaSandboxBackend().get_client()
     assert fake_daytona.closed_clients == 1
 
 
 async def test_attach_timeout_is_translated(fake_daytona: FakeDaytona, monkeypatch: pytest.MonkeyPatch) -> None:
     existing = fake_daytona.sandbox('sb-existing')
-    monkeypatch.setattr('pydantic_ai_harness.daytona_workspace._backend._CREATE_TIMEOUT', 0.05)
+    monkeypatch.setattr('pydantic_ai_harness.daytona_sandbox._backend._CREATE_TIMEOUT', 0.05)
     fake_daytona.get_gate = asyncio.Event()
     with pytest.raises(WorkspaceTimeoutError, match='connection did not complete'):
-        await DaytonaWorkspaceBackend(ref=WorkspaceRef(provider='daytona', id=existing.id)).get_client()
+        await DaytonaSandboxBackend(ref=WorkspaceRef(provider='daytona', id=existing.id)).get_client()
 
 
 async def test_deadline_bounds_attach(fake_daytona: FakeDaytona) -> None:
     existing = fake_daytona.sandbox('sb-existing')
     fake_daytona.get_gate = asyncio.Event()
     with pytest.raises(WorkspaceTimeoutError):
-        await DaytonaWorkspaceBackend(ref=WorkspaceRef(provider='daytona', id=existing.id)).run(['true'], timeout=0.01)
+        await DaytonaSandboxBackend(ref=WorkspaceRef(provider='daytona', id=existing.id)).run(['true'], timeout=0.01)
 
 
 async def test_read_missing_file_uses_builtin_error(fake_daytona: FakeDaytona) -> None:
@@ -414,6 +414,6 @@ async def test_read_missing_file_uses_builtin_error(fake_daytona: FakeDaytona) -
 async def test_attach_error_is_translated(fake_daytona: FakeDaytona) -> None:
     existing = fake_daytona.sandbox('sb-existing')
     fake_daytona.get_error = DaytonaConnectionError('control plane down')
-    backend = DaytonaWorkspaceBackend(ref=WorkspaceRef(provider='daytona', id=existing.id))
+    backend = DaytonaSandboxBackend(ref=WorkspaceRef(provider='daytona', id=existing.id))
     with pytest.raises(WorkspaceError):
         await backend.get_client()

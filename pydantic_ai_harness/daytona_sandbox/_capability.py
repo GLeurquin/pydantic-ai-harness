@@ -10,14 +10,14 @@ from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.tools import AgentDepsT, RunContext
 from pydantic_ai.workspaces import WorkspaceBackend, WorkspaceRef
 
-from pydantic_ai_harness.daytona_workspace._backend import DEFAULT_AUTO_STOP_MINUTES, DaytonaWorkspaceBackend
+from pydantic_ai_harness.daytona_sandbox._backend import DEFAULT_AUTO_STOP_MINUTES, DaytonaSandboxBackend
 
 if TYPE_CHECKING:
     from daytona import AsyncDaytona
 
 
 @dataclass(kw_only=True)
-class DaytonaWorkspace(AbstractCapability[AgentDepsT]):
+class DaytonaSandbox(AbstractCapability[AgentDepsT]):
     """Supply an isolated [Daytona](https://www.daytona.io) workspace through `ctx.workspace`.
 
     A run with no reference creates a fresh workspace. Pass a `WorkspaceRef` supplied by the
@@ -53,7 +53,7 @@ class DaytonaWorkspace(AbstractCapability[AgentDepsT]):
         del ctx
         if ref is not None and ref.provider != 'daytona':
             return None
-        return DaytonaWorkspaceBackend(
+        return DaytonaSandboxBackend(
             client=self.client,
             ref=ref,
             snapshot=self.snapshot,

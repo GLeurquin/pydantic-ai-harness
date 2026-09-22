@@ -20,7 +20,7 @@ _FACTORIES = (
     ('tiered_compaction', 'compaction:TieredCompaction'),
     ('warn_near_limits', 'compaction:WarnNearLimits'),
     ('conversation_search', 'conversation_search:ConversationSearch'),
-    ('daytona_workspace', 'daytona_workspace:DaytonaWorkspace'),
+    ('daytona_sandbox', 'daytona_sandbox:DaytonaSandbox'),
     ('dynamic_workflow', 'dynamic_workflow:DynamicWorkflow'),
     ('e2b_sandbox', 'e2b_sandbox:E2BSandbox'),
     ('exa_agent', 'exa:ExaAgent'),
