@@ -14,7 +14,6 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import NoOpTracer, Tracer
 from pydantic_ai import Agent, AgentSpec, DeferredToolRequests
-from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.exceptions import ApprovalRequired, SkipToolExecution, UsageLimitExceeded, UserError
 from pydantic_ai.messages import (
     ImageUrl,
@@ -39,6 +38,7 @@ from pydantic_ai.tools import DeferredToolResults, RunContext, ToolDefinition
 from pydantic_ai.usage import RunUsage, UsageLimits
 
 from pydantic_ai_harness.tool_call_judge import ToolCallJudge, ToolCallVerdict
+from tests._recording_durability import RecordingDurability  # pyright: ignore[reportMissingTypeStubs]
 from tests.conftest import agent_run_names  # pyright: ignore[reportMissingTypeStubs]
 
 if TYPE_CHECKING:
@@ -548,50 +548,54 @@ class TestUsageAccounting:
 
 
 class TestDurableExecution:
-    async def test_rejected_inside_a_durable_container(self) -> None:
-        """A judged run inside a durable workflow or flow fails fast, before any model request."""
+    """The judgement is a durable operation, addressed by the capability's `id`."""
 
-        class DBOSDurability(AbstractCapability[None]):
-            in_durable_context = True
-
-        DBOSDurability.__module__ = 'pydantic_ai.durable_exec.dbos'
-
-        agent: Agent[None, str] = Agent(
-            _outer_model(ToolCallPart('danger', {'x': 1}, tool_call_id='call-1')),
-            deps_type=type(None),
-            capabilities=[_judge(_judge_model('no')), DBOSDurability()],
-        )
-
-        @agent.tool_plain
-        def danger(x: int) -> str:  # pragma: no cover - the run is rejected before any tool runs
-            return 'danger ran'
-
-        with pytest.raises(UserError, match='durable workflow or flow'):
-            await agent.run('go')
-
-    async def test_durable_capable_agent_outside_its_container_is_judged(self) -> None:
-        """Only the durable container is rejected; the same agent run plainly keeps its judge."""
-
-        class DBOSDurability(AbstractCapability[None]):
-            in_durable_context = False
-
-        DBOSDurability.__module__ = 'pydantic_ai.durable_exec.dbos'
-
-        verdicts: list[ToolCallVerdict] = []
-        agent: Agent[None, str] = Agent(
-            _outer_model(ToolCallPart('danger', {'x': 1}, tool_call_id='call-1')),
-            deps_type=type(None),
-            capabilities=[_judge(_judge_model('yes'), on_verdict=verdicts.append), DBOSDurability()],
-        )
-
+    def _durable_agent(self, judge: ToolCallJudge[None], *, name: str) -> tuple[Agent[None, str], list[str]]:
         ran: list[str] = []
+        agent: Agent[None, str] = Agent(
+            _outer_model(ToolCallPart('danger', {'x': 1}, tool_call_id='call-1')),
+            name=name,
+            deps_type=type(None),
+            capabilities=[judge, RecordingDurability()],
+        )
 
         @agent.tool_plain
-        def danger(x: int) -> str:  # pragma: no cover - the judge blocks the call
-            ran.append('danger')
+        def danger(x: int) -> str:
+            ran.append(f'danger:{x!r}')
             return 'danger ran'
+
+        return agent, ran
+
+    async def test_the_judgement_dispatches_as_a_durable_operation(self) -> None:
+        """Without this the judge's model call runs uncheckpointed and repeats on every replay."""
+        judge = _judge(_judge_model('no'), id='refund-judge')
+        agent, ran = self._durable_agent(judge, name='judged')
 
         result = await agent.run('go')
+
+        assert result.output == 'done'
+        assert ran == ['danger:1']
+        bound = RecordingDurability.from_agent(agent)
+        assert bound is not None
+        assert 'judged__capability__refund-judge.judge' in {name for name, _ in bound.calls}
+
+    async def test_a_judge_without_an_id_cannot_bind_to_a_durable_agent(self) -> None:
+        """A durable operation is addressed by the `id`, and this capability has no default one."""
+        with pytest.raises(UserError, match='needs an explicit `id`'):
+            self._durable_agent(_judge(_judge_model('no')), name='unnamed_judge')
+
+    async def test_an_id_leaves_a_plain_run_unchanged(self) -> None:
+        """Naming a judge is what durability needs; it changes nothing about an ordinary run."""
+        ran: list[str] = []
+        verdicts: list[ToolCallVerdict] = []
+        agent = _agent(
+            _judge(_judge_model('yes'), id='refund-judge', on_verdict=verdicts.append),
+            _outer_model(ToolCallPart('danger', {'x': 1}, tool_call_id='call-1')),
+            ran=ran,
+        )
+
+        result = await agent.run('go')
+
         assert result.output == 'done'
         assert ran == []
         assert [v.verdict for v in verdicts] == ['block']

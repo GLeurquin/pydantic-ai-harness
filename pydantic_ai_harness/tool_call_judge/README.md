@@ -193,7 +193,24 @@ Judging adds a model request in the path of every selected tool call, before the
 
 ## Durable execution
 
-A judged run inside a durable workflow or flow (Temporal, DBOS, Prefect) is rejected with `UserError` before the first model request. The judgement is made from `before_tool_execute`, which runs in orchestration context rather than inside a checkpointed unit, so the judge's model call would be repeated on every replay: billed again each time, and free to answer differently, which would make the same call allowed on one replay and blocked on the next. Run judged work outside durable execution. A durable-capable agent run outside its workflow or flow keeps its judge.
+Inside a durable workflow or flow (Temporal, DBOS, Prefect) the judgement is a durable operation. It is checkpointed under the name `<agent>__capability__<id>.judge`, so a replay reuses the recorded verdict instead of asking the model again: the same call is allowed or blocked the same way every time, and the judge is billed once.
+
+That matters because the judgement is made from `before_tool_execute`, which runs in orchestration context rather than inside a checkpointed unit. An uncheckpointed model call there would be re-made on every replay, paid for each time, and free to answer differently, which would leave the same call allowed on one replay and blocked on the next.
+
+A durable operation is addressed by the capability's `id`, and `ToolCallJudge` has no default one, because several judges on one agent is the normal shape and a shared default would merge them. So a judge on a durable-capable agent needs an explicit `id`, distinct per judge:
+
+```python
+from pydantic_ai_harness.tool_call_judge import ToolCallJudge
+
+judge = ToolCallJudge(
+    'anthropic:claude-haiku-4-5',
+    id='refund-judge',
+    tools=['issue_refund'],
+    question='Would this refund more than the original charge?',
+)
+```
+
+Without one, Pydantic AI refuses to bind the agent, naming the fix, rather than silently running the judge uncheckpointed. Outside durable execution nothing changes and `id` stays optional.
 
 ## Observability
 

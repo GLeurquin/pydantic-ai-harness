@@ -6,11 +6,11 @@ import html
 import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import KW_ONLY, dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, TypeAlias
 
 from pydantic import TypeAdapter, ValidationError
 from pydantic_ai import Agent
-from pydantic_ai.capabilities import AbstractCapability, CapabilityOrdering
+from pydantic_ai.capabilities import AbstractCapability, CapabilityOrdering, durable_operation
 from pydantic_ai.exceptions import ApprovalRequired, SkipToolExecution, UserError
 from pydantic_ai.messages import (
     ModelMessage,
@@ -162,10 +162,11 @@ class ToolCallJudge(AbstractCapability[AgentDepsT]):
     This is a filter, not a security boundary. A tool that destroys data, spends money, or
     exposes secrets still needs its own authorization, validation, and least-privilege controls.
 
-    A judged run inside a durable workflow or flow (Temporal, DBOS, Prefect) is rejected with
-    `UserError` before the first model request: the judgement is made from a capability hook in
-    orchestration context, so its model call would not be checkpointed and would repeat, billed
-    and free to decide differently, on every replay. Run judged work outside durable execution.
+    Inside a durable workflow or flow (Temporal, DBOS, Prefect) the judgement is a durable
+    operation, so it is checkpointed once and a replay reuses the recorded verdict instead of
+    paying for the judge again. That operation is addressed by the capability's `id`, which this
+    capability has no default for (several judges on one agent is the normal shape), so a judge
+    on a durable-capable agent needs an explicit one: `ToolCallJudge(..., id='refund-judge')`.
 
     ```python
     from pydantic_ai import Agent
@@ -243,23 +244,6 @@ class ToolCallJudge(AbstractCapability[AgentDepsT]):
             instructions=_JUDGE_INSTRUCTIONS.format(question=self.question),
             output_type=Literal['yes', 'no', 'unsure'],  # pyright: ignore[reportArgumentType]
         )
-
-    async def before_run(self, ctx: RunContext[AgentDepsT]) -> None:
-        """Reject a judged run inside a durable workflow or flow, before any budget is spent.
-
-        The judgement is made from `before_tool_execute`, which runs in orchestration context: the
-        judge's model call would not be checkpointed, so every replay would bill it again and
-        could get a different allow/block answer for the same call. A durable-capable agent run
-        outside its workflow or flow is unaffected, matching how core's durability capabilities
-        scope their own `before_run` rejections.
-        """
-        if _in_durable_context(ctx):
-            raise UserError(
-                '`ToolCallJudge` cannot be used inside a durable workflow or flow: the judgement '
-                'is made from a capability hook in orchestration context, so its model call is not '
-                'checkpointed and repeats, billed and free to decide differently, on replay. Run '
-                'judged work outside durable execution.'
-            )
 
     def get_ordering(self) -> CapabilityOrdering:
         """Judge closest to execution, so the arguments judged are the ones that would run."""
@@ -339,6 +323,11 @@ class ToolCallJudge(AbstractCapability[AgentDepsT]):
         sibling calls judged in parallel see it and the run's `request_limit` bounds the judges
         too. A claim the budget cannot fit raises the same `UsageLimitExceeded` the judge's own
         preflight would have, which `on_uncertain` then covers.
+
+        Everything that reads run state a durable worker does not receive -- the conversation the
+        prompt is rendered from, the tracer the span is opened on, the shared usage the claim is
+        taken against -- happens here, in orchestration context. Only the prompt crosses into
+        `_ask`.
         """
         attributes: dict[str, str | bool | float] = {
             'tool_call_judge.tool': call.tool_name,
@@ -347,15 +336,12 @@ class ToolCallJudge(AbstractCapability[AgentDepsT]):
         if ctx.trace_include_content:
             attributes['tool_call_judge.arguments'] = json.dumps(args, default=str)
 
+        prompt = self._prompt(ctx, call, args)
         with ctx.tracer.start_as_current_span('judge tool call', attributes=attributes) as span:
             try:
                 _claim_request(ctx)
                 try:
-                    result = await self._judge.run(
-                        self._prompt(ctx, call, args),
-                        usage=ctx.usage,
-                        usage_limits=_claim_offset_limits(ctx.usage_limits),
-                    )
+                    answer, confidence = await self._ask(ctx, prompt)
                 finally:
                     ctx.usage.requests -= 1
             except Exception as error:
@@ -364,20 +350,36 @@ class ToolCallJudge(AbstractCapability[AgentDepsT]):
                     span.set_attribute('tool_call_judge.model_result', 'error')
                     span.set_attribute('tool_call_judge.error.type', type(error).__name__)
             else:
-                verdict = self._verdict(
-                    ctx,
-                    call,
-                    answer=result.output,
-                    confidence=_reported_confidence(result.response.provider_details),
-                )
+                verdict = self._verdict(ctx, call, answer=answer, confidence=confidence)
                 if span.is_recording():
-                    span.set_attribute('tool_call_judge.model_result', result.output)
+                    span.set_attribute('tool_call_judge.model_result', answer)
 
             if span.is_recording():
                 span.set_attribute('tool_call_judge.verdict', verdict.verdict)
                 if verdict.confidence is not None:
                     span.set_attribute('tool_call_judge.confidence', verdict.confidence)
             return verdict
+
+    @durable_operation('judge')
+    async def _ask(self, ctx: RunContext[AgentDepsT], prompt: str) -> tuple[_JudgeAnswer, float | None]:
+        """Ask the judging model, as a durable operation when the run is inside a workflow or flow.
+
+        Checkpointing the judgement is what makes a judged call deterministic under replay: the
+        recorded answer is reused instead of the model being asked, and paid for, again. The
+        operation is addressed by `(id, 'judge')`, so core refuses to bind a judge without an
+        explicit `id` to a durable-capable agent; outside durable execution this is an ordinary
+        call and `id` stays optional.
+
+        The run's limits are raised by the request `_judge_call` claimed: that claim is already
+        counted in the `usage` a worker receives, so the unadjusted limit would count this
+        judgement against itself twice.
+        """
+        result = await self._judge.run(
+            prompt,
+            usage=ctx.usage,
+            usage_limits=_claim_offset_limits(ctx.usage_limits),
+        )
+        return result.output, _reported_confidence(result.response.provider_details)
 
     def _verdict(
         self,
@@ -450,23 +452,3 @@ def _claim_offset_limits(limits: UsageLimits | None) -> UsageLimits | None:
     if limits is None or limits.request_limit is None:
         return limits
     return replace(limits, request_limit=limits.request_limit + 1)
-
-
-@runtime_checkable
-class _Durability(Protocol):
-    """The part of the durable-execution capabilities' shared base this check needs."""
-
-    in_durable_context: bool
-
-
-# Duplicated from `pydantic_ai_harness.trajectory_judge` rather than imported, like the transcript
-# renderer above: capability packages keep their own dependencies. Fold them together if a shared
-# durable-detection helper ever lands.
-def _in_durable_context(ctx: RunContext[AgentDepsT]) -> bool:
-    """Whether this run executes inside a durable workflow or flow, without importing the optional extras."""
-    return any(
-        any(base.__module__.startswith('pydantic_ai.durable_exec') for base in type(capability).__mro__)
-        and isinstance(capability, _Durability)
-        and capability.in_durable_context
-        for capability in ctx.capabilities.values()
-    )
