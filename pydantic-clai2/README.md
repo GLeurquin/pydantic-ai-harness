@@ -355,7 +355,7 @@ Tab completes added models.
 on the next prompt. `r` resets a field; Esc or Ctrl-C goes back. Fixed choices
 open a picker; numeric fields accept typed values, and empty input resets.
 
-For `openai-codex` models, open `/model_settings openai-codex:gpt-6-astra`
+First add `openai-codex:gpt-6-astra` with `/add_model`, then open `/model_settings openai-codex:gpt-6-astra`
 (or your saved Codex model), then **Service Tier / Fast Mode**. Choose
 **Fast (priority)** to request fast processing, or **Standard (default)** to
 turn it off. [Codex fast mode](https://developers.openai.com/codex/speed)
