@@ -254,8 +254,14 @@ def test_empty_model_picker(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize('initial_model', [None, 'test'])
 async def test_select_new_model_from_picker(tmp_path: Path, initial_model: str | None) -> None:
-    context, applied = make_context(tmp_path)
-    context.settings = Settings(model=initial_model)
+    applied: list[str] = []
+    context = CommandContext(
+        settings=Settings(model=initial_model),
+        store=SettingsStore(tmp_path / 'config.db'),
+        clear_history=lambda: None,
+        apply_setting=lambda key, settings: applied.append(key),
+    )
+    assert context.store.models() == ([initial_model] if initial_model else [])
     script = Script(
         lists=[pick(ModelPickerAction.ADD), pick('anthropic'), pick('anthropic:claude-sonnet-4-5')],
         choices=[],
