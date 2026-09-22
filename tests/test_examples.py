@@ -18,7 +18,7 @@ from pydantic_ai.exceptions import UserError
 from pydantic_ai.models.test import TestModel
 
 EXAMPLES_DIR = Path(__file__).parent.parent / 'examples'
-EXAMPLE_FILES = sorted(EXAMPLES_DIR.glob('*.py'))
+EXAMPLE_FILES = sorted(path for path in EXAMPLES_DIR.glob('*.py') if path.name != '__init__.py')
 
 
 def _load(path: Path) -> ModuleType:
@@ -33,6 +33,9 @@ def _load(path: Path) -> ModuleType:
 def test_examples_present():
     assert [path.name for path in EXAMPLE_FILES] == [
         'coding_agent.py',
+        'manage_long_context.py',
+        'protect_coding_agent_secrets.py',
+        'recover_file_migration.py',
         'research_agent.py',
     ]
 

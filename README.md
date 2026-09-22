@@ -282,7 +282,9 @@ pip install pydantic-ai-harness
 
 This installs [`pydantic-ai-slim`](https://ai.pydantic.dev/install/) with it, so it works on its own; you don't need to install Pydantic AI separately. Model providers and the CLI come via extras that pass through to Pydantic AI: `pydantic-ai-harness[anthropic]`, `[cli]`. Some capabilities need their own extra for optional dependencies; each capability's page gives its exact install line. Requires Python 3.10+.
 
-## Build your own
+## Examples and custom capabilities
+
+The [examples](https://pydantic.dev/docs/ai/harness/examples/) show first-party capabilities composed around context management, secret handling, recovery, coding, and research tasks. Each task-led composition has a deterministic test using local fixtures.
 
 [Capabilities](https://ai.pydantic.dev/capabilities/#building-custom-capabilities) are the primary extension point for Pydantic AI, and every capability in this repo doubles as a worked example. Publishing a standalone package? Use the `pydantic-ai-<name>` naming convention; see [Publishing capability packages](https://ai.pydantic.dev/extensibility/#publishing-capability-packages).
 

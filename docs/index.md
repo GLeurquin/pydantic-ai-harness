@@ -229,7 +229,9 @@ New to Pydantic AI itself? Start with [its docs](/ai/): the agent you mount thes
 
 Everything the harness does is observable: core's [Instrumentation](/ai/capabilities/instrumentation/) capability (or `logfire.instrument_pydantic_ai()`) emits a full trace of every run: every model call and tool call, with token and cost tracking. It's standard OpenTelemetry, so any OTLP backend works; [Logfire](https://pydantic.dev/logfire) is the easiest way to see it during development.
 
-## Build your own
+## Examples and custom capabilities
+
+The [examples](examples.md) show first-party capabilities composed around context management, secret handling, recovery, coding, and research tasks. Each task-led composition has a deterministic test using local fixtures.
 
 [Capabilities](/ai/capabilities/custom/) are the primary extension point for Pydantic AI, and every capability in this library doubles as a worked example. Publishing a standalone package? Use the `pydantic-ai-<name>` naming convention; see [Publishing capability packages](/ai/guides/extensibility/#publishing-capability-packages).
 
