@@ -93,8 +93,10 @@ separate from `max_output_chars`, which bounds the returned tool result.
 The positive integer is applied as POSIX `RLIMIT_FSIZE` in a child launcher
 before executing the shell. Descendants inherit it; the harness parent's limits
 are unchanged. A lower inherited hard limit takes precedence. Unsupported
-platforms and `tools=['shell']` (the persistent tool) raise `ValueError` when
-the toolset is constructed rather than ignoring the setting.
+platforms, `persist_cwd=True`, and `tools=['shell']` (the persistent tool) raise
+`ValueError` when the toolset is constructed rather than ignoring the setting.
+Working-directory persistence uses a child-written capture file, which would
+also be subject to the limit.
 
 A process killed by the file-size signal gets a diagnosed tool result; other
 nonzero exits include the configured limit as context because programs can

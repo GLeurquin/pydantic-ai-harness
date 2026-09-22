@@ -80,8 +80,8 @@ class Shell(AbstractCapability[AgentDepsT]):
     max_file_bytes: int | None = field(default=None, kw_only=True)
     """Optional POSIX per-file size limit for run-scoped children, not total disk usage.
 
-    Must be positive. Unsupported platforms and the persistent `shell` tool are
-    rejected. The parent is unchanged; a lower inherited hard limit still applies.
+    Must be positive. Unsupported platforms, `persist_cwd`, and the persistent
+    `shell` tool are rejected. The parent is unchanged; a lower inherited hard limit still applies.
     """
 
     persist_cwd: bool = False

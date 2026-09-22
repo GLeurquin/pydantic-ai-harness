@@ -48,6 +48,11 @@ class TestShellFileLimits:
         with pytest.raises(ValueError, match='persistent shell'):
             Shell(max_file_bytes=1024, tools=['shell']).get_toolset()
 
+    @pytest.mark.skipif(os.name != 'posix', reason='Requires POSIX resource limits')
+    def test_persist_cwd_rejected(self) -> None:
+        with pytest.raises(ValueError, match='persist_cwd'):
+            Shell(max_file_bytes=1, persist_cwd=True).get_toolset()
+
     @pytest.mark.anyio
     @pytest.mark.skipif(os.name != 'posix', reason='Requires POSIX resource limits')
     @pytest.mark.parametrize('background', [False, True])

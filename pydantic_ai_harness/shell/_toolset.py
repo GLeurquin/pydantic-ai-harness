@@ -95,6 +95,10 @@ class ShellToolset(FunctionToolset[AgentDepsT]):
         self._default_timeout = default_timeout
         self._max_output_chars = max_output_chars
         validate_file_limit(max_file_bytes, persistent=PERSISTENT_TOOL_NAME in tools)
+        if max_file_bytes is not None and persist_cwd:
+            raise ValueError(
+                'max_file_bytes is not supported with persist_cwd; cwd capture writes a file in the child.'
+            )
         self._max_file_bytes = max_file_bytes
         self._persist_cwd = persist_cwd
         self._allow_interactive = allow_interactive
