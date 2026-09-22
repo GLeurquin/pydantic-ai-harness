@@ -21,7 +21,7 @@ async def notify(message: str) -> None:
             message,
         ]
     elif sys.platform.startswith('linux'):
-        command = ['notify-send', '--app-name=CLAI2', '--', 'CLAI2', message]
+        command = ['/usr/bin/notify-send', '--app-name=CLAI2', '--', 'CLAI2', message]
     else:
         return
     try:

@@ -138,7 +138,7 @@ async def test_native_command(platform: str, monkeypatch: pytest.MonkeyPatch) ->
             ]
         ]
     elif platform == 'linux':
-        assert commands == [['notify-send', '--app-name=CLAI2', '--', 'CLAI2', message]]
+        assert commands == [['/usr/bin/notify-send', '--app-name=CLAI2', '--', 'CLAI2', message]]
     else:
         assert commands == []
 

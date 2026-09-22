@@ -37,7 +37,7 @@ the title `CLAI2` and generic status text, not prompts, answers, paths, or error
 
 macOS uses the system `osascript` notification service. Allow notifications for
 Script Editor in System Settings > Notifications; Focus modes can suppress them.
-Linux uses `notify-send` when installed and a desktop notification service is
+Linux uses `/usr/bin/notify-send` when installed and a desktop notification service is
 available. Windows, redirected output, headless mode, and SSH sessions do not
 send notifications. These are local OS notifications, not terminal escape
 sequences, so local tmux sessions need no passthrough configuration. CLAI does

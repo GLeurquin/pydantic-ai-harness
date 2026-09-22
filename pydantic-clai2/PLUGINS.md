@@ -64,7 +64,7 @@ tools or instructions and has no plugin settings. Its title is `CLAI2`; its
 messages contain only generic status text, never conversation content or errors.
 
 macOS uses `/usr/bin/osascript`; enable Script Editor notifications in System
-Settings > Notifications. Linux uses `notify-send` when installed and a desktop
+Settings > Notifications. Linux uses `/usr/bin/notify-send` when installed and a desktop
 notification service is available. OS permissions and Focus settings determine
 delivery. Windows, SSH, headless mode, and redirected output are skipped. Local
 tmux needs no passthrough because delivery uses the OS, not terminal escapes.
