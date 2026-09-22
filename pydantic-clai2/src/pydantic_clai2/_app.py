@@ -15,17 +15,15 @@ from pydantic_ai import Agent, AgentStreamEvent
 from pydantic_ai.agent import AbstractAgent
 from pydantic_ai.capabilities import AgentCapability
 from pydantic_ai.messages import BinaryContent, ModelMessage, ModelResponse
-from pydantic_ai.models import Model
 from pydantic_ai.usage import UsageLimits
 from pydantic_ai_harness.step_persistence.conversations import ConversationSummary, SqliteConversationStore
 from rich.console import Console
 
-from . import openrouter, theme, vllm
+from . import theme
 from ._branding import print_banner
 from ._completion_adapter import COMPLETION_STYLE, PromptCompleter
 from ._rendering import StreamRenderer
 from ._session import Session
-from .auth import CodexAuth
 from .capability_catalog import HARNESS_PLUGINS
 from .command_context import CommandContext, CommandProvider
 from .commands import Command, Commands, config_command, config_completions, is_command_input, set_completions
@@ -36,6 +34,7 @@ from .input_history import input_history
 from .interrupts import Interrupts
 from .key_menu import keys_command
 from .live_prompt import LivePrompt
+from .login import SubscriptionAuth
 from .model_menu import model_settings_command, open_add_model_menu
 from .model_picker import model_command, model_completions
 from .plugin_loader import PluginError, PluginLoader
@@ -216,16 +215,8 @@ def create_shell(
         session.summary = summary
     session.model = settings.model
     session.tool_retries = settings.tool_retries
-    auth = CodexAuth(console)
-
-    async def resolve_model(name: str) -> Model | str:
-        if name.startswith('openrouter:'):
-            return await asyncio.to_thread(openrouter.model, name)
-        if name.startswith('vllm:'):
-            return await asyncio.to_thread(vllm.model, name)
-        return auth.model(name) if name.startswith('openai-codex:') else name
-
-    session.resolve_model = resolve_model
+    auth = SubscriptionAuth(console)
+    session.resolve_model = auth.resolve_model
     if session.model is None and agent.model is None:
         console.print('Add a model with /add_model.', style=theme.color(theme.INFO))
 
@@ -254,9 +245,9 @@ def create_shell(
     commands.register(
         Command(
             name='login',
-            description='Connect your ChatGPT/Codex subscription',
+            description='Connect your ChatGPT/Codex or GitHub Copilot subscription',
             handler=auth.login,
-            complete=lambda _: ('openai-codex',),
+            complete=lambda _: ('openai-codex', 'github-copilot'),
         )
     )
     commands.register(

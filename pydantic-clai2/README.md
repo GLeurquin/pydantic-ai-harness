@@ -246,6 +246,33 @@ A worktree separates working files, not permissions. CLAI's default tools can
 still access files outside it. Creation runs before the agent starts and emits
 no agent telemetry spans.
 
+## GitHub Copilot authentication
+
+Run `/login github-copilot` to authorize a GitHub.com account with a Copilot
+subscription. CLAI displays a one-time code and opens
+`https://github.com/login/device`. Enter the code there; over SSH, open the URL
+on another machine. Ctrl-C or Ctrl-D cancels. Login expires when GitHub's device
+code expires, or after fifteen minutes, whichever comes first. Failed or cancelled
+attempts leave the previous login intact.
+
+Login does not select a model. Use `/add_model github-copilot:MODEL_ID`, then
+`/model github-copilot:MODEL_ID`, with an ID your subscription serves. Core's
+[`GitHubCopilotModel`](https://pydantic.dev/docs/ai/models/github-copilot/) handles
+inference. GitHub authorization does not guarantee Copilot entitlement or access
+to a particular model. GitHub Enterprise login is not supported by this command.
+
+The GitHub token uses the same storage policy described below, under the separate
+`github-copilot` keyring account or `credentials-github-copilot.json` fallback
+file. It is not written to settings, command history, or environment variables.
+CLAI does not read GitHub CLI or editor credentials. A saved login takes precedence
+over Copilot environment tokens and uses `https://api.githubcopilot.com`, ignoring
+endpoint overrides so the saved token is not sent to another host. Without a saved
+login, core's existing Copilot environment configuration still works. If GitHub
+revokes the token, run `/login github-copilot` again. Bare `/login` still logs into
+Codex. Login emits no custom telemetry spans or token content.
+
+The device flow follows [GitHub's OAuth documentation](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#device-flow).
+
 ## Codex authentication
 
 `/login openai-codex` opens the browser and uses core's `OpenAICodexOAuthFlow`:

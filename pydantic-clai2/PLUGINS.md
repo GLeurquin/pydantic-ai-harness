@@ -47,13 +47,21 @@ Output-validation and HTTP transport retry budgets are unchanged.
 
 ## Credentials
 
-CLAI's `/login openai-codex` and the vllm and openrouter connections store tokens
+CLAI's `/login openai-codex`, `/login github-copilot`, and the vllm and openrouter connections store tokens
 in the configured keyring backend, not plugin settings. Large token bundles use
 multiple entries to fit Windows Credential Manager's size limit. When no keyring
 backend exists, credentials go to a per-account `0600` file under the user's CLAI config
 directory instead. None of this changes plugin APIs. See
 [Codex authentication](README.md#codex-authentication) for storage and security
-details.
+details. `/login github-copilot` uses GitHub's browser device-code flow, with
+Ctrl-C/Ctrl-D cancellation and a maximum fifteen-minute wait bounded by the code's
+expiry. It requires a GitHub.com Copilot subscription and saves to a separate
+`github-copilot` account. It does not select a model: add and select a
+`github-copilot:MODEL_ID` your plan supports. Saved logins use core's native
+Copilot model at `https://api.githubcopilot.com`; environment authentication still
+works when no login is saved. No tokens go into plugin settings or custom telemetry.
+See [GitHub Copilot authentication](README.md#github-copilot-authentication) for
+endpoint restrictions and reauthorization. Bare `/login` remains Codex.
 
 ## Logfire: default agent tracing
 
