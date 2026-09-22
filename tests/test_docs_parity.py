@@ -134,7 +134,6 @@ _CAPABILITY_PAGE_META = {
     'managed-prompt.md': ('logfire', 'Managed Prompt'),
     'memory.md': ('memory', 'Memory'),
     'modal-sandbox.md': ('modal_sandbox', 'Modal Sandbox'),
-    'modal-workspace.md': ('modal_workspace', 'Modal Workspace'),
     'e2b-sandbox.md': ('e2b_sandbox', 'E2B Sandbox'),
     'repo-context.md': ('repo_context', 'Repo Context'),
     'repair-tool-arguments.md': ('repair_tool_arguments', 'Repair Tool Arguments'),
