@@ -43,7 +43,7 @@ if TYPE_CHECKING:
     import modal.io_streams
     from pydantic_ai.workspaces import WorkspaceCommand
 
-__all__ = ('ModalWorkspaceBackend',)
+__all__ = ('ModalSandboxBackend',)
 
 DEFAULT_IMAGE = 'python:3.12-slim'
 DEFAULT_APP_NAME = 'pydantic-ai-harness'
@@ -51,7 +51,7 @@ DEFAULT_SANDBOX_TIMEOUT = 300
 
 
 _MISSING_MODAL = (
-    'The \'modal\' package is required for ModalWorkspace. Install it with `uv add "pydantic-ai-harness[modal]"`.'
+    'The \'modal\' package is required for ModalSandbox. Install it with `uv add "pydantic-ai-harness[modal]"`.'
 )
 
 _AUTH_MESSAGE = 'Modal rejected the credentials. Set MODAL_TOKEN_ID / MODAL_TOKEN_SECRET or run `modal token new`.'
@@ -104,7 +104,7 @@ def _file_entry(entry: modal.types.FileInfo, path: str) -> FileEntry:
     return FileEntry(name=entry.name, path=path, is_dir=is_dir, size=None if is_dir else entry.size)
 
 
-class ModalWorkspaceBackend(WorkspaceBackend, SupportsCommands, SupportsFilesystem):
+class ModalSandboxBackend(WorkspaceBackend, SupportsCommands, SupportsFilesystem):
     """A Modal sandbox implementing Pydantic AI's ``WorkspaceBackend`` protocol.
 
     Construction performs no I/O. The first operation creates or attaches to a sandbox, and the

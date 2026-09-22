@@ -74,7 +74,6 @@ from pydantic_ai_harness import (
     ToolOutputLimits,
 )
 from pydantic_ai_harness.ask_user import AskUserRequest, AskUserResponse
-from pydantic_ai_harness.modal_workspace import ModalWorkspace
 from pydantic_ai_harness.system_reminders import Reminder
 
 pytestmark = pytest.mark.anyio
@@ -258,7 +257,7 @@ COMBINE_POLICY: dict[str, Policy] = {
     '_CoderWorkspace': Rejected(
         'the bundled agent supplies one workspace; multiple suppliers require explicit selection'
     ),
-    ModalWorkspace.__name__: Rejected('multiple Modal workspace suppliers require explicit selection'),
+    'ModalSandbox': Rejected('multiple Modal workspace suppliers require explicit selection'),
     'Researcher': Anonymous('a packaged harness; composing two is composing their members'),
     'ClampOversizedMessages': Anonymous('clamping twice is a no-op; several thresholds compose'),
     'ClearToolResults': Anonymous('several form an escalation ladder, like `TieredCompaction` tiers'),
@@ -317,7 +316,6 @@ COMBINE_POLICY: dict[str, Policy] = {
     'CodeMode': Collides('`run_code` is reserved, so a second one is rejected by name'),
     'BrowserUse': Collides('its toolset registers its browser tools under fixed names'),
     'PlaywrightBrowser': Collides('its toolset registers `click` and friends under fixed names'),
-    'ModalSandbox': Collides('its toolset registers `run_command` and friends under fixed names'),
     'ConversationSearch': Collides('its toolset registers `search_conversation_history` under a fixed name'),
     'ExaAgent': Collides('its toolset registers `web_search` and friends under fixed names'),
     'ExaSearch': Collides('its toolset registers `web_search` and friends under fixed names'),
