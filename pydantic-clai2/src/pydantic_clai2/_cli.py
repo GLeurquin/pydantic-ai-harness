@@ -14,7 +14,30 @@ from .config import resolve_settings
 from .headless import run_headless
 from .project_settings import load_project_settings
 from .settings_store import SettingsStore
+from .web import run_web
 from .worktrees import create_worktree
+
+
+def _validate_noninteractive_options(
+    parser: argparse.ArgumentParser,
+    *,
+    web: bool,
+    port: int | None,
+    command: str | None,
+    prompt: str | None,
+    resume: str | None,
+) -> None:
+    if port is not None and (not web or not 0 <= port <= 65535):
+        parser.error('--port requires --web and a value between 0 and 65535')
+    if web and (command or prompt is not None or resume == ''):
+        parser.error('--web cannot use config, plugins, --prompt, or --resume without a SESSION-ID')
+    if prompt is not None:
+        if command:
+            parser.error('--prompt cannot be combined with config or plugins')
+        if not prompt.strip():
+            parser.error('--prompt requires non-empty text')
+        if resume == '':
+            parser.error('--prompt requires an explicit --resume SESSION-ID')
 
 
 def run() -> None:
@@ -35,23 +58,23 @@ def run() -> None:
     parser.add_argument(
         '-p', '--prompt', metavar='TEXT', help='Run one prompt without interaction and print only the answer'
     )
+    parser.add_argument('--web', action='store_true', help='Serve a local browser conversation instead of the terminal')
+    parser.add_argument(
+        '--port', type=int, default=None, help='Browser port (default: choose a free port; requires --web)'
+    )
     parser.add_argument('--request-limit', type=int)
     parser.add_argument('--database', type=Path, help='Settings database location')
     parser.add_argument('command', nargs='?', choices=('config', 'plugins'))
     parser.add_argument('arguments', nargs=argparse.REMAINDER)
     args = parser.parse_args()
     try:
+        _validate_noninteractive_options(
+            parser, web=args.web, port=args.port, command=args.command, prompt=args.prompt, resume=args.resume
+        )
         if args.command and (args.resume is not None or args.worktree is not None):
             parser.error('--resume and --worktree cannot be combined with config or plugins')
         if args.worktree is not None and args.resume is not None:
             parser.error('--worktree cannot be combined with --resume; resume from an existing worktree directory')
-        if args.prompt is not None:
-            if args.command:
-                parser.error('--prompt cannot be combined with config or plugins')
-            if not args.prompt.strip():
-                parser.error('--prompt requires non-empty text')
-            if args.resume == '':
-                parser.error('--prompt requires an explicit --resume SESSION-ID')
         store = SettingsStore(args.database)
         store.path = store.path.resolve()
         if args.command:
@@ -72,6 +95,11 @@ def run() -> None:
         if args.request_limit is not None:
             overrides['run.request_limit'] = args.request_limit
         settings = resolve_settings(overrides)
+        if args.web:
+            asyncio.run(
+                run_web(settings=settings, store=store, project=project, resume=args.resume, port=args.port or 0)
+            )
+            return
         if args.prompt is not None:
             raise SystemExit(
                 asyncio.run(

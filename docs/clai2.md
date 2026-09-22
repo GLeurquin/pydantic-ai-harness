@@ -8,6 +8,40 @@ not protect secret files or repository metadata. OS permissions still apply.
 Relative paths use the launch workspace. Use a custom agent with `Coder()` to
 retain workspace-scoped file tools. Shell output is displayed dimly.
 
+## Chat in a browser
+
+[CLAI2 source](https://github.com/pydantic/pydantic-ai-harness/tree/main/pydantic-clai2/src/pydantic_clai2/).
+
+Run `clai2 --web` and open the printed URL in a browser on the same machine.
+Configure credentials first in the terminal (for example, `/login openai-codex`)
+or through your provider's environment variables. The browser uses the same
+saved model, project settings, enabled plugins, and coding tools as the CLI.
+Use `-m PROVIDER:NAME` to override the model, `--port 8765` for a fixed port,
+`--worktree NAME` for a new workspace, or `--resume SESSION-ID` to continue a
+saved conversation. Without `--port`, the OS selects a free port.
+
+The server binds only to `127.0.0.1`. Keep the printed token-bearing URL private:
+anyone who can use it locally can run the enabled tools with your permissions.
+This is a local development interface, not a multi-user or remotely hosted
+service. It adds no sandbox or tool approval layer. Do not expose it through a
+proxy or tunnel. Prompts and responses can be persisted by the same session and
+telemetry plugins used by the terminal client; their settings still apply.
+
+Send a prompt, wait for the final answer, then send a follow-up. One server owns
+one conversation, shared by all tabs using its link, and accepts one turn at a
+time. The MVP renders plain text after the run finishes, not streamed tokens or
+tool output. Slash commands are sent as literal prompts; terminal menus and the
+`ask_user` plugin are disabled. Configure plugins before starting the server.
+Other plugins that require terminal interaction are not supported.
+
+Reloading the page clears the visible transcript, not the server's conversation.
+Resuming a saved session restores model context but does not replay old messages
+in the page. Closing a tab does not cancel its run. Press Ctrl-C in the launching
+terminal to stop the server and cancel active work; completed tool side effects
+cannot be undone. Restart to begin a new conversation, or use `--resume` to keep
+an existing one. Browser mode cannot be combined with `--prompt`, `config`, or
+`plugins`; `--resume` requires an explicit session ID.
+
 ## Word deletion
 
 Option+Backspace (Alt+Backspace) deletes the word before the cursor, like Ctrl-W,
