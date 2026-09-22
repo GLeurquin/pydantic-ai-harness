@@ -329,7 +329,14 @@ def proxy_env(provider: str, model: str) -> dict[str, str]:
 def test_the_default_target_is_the_packaged_agent(tmp_path: Path) -> None:
     invocation = launch(
         tmp_path,
-        {**proxy_env('github', 'copilot/claude-sonnet-4-5'), 'COPILOT_GITHUB_TOKEN': 'a-token'},
+        {
+            **proxy_env('github', 'copilot/claude-sonnet-4-5'),
+            'COPILOT_GITHUB_TOKEN': 'a-token',
+            'OPENAI_API_KEY': 'inherited-openai-key',
+            'GITHUB_COPILOT_BASE_URL': 'https://unused.example.com',
+            'GITHUB_COPILOT_API_KEY': 'inherited-key',
+            'PYTHONPATH': str(tmp_path / 'workspace'),
+        },
     )
 
     assert invocation.argv[:2] == ['-P', '-c']

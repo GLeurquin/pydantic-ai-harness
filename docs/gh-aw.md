@@ -448,7 +448,7 @@ that engine's `COPILOT_GITHUB_TOKEN` credential even when the agent uses another
 provider. gh-aw v0.89.0 falls back to Copilot with a compile-time warning for custom
 engines that omit a detection engine; the explicit declaration avoids that warning.
 
-To disable the separate detection job, use:
+To disable AI analysis while retaining the detection job's other processing, use:
 
 ```yaml
 safe-outputs:

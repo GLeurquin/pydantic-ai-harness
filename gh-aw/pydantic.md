@@ -203,7 +203,7 @@ engine:
         // opt-in: it makes repository code importable, which is the whole point
         // of running your own agent, and it is exactly what `-P` on the install
         // step keeps off the path for the default composition.
-        const pythonPath = [configuredAgent ? workspace : "", process.env.PYTHONPATH || ""].filter(Boolean).join(":");
+        const pythonPath = configuredAgent ? [workspace, process.env.PYTHONPATH || ""].filter(Boolean).join(":") : "";
         if (pythonPath) env.PYTHONPATH = pythonPath;
         else delete env.PYTHONPATH;
         if (process.env.OTEL_EXPORTER_OTLP_ENDPOINT) {
@@ -314,6 +314,7 @@ engine:
           env.ANTHROPIC_BASE_URL = baseUrl;
           env.ANTHROPIC_API_KEY = "awf-anthropic-proxy";
         } else if (useCopilotAPI) {
+          delete env.OPENAI_API_KEY;
           env.GITHUB_COPILOT_BASE_URL = baseUrl;
           env.GITHUB_COPILOT_API_KEY = "awf-copilot-proxy";
         } else {
@@ -602,8 +603,8 @@ model-family profiles.
 This definition requires gh-aw CLI and runtime v0.89.0 or newer because it declares
 `detection-engine: copilot`. Threat detection uses the built-in Copilot engine and
 its credential, independently of the agent's provider. Without that declaration,
-v0.89.0 falls back to Copilot with a compile-time warning. To opt out, set
-`safe-outputs.threat-detection.engine: false`. Recompile workflows after upgrading;
+v0.89.0 falls back to Copilot with a compile-time warning. To disable AI analysis,
+set `safe-outputs.threat-detection.engine: false`; detection processing still runs. Recompile workflows after upgrading;
 v0.88.x rejects the detection-engine key.
 
 `pai` renders its output as Markdown for a terminal and has no structured output

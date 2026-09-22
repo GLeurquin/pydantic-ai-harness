@@ -284,7 +284,7 @@ provider. Without an explicit detection engine, gh-aw v0.89.0 falls back to Copi
 for custom engines and emits a compile-time warning. This declaration avoids that
 fallback warning; it does not disable detection.
 
-To opt out of the separate detection job, set:
+To disable AI analysis while retaining the detection job's other processing, set:
 
 ```yaml
 safe-outputs:
