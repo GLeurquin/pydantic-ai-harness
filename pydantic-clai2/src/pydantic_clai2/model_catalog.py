@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from genai_prices.data_snapshot import get_snapshot
 from pydantic_ai.models import known_model_names
 
-EXTRA_PROVIDERS = frozenset({'openai-codex', 'github-copilot'})
+EXTRA_PROVIDERS = frozenset({'openai-codex'})
 """Provider prefixes core can run but does not list in `known_model_names()`."""
 
 

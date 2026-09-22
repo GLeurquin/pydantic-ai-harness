@@ -60,7 +60,9 @@ Settings > Applications > Authorized OAuth Apps. The command uses GitHub's brows
 Ctrl-C/Ctrl-D cancellation and a maximum fifteen-minute wait bounded by the code's
 expiry. It requires a GitHub.com Copilot subscription and saves to a separate
 `github-copilot` account. It does not select a model: add and select a
-`github-copilot:MODEL_ID` your plan supports. Saved logins use core's native
+`github-copilot:MODEL_ID` your plan supports through Chat Completions. Add the ID
+explicitly; the provider browser does not offer Copilot's mixed-endpoint pricing
+catalog, and Responses-only IDs are not supported. Saved logins use core's native
 Copilot model at `https://api.githubcopilot.com`; environment authentication still
 works when no login is saved. No tokens go into plugin settings or custom telemetry.
 See [GitHub Copilot authentication](README.md#github-copilot-authentication) for

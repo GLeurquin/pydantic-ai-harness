@@ -262,7 +262,10 @@ code expires, or after fifteen minutes, whichever comes first. Failed or cancell
 attempts leave the previous login intact.
 
 Login does not select a model. Use `/add_model github-copilot:MODEL_ID`, then
-`/model github-copilot:MODEL_ID`, with an ID your subscription serves. Core's
+`/model github-copilot:MODEL_ID`, with an ID your subscription serves through
+Chat Completions. Copilot models are not offered in the provider browser: the
+pricing catalog does not distinguish Chat Completions from Responses-only models,
+which this integration cannot run. Add a compatible ID explicitly. Core's
 [`GitHubCopilotModel`](https://pydantic.dev/docs/ai/models/github-copilot/) handles
 inference. GitHub authorization does not guarantee Copilot entitlement or access
 to a particular model. GitHub Enterprise login is not supported by this command.
