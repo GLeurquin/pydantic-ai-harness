@@ -17,7 +17,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from pydantic_ai_harness.shell import Shell
 
-if os.name == 'posix':
+if os.name == 'posix':  # pragma: no branch
     import resource
 
 
