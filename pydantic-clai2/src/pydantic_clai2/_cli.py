@@ -15,7 +15,7 @@ from .headless import run_headless
 from .project_settings import load_project_settings
 from .settings_store import SettingsStore
 from .web import run_web
-from .worktrees import create_worktree
+from .worktrees import create_worktree, offer_worktree_cleanup
 
 
 def _validate_noninteractive_options(
@@ -84,7 +84,7 @@ def run() -> None:
         if args.worktree is not None:
             workspace = create_worktree(name=args.worktree)
             print(
-                f'Worktree: {workspace} (branch: clai/{workspace.name}). Kept on exit.',
+                f'Worktree: {workspace} (branch: clai/{workspace.name}). Kept unless removal is confirmed on exit.',
                 file=sys.stderr if args.prompt is not None else sys.stdout,
             )
             os.chdir(workspace)
@@ -124,6 +124,7 @@ def run() -> None:
                 resume=args.resume,
             )
         )
+        offer_worktree_cleanup()
     except (ValueError, TypeError, ImportError, AttributeError, LookupError, OSError) as exc:
         parser.error(str(exc))
     except KeyboardInterrupt:
