@@ -10,6 +10,8 @@ Keep an unattended agent working until a caller-defined completion check accepts
 
 Supply an explicit `goal` and an async `verify(ctx, output)` callable. The verifier returns `None` to accept the output, or a nonempty string describing what remains. It receives the processed output unchanged, including structured outputs, and can inspect dependencies and message history through `RunContext`.
 
+Output functions run before this check. A rejection can call them again on a later attempt. Keep output functions and verifiers read-only or idempotent; perform irreversible commits only after `agent.run()` returns an accepted result. `Goal` does not roll back tool calls or output-function side effects.
+
 Define completion using evidence you trust. A model declaring success is not proof that files were written, tests passed, or an external operation completed. The capability does not guess completion from punctuation or classify natural-language questions.
 
 ```python
