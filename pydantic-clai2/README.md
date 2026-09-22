@@ -7,6 +7,7 @@ you multiple-choice questions mid-run through the built-in `ask_user` plugin;
 see [Questions from the model](#questions-from-the-model). The built-in
 `repo_context` plugin reads `AGENTS.md` or `CLAUDE.md` from the launch directory
 into the agent's instructions; `/plugins disable repo_context` turns that off.
+On Windows, CLAI does not provide an agent workspace or repository context yet.
 Context management is the built-in `compaction` plugin,
 [described below](#compacting-the-conversation).
 The `/plugins` menu also lists every other harness capability, disabled by
