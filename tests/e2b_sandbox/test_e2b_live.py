@@ -23,7 +23,7 @@ Gating:
   * a module-scoped `anyio_backend` fixture keeps the shared E2B handle on one asyncio loop.
 
 Run locally:
-`PYDANTIC_AI_HARNESS_E2B_LIVE=1 uv run pytest -m e2b_live tests/e2b_workspace/test_e2b_live.py`
+`PYDANTIC_AI_HARNESS_E2B_LIVE=1 uv run pytest -m e2b_live tests/e2b_sandbox/test_e2b_live.py`
 """
 
 from __future__ import annotations
@@ -37,8 +37,8 @@ import anyio
 import pytest
 from pydantic_ai.workspaces import Workspace, WorkspaceTimeoutError
 
-from pydantic_ai_harness.e2b_workspace import (
-    E2BWorkspaceBackend,
+from pydantic_ai_harness.e2b_sandbox import (
+    E2BSandboxBackend,
 )
 
 _live_enabled = os.getenv('PYDANTIC_AI_HARNESS_E2B_LIVE') == '1'
@@ -58,9 +58,9 @@ def _unique(prefix: str) -> str:
 
 
 @asynccontextmanager
-async def _owned(**settings: object) -> AsyncGenerator[E2BWorkspaceBackend]:
+async def _owned(**settings: object) -> AsyncGenerator[E2BSandboxBackend]:
     """Create a workspace and kill its native handle on the way out."""
-    backend = E2BWorkspaceBackend(**settings)  # type: ignore[arg-type]
+    backend = E2BSandboxBackend(**settings)  # type: ignore[arg-type]
     native = await backend.get_client()
     try:
         yield backend
@@ -74,7 +74,7 @@ def anyio_backend() -> str:
 
 
 @pytest.fixture(scope='module')
-async def sandbox() -> AsyncIterator[E2BWorkspaceBackend]:
+async def sandbox() -> AsyncIterator[E2BSandboxBackend]:
     """One live owned sandbox shared by command and filesystem tests.
 
     Each test writes under `_unique(...)` paths, so the shared microVM avoids repeated cold
@@ -88,7 +88,7 @@ async def sandbox() -> AsyncIterator[E2BWorkspaceBackend]:
 class TestRealExecution:
     """Behaviors that only exist because a real process runs in a real microVM."""
 
-    async def test_runs_a_real_process(self, sandbox: E2BWorkspaceBackend) -> None:
+    async def test_runs_a_real_process(self, sandbox: E2BSandboxBackend) -> None:
         """Validates the fake-encoded assumption that stdout, stderr, and exit code match a process."""
         result = await sandbox.run('echo out; echo err 1>&2; exit 3', shell=True, timeout=30)
 
@@ -96,7 +96,7 @@ class TestRealExecution:
         assert result.stderr.strip() == 'err'
         assert result.exit_code == 3
 
-    async def test_argv_elements_stay_single_words(self, sandbox: E2BWorkspaceBackend) -> None:
+    async def test_argv_elements_stay_single_words(self, sandbox: E2BSandboxBackend) -> None:
         """Validates the fake-encoded assumption that `shlex.join` survives E2B's shell.
 
         E2B has no argv form, so an argv sequence is quoted into one shell word string; a
@@ -106,7 +106,7 @@ class TestRealExecution:
 
         assert result.stdout == 'a b $HOME'
 
-    async def test_timeout_kills_the_command_and_keeps_its_output(self, sandbox: E2BWorkspaceBackend) -> None:
+    async def test_timeout_kills_the_command_and_keeps_its_output(self, sandbox: E2BSandboxBackend) -> None:
         """Validates the fake-encoded assumption that a client-owned deadline kills a real process.
 
         E2B's own command `timeout` abandons the output stream and leaves the command running,
@@ -121,7 +121,7 @@ class TestRealExecution:
         await anyio.sleep(25)
         assert await sandbox.exists(marker) is False
 
-    async def test_a_background_child_outlives_the_kill(self, sandbox: E2BWorkspaceBackend) -> None:
+    async def test_a_background_child_outlives_the_kill(self, sandbox: E2BSandboxBackend) -> None:
         """Pins the documented limitation that E2B's kill signals the command's own process only.
 
         A process the command started in the background is not reached by that signal and runs
@@ -135,7 +135,7 @@ class TestRealExecution:
         await anyio.sleep(10)
         assert await sandbox.exists(marker) is True
 
-    async def test_a_cancelled_run_stops_the_command(self, sandbox: E2BWorkspaceBackend) -> None:
+    async def test_a_cancelled_run_stops_the_command(self, sandbox: E2BSandboxBackend) -> None:
         """Validates the protocol's cancellation contract against real E2B.
 
         A cancelled `run()` must not knowingly leave the command running; E2B has a
@@ -148,7 +148,7 @@ class TestRealExecution:
         await anyio.sleep(20)
         assert await sandbox.exists(marker) is False
 
-    async def test_large_stderr_does_not_block_stdout(self, sandbox: E2BWorkspaceBackend) -> None:
+    async def test_large_stderr_does_not_block_stdout(self, sandbox: E2BSandboxBackend) -> None:
         """Validates the fake-encoded assumption that E2B buffers both streams without deadlock."""
         result = await sandbox.run('seq 1 200000 1>&2; echo done', shell=True, timeout=120)
 
@@ -157,7 +157,7 @@ class TestRealExecution:
         stderr_lines = result.stderr.splitlines()
         assert (stderr_lines[0], stderr_lines[-1], len(stderr_lines)) == ('1', '200000', 200000)
 
-    async def test_concurrent_commands_share_one_sandbox(self, sandbox: E2BWorkspaceBackend) -> None:
+    async def test_concurrent_commands_share_one_sandbox(self, sandbox: E2BSandboxBackend) -> None:
         """Validates the fake-encoded assumption that one E2B sandbox multiplexes concurrent commands."""
         results: dict[int, str] = {}
 
@@ -171,13 +171,13 @@ class TestRealExecution:
 
         assert results == {n: f'job-{n}' for n in range(8)}
 
-    async def test_signal_exit_is_a_real_exit(self, sandbox: E2BWorkspaceBackend) -> None:
+    async def test_signal_exit_is_a_real_exit(self, sandbox: E2BSandboxBackend) -> None:
         """Validates the fake-encoded assumption that a signalled death is a plain exit code, not a timeout."""
         result = await sandbox.run('kill -KILL $$', shell=True, timeout=30)
 
         assert result.exit_code > 128
 
-    async def test_a_missing_binary_is_a_reported_exit(self, sandbox: E2BWorkspaceBackend) -> None:
+    async def test_a_missing_binary_is_a_reported_exit(self, sandbox: E2BSandboxBackend) -> None:
         """Validates the fake-encoded assumption that E2B reports a lookup failure as an exit code.
 
         The SDK raises `CommandExitException` on a non-zero exit; the protocol calls that a
@@ -231,7 +231,7 @@ class TestCreateConfiguration:
 class TestRealFilesystem:
     """One real filesystem shared by E2B's file API and the shell."""
 
-    async def test_shell_and_file_api_see_the_same_filesystem(self, sandbox: E2BWorkspaceBackend) -> None:
+    async def test_shell_and_file_api_see_the_same_filesystem(self, sandbox: E2BSandboxBackend) -> None:
         """Validates the protocol's one-environment contract against real E2B."""
         api_path = f'/tmp/{_unique("api")}.txt'
         await sandbox.write_bytes(api_path, b'from-file-api\n')
@@ -243,7 +243,7 @@ class TestRealFilesystem:
         assert wrote.exit_code == 0
         assert await sandbox.read_bytes(shell_path) == b'from-shell'
 
-    async def test_binary_roundtrip_creating_parent_dirs(self, sandbox: E2BWorkspaceBackend) -> None:
+    async def test_binary_roundtrip_creating_parent_dirs(self, sandbox: E2BSandboxBackend) -> None:
         """Validates the fake-encoded assumption that E2B stores raw bytes and creates real parent dirs."""
         path = f'/tmp/{_unique("io")}/nested/deep/data.bin'
         payload = b'\x00\x01hello \xf0\x9f\x9a\x80 world'
@@ -252,7 +252,7 @@ class TestRealFilesystem:
 
         assert await sandbox.read_bytes(path) == payload
 
-    async def test_large_filesystem_transfer_near_read_limit(self, sandbox: E2BWorkspaceBackend) -> None:
+    async def test_large_filesystem_transfer_near_read_limit(self, sandbox: E2BSandboxBackend) -> None:
         """Validates the fake-encoded assumption that E2B's file API handles a near-limit transfer."""
         path = f'/tmp/{_unique("big")}.bin'
         payload = b'A' * (4 * 1024 * 1024)
@@ -262,14 +262,14 @@ class TestRealFilesystem:
         assert (await sandbox.stat(path)).size == len(payload)
         assert await sandbox.read_bytes(path) == payload
 
-    async def test_missing_file_raises_the_builtin_error(self, sandbox: E2BWorkspaceBackend) -> None:
+    async def test_missing_file_raises_the_builtin_error(self, sandbox: E2BSandboxBackend) -> None:
         """Validates the protocol's contract that a missing path raises the builtin `FileNotFoundError`."""
         with pytest.raises(FileNotFoundError):
             await sandbox.read_bytes(f'/tmp/{_unique("missing")}')
 
         assert await sandbox.exists(f'/tmp/{_unique("missing")}') is False
 
-    async def test_list_dir_reports_basenames_and_dir_flags(self, sandbox: E2BWorkspaceBackend) -> None:
+    async def test_list_dir_reports_basenames_and_dir_flags(self, sandbox: E2BSandboxBackend) -> None:
         """Validates the fake-encoded assumption that E2B lists entries by basename with a real dir flag."""
         root = f'/tmp/{_unique("ls")}'
         await sandbox.write_bytes(f'{root}/file.txt', b'x')
@@ -282,7 +282,7 @@ class TestRealFilesystem:
             ('sub', True, f'{root}/sub'),
         ]
 
-    async def test_make_dir_and_remove_are_recursive(self, sandbox: E2BWorkspaceBackend) -> None:
+    async def test_make_dir_and_remove_are_recursive(self, sandbox: E2BSandboxBackend) -> None:
         """Validates the fake-encoded assumption that E2B's `mkdir -p` and recursive remove behave as documented."""
         root = f'/tmp/{_unique("tree")}'
         await sandbox.make_dir(f'{root}/a/b')
@@ -312,7 +312,7 @@ class TestRealLifecycle:
         async with _owned(sandbox_timeout=120) as owner:
             await owner.write_bytes(marker, b'shared')
 
-            attached = E2BWorkspaceBackend(ref=owner.ref)
+            attached = E2BSandboxBackend(ref=owner.ref)
             assert (await attached.get_client()).sandbox_id == (await owner.get_client()).sandbox_id
             assert await attached.read_bytes(marker) == b'shared'
 
@@ -329,5 +329,5 @@ class TestRealLifecycle:
             await owner.write_bytes(marker, b'before-pause')
             await (await owner.get_client()).beta_pause()
 
-            attached = E2BWorkspaceBackend(ref=owner.ref)
+            attached = E2BSandboxBackend(ref=owner.ref)
             assert await attached.read_bytes(marker) == b'before-pause'

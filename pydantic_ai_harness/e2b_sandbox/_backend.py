@@ -35,13 +35,13 @@ from pydantic_ai_harness._workspace_provider import absolute_path
 if TYPE_CHECKING:
     from pydantic_ai.workspaces import WorkspaceCommand
 
-__all__ = ('E2BWorkspaceBackend',)
+__all__ = ('E2BSandboxBackend',)
 DEFAULT_SANDBOX_TIMEOUT = 300
 
 try:
     import e2b
 except ImportError as error:  # pragma: no cover - exercised by the isolated missing-extra test
-    raise ImportError('Install `pydantic-ai-harness[e2b]` to use E2BWorkspace.') from error
+    raise ImportError('Install `pydantic-ai-harness[e2b]` to use E2BSandbox.') from error
 
 _AUTH_MESSAGE = 'E2B rejected the credentials. Set a valid E2B_API_KEY in the environment.'
 
@@ -53,7 +53,7 @@ _INTERNAL_EXEC_TIMEOUT = 10
 
 # E2B's own command `timeout` bounds the event stream and leaves the command running, so it is
 # switched off (0 is the SDK's "no limit") and the deadline is enforced client-side instead,
-# with a kill at expiry. See `E2BWorkspaceBackend.run`.
+# with a kill at expiry. See `E2BSandboxBackend.run`.
 _SDK_STREAM_UNBOUNDED = 0
 
 
@@ -82,7 +82,7 @@ def _file_entry(entry: e2b.EntryInfo) -> FileEntry:
     return FileEntry(name=entry.name, path=entry.path, is_dir=is_dir, size=None if is_dir else entry.size)
 
 
-class E2BWorkspaceBackend(WorkspaceBackend, SupportsCommands, SupportsFilesystem):
+class E2BSandboxBackend(WorkspaceBackend, SupportsCommands, SupportsFilesystem):
     """An [E2B](https://e2b.dev) sandbox as a Pydantic AI [`WorkspaceBackend`][pydantic_ai.workspaces.WorkspaceBackend].
 
     Commands and file operations run inside an E2B microVM, so the host is never exposed.

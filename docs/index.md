@@ -112,7 +112,7 @@ The workspace the agent acts in: the files it edits and the commands it runs, lo
 | [Shell](shell.md) | Harness | Command execution with allowlists, denylists, timeouts, credential-stripping, and opt-in commands that outlive the run |
 | [Modal Sandbox](modal-sandbox.md) | Harness | Commands and files in an isolated [Modal](https://modal.com) cloud sandbox |
 | [Modal Workspace](modal-workspace.md) | Harness | Modal-backed workspace operations for agent runs |
-| [E2B Workspace](e2b-workspace.md) | Harness | E2B-backed workspace operations for agent runs |
+| [E2B Sandbox](e2b-sandbox.md) | Harness | E2B-backed workspace operations for agent runs |
 
 ### Tools & native abilities
 

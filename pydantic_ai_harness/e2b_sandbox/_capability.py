@@ -9,14 +9,14 @@ from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.tools import AgentDepsT, RunContext
 from pydantic_ai.workspaces import WorkspaceBackend, WorkspaceRef
 
-from pydantic_ai_harness.e2b_workspace._backend import (
+from pydantic_ai_harness.e2b_sandbox._backend import (
     DEFAULT_SANDBOX_TIMEOUT,
-    E2BWorkspaceBackend,
+    E2BSandboxBackend,
 )
 
 
 @dataclass(kw_only=True)
-class E2BWorkspace(AbstractCapability[AgentDepsT]):
+class E2BSandbox(AbstractCapability[AgentDepsT]):
     """Supply an isolated [E2B](https://e2b.dev) sandbox through `ctx.workspace`.
 
     A run with no reference creates a fresh sandbox. Pass a `WorkspaceRef` supplied by the
@@ -50,7 +50,7 @@ class E2BWorkspace(AbstractCapability[AgentDepsT]):
         del ctx
         if ref is not None and ref.provider != 'e2b':
             return None
-        return E2BWorkspaceBackend(
+        return E2BSandboxBackend(
             ref=ref,
             template=self.template,
             sandbox_timeout=self.sandbox_timeout,

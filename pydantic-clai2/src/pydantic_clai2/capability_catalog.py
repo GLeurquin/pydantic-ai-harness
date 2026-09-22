@@ -21,7 +21,7 @@ _FACTORIES = (
     ('warn_near_limits', 'compaction:WarnNearLimits'),
     ('conversation_search', 'conversation_search:ConversationSearch'),
     ('dynamic_workflow', 'dynamic_workflow:DynamicWorkflow'),
-    ('e2b_workspace', 'e2b_workspace:E2BWorkspace'),
+    ('e2b_sandbox', 'e2b_sandbox:E2BSandbox'),
     ('exa_agent', 'exa:ExaAgent'),
     ('exa_search', 'exa:ExaSearch'),
     ('filesystem', 'filesystem:FileSystem'),

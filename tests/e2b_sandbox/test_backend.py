@@ -1,4 +1,4 @@
-"""Tests for `E2BWorkspaceBackend`, the E2B implementation of the sandbox protocol."""
+"""Tests for `E2BSandboxBackend`, the E2B implementation of the sandbox protocol."""
 
 from __future__ import annotations
 
@@ -18,25 +18,25 @@ from pydantic_ai.workspaces import (
     WorkspaceUnavailableError,
 )
 
-from pydantic_ai_harness.e2b_workspace import E2BWorkspaceBackend
+from pydantic_ai_harness.e2b_sandbox import E2BSandboxBackend
 
 from .fake_e2b import FakeE2B
 
 
-async def started(**settings: Any) -> E2BWorkspaceBackend:
+async def started(**settings: Any) -> E2BSandboxBackend:
     """Build a backend and resolve it now.
 
     Constructing one does no I/O, so a test that wants to assert on what creating or attaching
     did has to touch the sandbox first. Awaiting `get_client()` is that touch.
     """
-    backend = E2BWorkspaceBackend(**settings)
+    backend = E2BSandboxBackend(**settings)
     await backend.get_client()
     return backend
 
 
 class TestConformance:
     async def test_get_client_is_lazy_and_reuses_the_client(self, fake_e2b: FakeE2B) -> None:
-        backend = E2BWorkspaceBackend()
+        backend = E2BSandboxBackend()
         assert not fake_e2b.sandboxes
         sandbox = await backend.get_client()
         assert await backend.get_client() is sandbox
@@ -44,7 +44,7 @@ class TestConformance:
 
     @pytest.mark.parametrize('operation', ['run', 'write_bytes'])
     async def test_ref_is_recorded_by_the_first_operation(self, fake_e2b: FakeE2B, operation: str) -> None:
-        backend = E2BWorkspaceBackend()
+        backend = E2BSandboxBackend()
         assert backend.ref is None
         if operation == 'run':
             await backend.run(['true'])
@@ -58,7 +58,7 @@ class TestConformance:
         assert isinstance(backend, WorkspaceBackend)
         assert isinstance(backend, SupportsFilesystem)
 
-    async def test_identity_is_e2b_workspace_id(self, fake_e2b: FakeE2B) -> None:
+    async def test_identity_is_e2b_sandbox_id(self, fake_e2b: FakeE2B) -> None:
         backend = await started()
         assert backend.ref == WorkspaceRef(provider='e2b', id='sbx-1')
         assert await backend.get_client() is fake_e2b.sandboxes[0]
@@ -105,7 +105,7 @@ class TestCreate:
         self, fake_e2b: FakeE2B, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # The client-side bound prevents a wedged control plane from hanging acquisition.
-        monkeypatch.setattr('pydantic_ai_harness.e2b_workspace._backend._CREATE_TIMEOUT', 0.05)
+        monkeypatch.setattr('pydantic_ai_harness.e2b_sandbox._backend._CREATE_TIMEOUT', 0.05)
         fake_e2b.create_hangs = True
         with anyio.fail_after(5):
             with pytest.raises(WorkspaceError, match='did not complete within'):
@@ -138,7 +138,7 @@ class TestConnect:
 
     async def test_an_operation_on_a_gone_sandbox_does_not_create_a_replacement(self, fake_e2b: FakeE2B) -> None:
         fake_e2b.connect_error = fake_e2b.sandbox_gone_type('not found')
-        backend = E2BWorkspaceBackend(ref=WorkspaceRef(provider='e2b', id='sbx-gone'))
+        backend = E2BSandboxBackend(ref=WorkspaceRef(provider='e2b', id='sbx-gone'))
         for _ in range(2):
             with pytest.raises(WorkspaceUnavailableError, match="'sbx-gone'"):
                 await backend.run(['true'])
@@ -333,7 +333,7 @@ class TestRun:
 class TestWorkingDir:
     async def test_a_configured_working_dir_is_resolved_and_initializes_ref(self, fake_e2b: FakeE2B) -> None:
         fake_e2b.responder = lambda command, timeout: ('/real/work\n', '', 0)
-        backend = E2BWorkspaceBackend(workdir='/work')
+        backend = E2BSandboxBackend(workdir='/work')
         assert await backend.working_dir() == '/real/work'
         assert backend.ref is not None
         assert fake_e2b.sandboxes[0].commands.calls[0].cwd == '/work'
@@ -348,7 +348,7 @@ class TestWorkingDir:
     async def test_the_probe_carries_a_deadline(self, fake_e2b: FakeE2B, monkeypatch: pytest.MonkeyPatch) -> None:
         # The probe is a command like any other, so it is bounded and killed rather than left
         # to hang a run that only wanted to resolve a path.
-        monkeypatch.setattr('pydantic_ai_harness.e2b_workspace._backend._INTERNAL_EXEC_TIMEOUT', 0.05)
+        monkeypatch.setattr('pydantic_ai_harness.e2b_sandbox._backend._INTERNAL_EXEC_TIMEOUT', 0.05)
         fake_e2b.command_hangs = True
         backend = await started()
         with anyio.fail_after(5):
@@ -358,9 +358,9 @@ class TestWorkingDir:
     async def test_working_dir_bounds_initial_acquisition(
         self, fake_e2b: FakeE2B, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr('pydantic_ai_harness.e2b_workspace._backend._INTERNAL_EXEC_TIMEOUT', 0.01)
+        monkeypatch.setattr('pydantic_ai_harness.e2b_sandbox._backend._INTERNAL_EXEC_TIMEOUT', 0.01)
         fake_e2b.create_hangs = True
-        backend = E2BWorkspaceBackend()
+        backend = E2BSandboxBackend()
         with anyio.fail_after(0.2):
             with pytest.raises(WorkspaceTimeoutError):
                 await backend.working_dir()
@@ -484,7 +484,7 @@ def test_missing_e2b_extra_has_an_install_hint() -> None:
         [
             sys.executable,
             '-c',
-            "import sys; sys.modules['e2b'] = None; import pydantic_ai_harness.e2b_workspace",
+            "import sys; sys.modules['e2b'] = None; import pydantic_ai_harness.e2b_sandbox",
         ],
         capture_output=True,
         text=True,
@@ -496,7 +496,7 @@ def test_missing_e2b_extra_has_an_install_hint() -> None:
 
 async def test_command_timeout_bounds_initial_provisioning(fake_e2b: FakeE2B) -> None:
     fake_e2b.create_hangs = True
-    backend = E2BWorkspaceBackend()
+    backend = E2BSandboxBackend()
     with anyio.fail_after(1):
         with pytest.raises(WorkspaceTimeoutError) as exc:
             await backend.run(['echo', 'ready'], timeout=0.01)
@@ -507,4 +507,4 @@ async def test_command_timeout_bounds_initial_provisioning(fake_e2b: FakeE2B) ->
 async def test_filesystem_first_use_preserves_auth_error(fake_e2b: FakeE2B) -> None:
     fake_e2b.create_error = fake_e2b.auth_type('denied')
     with pytest.raises(WorkspaceUnavailableError):
-        await E2BWorkspaceBackend().read_bytes('/file')
+        await E2BSandboxBackend().read_bytes('/file')
