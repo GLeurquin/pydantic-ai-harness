@@ -22,7 +22,7 @@ _FACTORIES = (
     ('conversation_search', 'conversation_search:ConversationSearch'),
     ('daytona_workspace', 'daytona_workspace:DaytonaWorkspace'),
     ('dynamic_workflow', 'dynamic_workflow:DynamicWorkflow'),
-    ('e2b_workspace', 'e2b_workspace:E2BWorkspace'),
+    ('e2b_sandbox', 'e2b_sandbox:E2BSandbox'),
     ('exa_agent', 'exa:ExaAgent'),
     ('exa_search', 'exa:ExaSearch'),
     ('filesystem', 'filesystem:FileSystem'),

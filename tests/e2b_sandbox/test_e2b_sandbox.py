@@ -13,7 +13,7 @@ from pydantic_ai.tools import RunContext
 from pydantic_ai.usage import RunUsage
 from pydantic_ai.workspaces import ReadOnlyWorkspace, Workspace, WorkspaceError, WorkspaceRef
 
-from pydantic_ai_harness.e2b_workspace import E2BWorkspace, E2BWorkspaceBackend
+from pydantic_ai_harness.e2b_sandbox import E2BSandbox, E2BSandboxBackend
 
 from .fake_e2b import FakeE2B
 
@@ -21,44 +21,44 @@ pytestmark = pytest.mark.anyio
 
 
 def test_capability_uses_workspace_contract() -> None:
-    capability = E2BWorkspace()
+    capability = E2BSandbox()
     ctx = RunContext(deps=None, model=TestModel(), usage=RunUsage())
     backend = capability.get_workspace(ctx, ref=WorkspaceRef(provider='e2b', id='known'))
-    assert isinstance(backend, E2BWorkspaceBackend)
+    assert isinstance(backend, E2BSandboxBackend)
     assert backend.ref == WorkspaceRef(provider='e2b', id='known')
 
 
 def test_foreign_reference_is_rejected() -> None:
     with pytest.raises(ValueError, match="expected 'e2b'"):
-        E2BWorkspaceBackend(ref=WorkspaceRef(provider='modal', id='other'))
+        E2BSandboxBackend(ref=WorkspaceRef(provider='modal', id='other'))
 
 
 def test_capability_declines_foreign_reference() -> None:
     ctx = RunContext(deps=None, model=TestModel(), usage=RunUsage())
-    assert E2BWorkspace().get_workspace(ctx, ref=WorkspaceRef(provider='modal', id='other')) is None
+    assert E2BSandbox().get_workspace(ctx, ref=WorkspaceRef(provider='modal', id='other')) is None
 
 
 async def test_native_handle_is_exposed_without_creation(fake_e2b: FakeE2B) -> None:
-    seed_backend = E2BWorkspaceBackend()
+    seed_backend = E2BSandboxBackend()
     native = await seed_backend.get_client()
     fake_e2b.create_calls.clear()
-    backend = E2BWorkspaceBackend(workspace=native)
+    backend = E2BSandboxBackend(workspace=native)
     assert backend.ref == WorkspaceRef(provider='e2b', id='sbx-1')
     assert await backend.get_client() is native
     assert not fake_e2b.create_calls
     with pytest.raises(ValueError, match='either `workspace` or `ref`'):
-        E2BWorkspaceBackend(workspace=native, ref=WorkspaceRef(provider='e2b', id='other'))
+        E2BSandboxBackend(workspace=native, ref=WorkspaceRef(provider='e2b', id='other'))
 
 
 async def test_agent_without_workspace_use_does_not_create(fake_e2b: FakeE2B) -> None:
-    agent = Agent(TestModel(custom_output_text='done'), capabilities=[E2BWorkspace()])
+    agent = Agent(TestModel(custom_output_text='done'), capabilities=[E2BSandbox()])
     result = await agent.run('hello')
     assert result.output == 'done'
     assert not fake_e2b.create_calls
 
 
 async def test_concurrent_first_use_creates_once(fake_e2b: FakeE2B) -> None:
-    backend = E2BWorkspaceBackend()
+    backend = E2BSandboxBackend()
     results: list[object] = []
 
     async def acquire() -> None:
@@ -73,7 +73,7 @@ async def test_concurrent_first_use_creates_once(fake_e2b: FakeE2B) -> None:
 
 
 async def test_capability_forwards_creation_options_and_run_does_not_kill(fake_e2b: FakeE2B) -> None:
-    capability = E2BWorkspace(
+    capability = E2BSandbox(
         template='base',
         sandbox_timeout=120,
         workdir='/work',
@@ -100,24 +100,24 @@ async def test_capability_forwards_creation_options_and_run_does_not_kill(fake_e
     assert fake_e2b.sandboxes[0].killed is False
     assert isinstance(result.workspace, Workspace)
     backend = result.workspace.backend
-    assert isinstance(backend, E2BWorkspaceBackend)
+    assert isinstance(backend, E2BSandboxBackend)
     native = await backend.get_client()
     await native.kill()
     assert fake_e2b.sandboxes[0].killed is True
 
 
 async def test_explicit_ref_uses_attach_even_with_creation_options(fake_e2b: FakeE2B) -> None:
-    capability = E2BWorkspace(template='base', env={'FOO': 'bar'}, metadata={'owner': 'test'})
+    capability = E2BSandbox(template='base', env={'FOO': 'bar'}, metadata={'owner': 'test'})
     ctx = RunContext(deps=None, model=TestModel(), usage=RunUsage())
     backend = capability.get_workspace(ctx, ref=WorkspaceRef(provider='e2b', id='existing'))
-    assert isinstance(backend, E2BWorkspaceBackend)
+    assert isinstance(backend, E2BSandboxBackend)
     await backend.get_client()
     assert fake_e2b.connect_calls == [('existing', None)]
     assert not fake_e2b.create_calls
 
 
 async def test_post_acquisition_operations_overlap(fake_e2b: FakeE2B) -> None:
-    backend = E2BWorkspaceBackend()
+    backend = E2BSandboxBackend()
     await backend.get_client()
     fake_e2b.command_hangs = True
 
@@ -135,9 +135,9 @@ async def test_post_acquisition_operations_overlap(fake_e2b: FakeE2B) -> None:
 
 
 async def test_agent_preserves_explicit_read_only_workspace(fake_e2b: FakeE2B) -> None:
-    backend = E2BWorkspaceBackend()
+    backend = E2BSandboxBackend()
     facade = ReadOnlyWorkspace(Workspace(backend))
-    agent = Agent(TestModel(call_tools=['check_workspace']), capabilities=[E2BWorkspace()])
+    agent = Agent(TestModel(call_tools=['check_workspace']), capabilities=[E2BSandbox()])
 
     @agent.tool
     async def check_workspace(ctx: RunContext[object]) -> str:
@@ -153,7 +153,7 @@ async def test_agent_preserves_explicit_read_only_workspace(fake_e2b: FakeE2B) -
 
 
 async def test_failed_acquisition_can_retry(fake_e2b: FakeE2B) -> None:
-    backend = E2BWorkspaceBackend()
+    backend = E2BSandboxBackend()
     fake_e2b.create_error = fake_e2b.error_type('temporary')
     with pytest.raises(WorkspaceError, match='temporary'):
         await backend.get_client()
@@ -163,7 +163,7 @@ async def test_failed_acquisition_can_retry(fake_e2b: FakeE2B) -> None:
 
 
 async def test_cancelled_acquisition_can_retry(fake_e2b: FakeE2B) -> None:
-    backend = E2BWorkspaceBackend()
+    backend = E2BSandboxBackend()
     fake_e2b.create_hangs = True
 
     async def acquire() -> None:
@@ -182,7 +182,7 @@ async def test_cancelled_acquisition_can_retry(fake_e2b: FakeE2B) -> None:
 
 
 async def test_agent_runs_without_history_create_fresh_workspaces(fake_e2b: FakeE2B) -> None:
-    agent = Agent(TestModel(call_tools=['run_command']), capabilities=[E2BWorkspace()])
+    agent = Agent(TestModel(call_tools=['run_command']), capabilities=[E2BSandbox()])
 
     @agent.tool
     async def run_command(ctx: RunContext[object]) -> str:
@@ -200,7 +200,7 @@ async def test_agent_history_attaches_same_workspace(fake_e2b: FakeE2B) -> None:
             return ModelResponse(parts=[TextPart(content='done')])
         return ModelResponse(parts=[ToolCallPart(tool_name='run_command', args={}, tool_call_id='call')])
 
-    agent = Agent(FunctionModel(model), capabilities=[E2BWorkspace()])
+    agent = Agent(FunctionModel(model), capabilities=[E2BSandbox()])
     tool_results: list[str] = []
 
     @agent.tool

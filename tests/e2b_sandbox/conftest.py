@@ -1,4 +1,4 @@
-"""Shared fixtures for E2BWorkspace tests."""
+"""Shared fixtures for E2BSandbox tests."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ def anyio_backend() -> str:
 
 
 _HAS_E2B = importlib.util.find_spec('e2b') is not None
-collect_ignore = [] if _HAS_E2B else ['test_backend.py', 'test_e2b_live.py', 'test_e2b_workspace.py']
+collect_ignore = [] if _HAS_E2B else ['test_backend.py', 'test_e2b_live.py', 'test_e2b_sandbox.py']
 
 if TYPE_CHECKING or _HAS_E2B:  # pragma: no branch - the SDK-installed and slim jobs take opposite branches
     from .fake_e2b import FakeE2B
@@ -33,7 +33,7 @@ class _PoisonedE2B(types.ModuleType):
 
     def __getattr__(self, name: str) -> object:  # pragma: no cover - tripwire, hit only by a misbehaving test
         raise AssertionError(
-            'An e2b_workspace unit test touched the real `e2b` package. '
+            'An e2b_sandbox unit test touched the real `e2b` package. '
             'Use the `fake_e2b` fixture, or mark the test `e2b_live`.'
         )
 
@@ -44,7 +44,7 @@ def _no_real_e2b(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
     if 'e2b_live' in request.keywords:  # pragma: no cover - live tier runs without coverage
         yield
         return
-    monkeypatch.setattr('pydantic_ai_harness.e2b_workspace._backend.e2b', _PoisonedE2B('e2b'))
+    monkeypatch.setattr('pydantic_ai_harness.e2b_sandbox._backend.e2b', _PoisonedE2B('e2b'))
     yield
 
 
@@ -54,5 +54,5 @@ if _HAS_E2B:  # pragma: no branch - the fixture cannot be defined without its SD
     def fake_e2b(monkeypatch: pytest.MonkeyPatch) -> Iterator[FakeE2B]:
         """Inject a fake `e2b` module and yield its control surface."""
         control = FakeE2B()
-        monkeypatch.setattr('pydantic_ai_harness.e2b_workspace._backend.e2b', control.module)
+        monkeypatch.setattr('pydantic_ai_harness.e2b_sandbox._backend.e2b', control.module)
         yield control

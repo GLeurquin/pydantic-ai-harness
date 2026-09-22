@@ -113,7 +113,7 @@ The workspace the agent acts in: the files it edits and the commands it runs, lo
 | [Daytona Workspace](daytona-workspace.md) | Harness | A [Daytona](https://www.daytona.io) backend for `ctx.workspace` |
 | [Modal Sandbox](modal-sandbox.md) | Harness | Commands and files in an isolated [Modal](https://modal.com) cloud sandbox |
 | [Modal Workspace](modal-workspace.md) | Harness | Modal-backed workspace operations for agent runs |
-| [E2B Workspace](e2b-workspace.md) | Harness | E2B-backed workspace operations for agent runs |
+| [E2B Sandbox](e2b-sandbox.md) | Harness | E2B-backed workspace operations for agent runs |
 
 ### Tools & native abilities
 

@@ -136,7 +136,7 @@ _CAPABILITY_PAGE_META = {
     'daytona-workspace.md': ('daytona_workspace', 'Daytona Workspace'),
     'modal-sandbox.md': ('modal_sandbox', 'Modal Sandbox'),
     'modal-workspace.md': ('modal_workspace', 'Modal Workspace'),
-    'e2b-workspace.md': ('e2b_workspace', 'E2B Workspace'),
+    'e2b-sandbox.md': ('e2b_sandbox', 'E2B Sandbox'),
     'repo-context.md': ('repo_context', 'Repo Context'),
     'repair-tool-arguments.md': ('repair_tool_arguments', 'Repair Tool Arguments'),
     'researcher.md': ('researcher', 'Researcher'),
