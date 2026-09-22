@@ -55,7 +55,9 @@ The router creates an internal agent named `model_router`. Its `output_type` is 
 
 The routing input is the normalized message history serialized as JSON. On the first step it also carries the run's new prompt, which Pydantic AI's bootstrap `ModelSelectionContext` does not contain yet -- so a fresh run's very first step is routed from the user's own question rather than defaulting. A router on another provider therefore receives the conversation content used to make the decision.
 
-That input is not bounded. In `'per_step'` mode each routing request grows with the conversation, so a long run eventually spends more on routing than the choice is worth, and a history that outgrows the router's context window fails the request and falls back to `default`. Pair `'per_step'` routing with [compaction](compaction.md): the compacted history is what the router reads, which is usually what you wanted it to read anyway.
+That input is not bounded. In `'per_step'` mode each routing request grows with the conversation, so a long run eventually spends more on routing than the choice is worth, and a history that outgrows the router's context window fails the request and falls back to `default`. Pair `'per_step'` routing with [compaction](compaction.md) to bound it: the compacted history is what the router reads, which is usually what you wanted it to read anyway.
+
+Routing reads that history one step behind compaction. Pydantic AI selects the step's model before `before_model_request` runs, and `before_model_request` is where compaction rewrites the history, so on the step that compacts, the router is handed the history compaction is about to replace -- the largest the history ever gets. Size the router's context window against the point compaction triggers, not against the compacted result.
 
 ## When routing runs
 
@@ -112,6 +114,8 @@ The internal agent name `model_router` also lets Logfire group its requests, tok
 ## Composition and execution constraints
 
 `ModelRouter` implements Pydantic AI's existing [`get_model()`](/ai/capabilities/custom/#selecting-the-model) hook. A model passed directly to `run(model=...)`, through a run spec, or through `agent.override(model=...)` takes precedence and skips capability routing. `ModelRouter` takes precedence over the model passed to the `Agent` constructor. When several capabilities contribute a model, Pydantic AI uses the last contribution.
+
+Selection also runs before `before_model_request` and `wrap_model_request`, so a capability that gates or rewrites the prompt at either point does not cover the router request. An [`InputGuardrail`](guardrails.md) acts when the parent model request is made, by which time the router has already sent the original prompt to `router_model` and been billed for it, and it is still sent when the guard then blocks the parent call. Keep `router_model` inside the same trust boundary as the models in `choices`, and enforce any policy about content that must never leave that boundary before the run rather than inside it.
 
 The router request shares the parent run's `RunUsage` and usage limits, so its tokens, cost, and requests count toward the run limits and totals. It reserves one request for the pending parent model call.
 

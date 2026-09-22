@@ -12,6 +12,8 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.instrumented import InstrumentationSettings
 from pydantic_ai.usage import UsageLimits
 
+from pydantic_ai_harness.compaction import SummarizingCompaction
+from pydantic_ai_harness.guardrails import GuardrailResult, InputGuardrail
 from pydantic_ai_harness.model_router import ModelChoice, ModelRouter
 from tests.conftest import agent_run_names  # pyright: ignore[reportMissingTypeStubs]
 
@@ -314,3 +316,95 @@ class TestModelRouter:
 
     async def test_not_agent_spec_serializable(self) -> None:
         assert ModelRouter.get_serialization_name() is None
+
+
+class TestCompositionConstraints:
+    """Pin what the README promises about routing's place in the step, which core's order fixes."""
+
+    @pytest.fixture
+    def anyio_backend(self) -> str:
+        return 'asyncio'
+
+    async def test_per_step_routing_reads_the_history_one_step_behind_compaction(self) -> None:
+        """Compaction bounds the routing input, but the compacting step routes on the old history."""
+        routing_inputs: list[str] = []
+        steps = 6
+
+        def inspect(messages: list[ModelMessage], _info: AgentInfo) -> None:
+            prompt = messages[-1].parts[-1]
+            assert isinstance(prompt, UserPromptPart)
+            assert isinstance(prompt.content, str)
+            routing_inputs.append(prompt.content)
+
+        step = 0
+
+        def main(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:
+            nonlocal step
+            step += 1
+            if step < steps:
+                return ModelResponse(parts=[ToolCallPart('work', {'n': step})])
+            return ModelResponse(parts=[TextPart('done')])
+
+        main_model = FunctionModel(main)
+        router = ModelRouter[None](
+            choices={'fast': ModelChoice(main_model, 'Use for everything.')},
+            router_model=_router_model('fast', inspect=inspect),
+            default='fast',
+            mode='per_step',
+        )
+        compaction = SummarizingCompaction[None](
+            model=_answer_model('SUMMARY'), max_messages=4, keep_messages=2, preserve_first_user_message=False
+        )
+        agent = Agent[None, str](main_model, deps_type=type(None), capabilities=[router, compaction])
+
+        @agent.tool_plain
+        def work(n: int) -> str:
+            return f'PAYLOAD-{n} ' + 'z' * 200
+
+        result = await agent.run('start the work')
+        assert result.output == 'done'
+        assert len(routing_inputs) == steps
+
+        summarized = ['SUMMARY' in routing_input for routing_input in routing_inputs]
+        assert summarized == [False, False, False, True, True, True], (
+            'the step that compacts routes on the history compaction is about to replace'
+        )
+        # Past that step the router reads the compacted history, so its input stops growing.
+        assert len(set(len(routing_input) for routing_input in routing_inputs[3:])) == 1
+        assert max(len(routing_input) for routing_input in routing_inputs) == len(routing_inputs[2])
+
+    async def test_an_input_guardrail_does_not_cover_the_router_request(self) -> None:
+        """Selection precedes `wrap_model_request`, so the guard cannot gate the router's own call."""
+        secret = 'my api_key is sk-TOPSECRET'
+        routed_prompts: list[str] = []
+        answered = False
+
+        def inspect(messages: list[ModelMessage], _info: AgentInfo) -> None:
+            prompt = messages[-1].parts[-1]
+            assert isinstance(prompt, UserPromptPart)
+            assert isinstance(prompt.content, str)
+            routed_prompts.append(prompt.content)
+
+        def answer(_messages: list[ModelMessage], _info: AgentInfo) -> ModelResponse:  # pragma: no cover
+            nonlocal answered
+            answered = True
+            return ModelResponse(parts=[TextPart('answered')])
+
+        def no_secrets(prompt: str) -> GuardrailResult:
+            if 'api_key' in prompt.lower():
+                return GuardrailResult.block('looks like an API key')
+            return GuardrailResult.allow()  # pragma: no cover
+
+        agent = Agent(
+            capabilities=[
+                _router(_router_model('fast', inspect=inspect), fast_model=FunctionModel(answer)),
+                InputGuardrail(guard=no_secrets),
+            ]
+        )
+
+        result = await agent.run(secret)
+
+        assert result.output == 'looks like an API key'
+        assert not answered, 'the guard blocked the parent call'
+        assert len(routed_prompts) == 1, 'the router ran even though the parent call was skipped'
+        assert secret in routed_prompts[0], 'the router was sent the unredacted prompt'
