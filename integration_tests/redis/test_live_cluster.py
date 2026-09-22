@@ -82,7 +82,8 @@ class TestRedisSpendStoreCluster:
 
     async def test_untagged_windows_are_rejected_by_the_server(self, cluster: RedisCluster) -> None:
         """Removing the braces makes Redis itself reject the same window keys."""
-        prefix = f'harness-cluster-test:{uuid.uuid4().hex}'
+        # This read-only script needs no namespace isolation; fix the slot pair.
+        prefix = 'harness-cluster-negative-control'
         day, month = f'{prefix}:day', f'{prefix}:month'
         node = cluster.get_node_from_key(day)
         assert node is not None
