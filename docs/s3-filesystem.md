@@ -47,6 +47,8 @@ Without explicit credentials, file operations use boto3's normal credential chai
 
 S3 is not a POSIX filesystem. Renames are non-atomic copies, and random writes or appends may rewrite an entire object.
 
+Command access through `s3fs` can be slower than direct file operations, especially for metadata-heavy workloads and small or random reads and writes. Each operation crosses the workspace kernel's FUSE interface into `s3fs`, which may need one or more S3 requests to emulate POSIX behavior. Large sequential transfers may still be dominated by network throughput. Prefer the workspace file methods for whole-file operations; use the mount when a command specifically needs a filesystem path.
+
 ## API reference
 
 ::: pydantic_ai_harness.s3_filesystem.S3Filesystem
