@@ -117,6 +117,8 @@ A tool registered with `requires_approval=True` and a judge are two gates, and b
 
 So the judge is the second gate, not the first, and the effective rule is that both must allow. The judge can still block a call a person approved; it can never release one a person denied, because a denied call never reaches execution.
 
+What the judge cannot do is ask again. A person's approval answers the `'ask'` question for that call, so on an approved call an `on_uncertain='ask'` policy allows it rather than raising a second approval request. Without that, a judge that stays uncertain -- one that is down, or one whose question the call genuinely cannot settle -- would hand the same person the same question after every approval and the call would never run. This applies to the judge's own escalation and to a `requires_approval=True` tool alike; `yes` still blocks either.
+
 That ordering follows from where each gate sits in the agent loop rather than from a policy this capability chose, and it is the conservative direction: adding a judge to a tool that already asks a person can only narrow what runs.
 
 Use the combination when a person approves the intent and the judge checks the arguments -- a reviewer approving "yes, clean up the old exports" does not want to re-read every path. Use `on_uncertain='ask'` instead of `requires_approval=True` when you want the judge to decide which calls are worth a person's attention.
@@ -185,9 +187,13 @@ Destructive tools get a strict question that escalates to a person when the judg
 
 Judges evaluate in capability order and the first block wins: once one judge blocks a call, the remaining judges' hooks do not run and neither does the tool. Order the strict, cheap judge first when the second one's cost matters.
 
-Each judge's model usage is added to the outer run's usage and respects its usage limits, so a judged run's request and token totals include what judging cost.
+Each judge's model usage is added to the outer run's usage and respects its usage limits, so a judged run's request and token totals include what judging cost. A judgement claims its request on the shared usage before it calls the model, so calls judged in parallel (the model requested several at once, or several judges are configured) see each other's in-flight requests and the run's `request_limit` bounds the judges too. A judgement the budget cannot fit is not made, and `on_uncertain` decides the call.
 
 Judging adds a model request in the path of every selected tool call, before the tool runs. Scope `tools` to the calls where the answer can change what happens.
+
+## Durable execution
+
+A judged run inside a durable workflow or flow (Temporal, DBOS, Prefect) is rejected with `UserError` before the first model request. The judgement is made from `before_tool_execute`, which runs in orchestration context rather than inside a checkpointed unit, so the judge's model call would be repeated on every replay: billed again each time, and free to answer differently, which would make the same call allowed on one replay and blocked on the next. Run judged work outside durable execution. A durable-capable agent run outside its workflow or flow keeps its judge.
 
 ## Observability
 

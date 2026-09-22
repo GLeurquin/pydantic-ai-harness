@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import is_dataclass
 from typing import TYPE_CHECKING, Any, Literal
@@ -13,7 +14,8 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import NoOpTracer, Tracer
 from pydantic_ai import Agent, AgentSpec, DeferredToolRequests
-from pydantic_ai.exceptions import ApprovalRequired, SkipToolExecution, UserError
+from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.exceptions import ApprovalRequired, SkipToolExecution, UsageLimitExceeded, UserError
 from pydantic_ai.messages import (
     ImageUrl,
     ModelMessage,
@@ -34,7 +36,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import DeferredToolResults, RunContext, ToolDefinition
-from pydantic_ai.usage import RunUsage
+from pydantic_ai.usage import RunUsage, UsageLimits
 
 from pydantic_ai_harness.tool_call_judge import ToolCallJudge, ToolCallVerdict
 from tests.conftest import agent_run_names  # pyright: ignore[reportMissingTypeStubs]
@@ -77,6 +79,17 @@ def _judge_model(
             parts=[ToolCallPart(output_tool.name, {'response': answer})],
             provider_details=details,
         )
+
+    return FunctionModel(respond)
+
+
+def _yielding_judge_model(answer: Literal['yes', 'no', 'unsure'], *, calls: list[str]) -> FunctionModel:
+    """A judge that yields to the event loop, so parallel judgements overlap."""
+
+    async def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        calls.append(answer)
+        await asyncio.sleep(0)
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, {'response': answer})])
 
     return FunctionModel(respond)
 
@@ -478,6 +491,28 @@ class TestHumanApproval:
         assert ran == []
         assert [part.content for part in returns] == ['judge blocked danger']
 
+    async def test_an_approved_call_the_judge_is_still_unsure_about_runs(self) -> None:
+        """`on_uncertain='ask'` must reach the tool: core re-judges the approved call."""
+        ran: list[str] = []
+        verdicts: list[ToolCallVerdict] = []
+        agent = _agent(
+            _judge(_judge_model('unsure'), on_uncertain='ask', on_verdict=verdicts.append),
+            _outer_model(ToolCallPart('danger', {'x': 1}, tool_call_id='call-1')),
+            ran=ran,
+        )
+
+        first = await agent.run('go')
+        assert isinstance(first.output, DeferredToolRequests)
+        assert [call.tool_name for call in first.output.approvals] == ['danger']
+
+        second = await agent.run(
+            message_history=first.all_messages(),
+            deferred_tool_results=DeferredToolResults(approvals={'call-1': True}),
+        )
+        assert second.output == 'done'
+        assert ran == ['danger:1'], 'an approved call must run instead of being asked about again'
+        assert [v.verdict for v in verdicts] == ['ask', 'allow']
+
     async def test_ask_defers_the_call_for_a_person(self) -> None:
         judge = _judge(_judge_model('unsure'), on_uncertain='ask')
         with pytest.raises(ApprovalRequired):
@@ -487,6 +522,79 @@ class TestHumanApproval:
                 tool_def=_tool_def(),
                 args={'x': 1},
             )
+
+
+class TestUsageAccounting:
+    async def test_parallel_judgements_share_the_runs_request_budget(self) -> None:
+        """Judging sibling calls concurrently must not bill past the run's `request_limit`."""
+        judge_calls: list[str] = []
+        ran: list[str] = []
+        agent = _agent(
+            _judge(_yielding_judge_model('no', calls=judge_calls)),
+            _outer_model(
+                ToolCallPart('danger', {'x': 1}, tool_call_id='call-1'),
+                ToolCallPart('danger', {'x': 2}, tool_call_id='call-2'),
+                ToolCallPart('danger', {'x': 3}, tool_call_id='call-3'),
+            ),
+            ran=ran,
+        )
+
+        usage = RunUsage()
+        with pytest.raises(UsageLimitExceeded):
+            await agent.run('go', usage=usage, usage_limits=UsageLimits(request_limit=2))
+
+        assert usage.requests == 2, 'the judges billed past the run request limit'
+        assert judge_calls == ['no'], 'only the judgement the budget affords reaches the model'
+
+
+class TestDurableExecution:
+    async def test_rejected_inside_a_durable_container(self) -> None:
+        """A judged run inside a durable workflow or flow fails fast, before any model request."""
+
+        class DBOSDurability(AbstractCapability[None]):
+            in_durable_context = True
+
+        DBOSDurability.__module__ = 'pydantic_ai.durable_exec.dbos'
+
+        agent: Agent[None, str] = Agent(
+            _outer_model(ToolCallPart('danger', {'x': 1}, tool_call_id='call-1')),
+            deps_type=type(None),
+            capabilities=[_judge(_judge_model('no')), DBOSDurability()],
+        )
+
+        @agent.tool_plain
+        def danger(x: int) -> str:  # pragma: no cover - the run is rejected before any tool runs
+            return 'danger ran'
+
+        with pytest.raises(UserError, match='durable workflow or flow'):
+            await agent.run('go')
+
+    async def test_durable_capable_agent_outside_its_container_is_judged(self) -> None:
+        """Only the durable container is rejected; the same agent run plainly keeps its judge."""
+
+        class DBOSDurability(AbstractCapability[None]):
+            in_durable_context = False
+
+        DBOSDurability.__module__ = 'pydantic_ai.durable_exec.dbos'
+
+        verdicts: list[ToolCallVerdict] = []
+        agent: Agent[None, str] = Agent(
+            _outer_model(ToolCallPart('danger', {'x': 1}, tool_call_id='call-1')),
+            deps_type=type(None),
+            capabilities=[_judge(_judge_model('yes'), on_verdict=verdicts.append), DBOSDurability()],
+        )
+
+        ran: list[str] = []
+
+        @agent.tool_plain
+        def danger(x: int) -> str:  # pragma: no cover - the judge blocks the call
+            ran.append('danger')
+            return 'danger ran'
+
+        result = await agent.run('go')
+        assert result.output == 'done'
+        assert ran == []
+        assert [v.verdict for v in verdicts] == ['block']
 
 
 class TestComposition:
