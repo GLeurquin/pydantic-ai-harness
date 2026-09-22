@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import stat
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, DeltaToolCalls, FunctionModel
 
+from examples.manage_long_context import InvestigationState  # pyright: ignore[reportMissingTypeStubs]
 from examples.manage_long_context import build_agent as build_context_agent  # pyright: ignore[reportMissingTypeStubs]
 from examples.protect_coding_agent_secrets import (  # pyright: ignore[reportMissingTypeStubs]
     build_agent as build_secret_agent,
@@ -46,6 +48,7 @@ async def test_file_migration_reconciles_a_failed_side_effect(tmp_path: Path, mo
     worker = config_dir / 'worker.yaml'
     for path in (api, worker):
         path.write_text(json.dumps({'schema_version': 1, 'service': path.stem}))
+        path.chmod(0o600)
 
     writes: list[str] = []
     original_replace = Path.replace
@@ -98,6 +101,8 @@ async def test_file_migration_reconciles_a_failed_side_effect(tmp_path: Path, mo
     )
     assert json.loads(api.read_text())['schema_version'] == 2
     assert json.loads(worker.read_text())['schema_version'] == 2
+    assert stat.S_IMODE(api.stat().st_mode) == 0o600
+    assert stat.S_IMODE(worker.stat().st_mode) == 0o600
 
 
 async def test_secret_controls_cover_files_shell_results_and_output(
@@ -105,23 +110,25 @@ async def test_secret_controls_cover_files_shell_results_and_output(
 ) -> None:
     secret = 'sk-123456789012345678901234'
     (tmp_path / '.env').write_text(f'OPENAI_API_KEY={secret}\n')
+    (tmp_path / 'build.log').write_text(f'Build failed while using token {secret}\n')
     monkeypatch.setenv('OPENAI_API_KEY', secret)
 
     async def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         del info
         calls = [
-            part.tool_name
+            part
             for message in messages
             if isinstance(message, ModelResponse)
             for part in message.parts
             if isinstance(part, ToolCallPart)
         ]
-        if 'read_file' not in calls:
+        read_paths = [str(call.args_as_dict()['path']) for call in calls if call.tool_name == 'read_file']
+        if '.env' not in read_paths:
             return ModelResponse(parts=[ToolCallPart('read_file', {'path': '.env'})])
-        if calls.count('run_command') == 0:
+        if not any(call.tool_name == 'run_command' for call in calls):
             return ModelResponse(parts=[ToolCallPart('run_command', {'command': 'env'})])
-        if calls.count('run_command') == 1:
-            return ModelResponse(parts=[ToolCallPart('run_command', {'command': 'cat .env'})])
+        if 'build.log' not in read_paths:
+            return ModelResponse(parts=[ToolCallPart('read_file', {'path': 'build.log'})])
         return ModelResponse(parts=[TextPart(f'The build is healthy. I found {secret}.')])
 
     agent = build_secret_agent(FunctionModel(model_fn), workspace=tmp_path)
@@ -159,6 +166,14 @@ async def test_tiered_compaction_preserves_tool_pairing_and_reports_usage() -> N
                 )
             }
         else:
+            retained = [
+                str(part.content)
+                for message in messages
+                if isinstance(message, ModelRequest)
+                for part in message.parts
+                if isinstance(part, ToolReturnPart) and part.tool_name == 'read_record'
+            ]
+            assert retained and 'retained findings=3, 7' in retained[-1]
             yield 'Records 3 and 7 need attention.'
 
     agent = build_context_agent(
@@ -167,7 +182,9 @@ async def test_tiered_compaction_preserves_tool_pairing_and_reports_usage() -> N
         target_fraction=0.25,
         fallback_context_window=200,
     )
-    result = await agent.run('Inspect records 1 through 8 and identify those that need attention.')
+    result = await agent.run(
+        'Inspect records 1 through 8 and identify those that need attention.', deps=InvestigationState()
+    )
 
     assert result.output == 'Records 3 and 7 need attention.'
     final_request = requests[-1]

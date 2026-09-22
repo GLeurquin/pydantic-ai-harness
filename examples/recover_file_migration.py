@@ -3,6 +3,8 @@
 import asyncio
 import json
 import os
+import stat
+import tempfile
 from pathlib import Path
 from uuid import uuid4
 
@@ -58,9 +60,15 @@ def build_agent(
             effect_summary=f'Atomically replace {path} with schema version 2.',
         )
         data['schema_version'] = 2
-        temporary = target.with_suffix(f'{target.suffix}.tmp')
-        temporary.write_text(json.dumps(data, indent=2) + '\n')
-        temporary.replace(target)
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f'.{target.name}.', dir=target.parent)
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, 'w') as file:
+                file.write(json.dumps(data, indent=2) + '\n')
+            temporary.chmod(stat.S_IMODE(target.stat().st_mode))
+            temporary.replace(target)
+        finally:
+            temporary.unlink(missing_ok=True)
         return f'Migrated {path} to schema version 2.'
 
     return agent
@@ -100,6 +108,9 @@ async def main() -> None:
             run_id=run_id,
         )
     except Exception:
+        recovery = await inspect_recovery(store=store, run_id=run_id)
+        if recovery.settled is None:
+            raise
         result = await resume_migration(agent, store, failed_run_id=run_id)
     print(result.output)
 

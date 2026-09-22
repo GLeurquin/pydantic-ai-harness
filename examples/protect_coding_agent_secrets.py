@@ -18,6 +18,7 @@ _SECRET_PATHS = ['.env', '.env.*', '*.pem', '*.key', '**/secrets*']
 def build_agent(model: Model | str = DEFAULT_MODEL, *, workspace: Path | None = None) -> Agent[object, str]:
     """Build a local coding agent with layered secret controls."""
     root = (workspace or Path.cwd()).resolve()
+    minimal_env = {'PATH': os.environ.get('PATH', '')}
     return Agent(
         model,
         name='secret_safe_coder',
@@ -33,7 +34,8 @@ def build_agent(model: Model | str = DEFAULT_MODEL, *, workspace: Path | None = 
             ),
             Shell(
                 cwd=root,
-                allowed_commands=['cat', 'env', 'grep'],
+                allowed_commands=['env'],
+                env=minimal_env,
                 denied_env_patterns=LLM_API_KEY_ENV_PATTERNS,
                 tools=['run_command'],
             ),

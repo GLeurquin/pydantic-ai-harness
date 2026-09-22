@@ -20,11 +20,12 @@ composition with deterministic models and local fixtures.
 
 ### Keep a tool-heavy run within its context window
 
-`manage_long_context.py` applies cheap compaction before destructive trimming. Old verbose tool
-results are cleared while recent call/return pairs remain intact; if that is insufficient, the
-history is trimmed only at a provider-valid boundary. `ReportContextUsage` then reports the
-post-compaction request size, including whether the context-window figure came from the model
-profile or the configured fallback.
+`manage_long_context.py` applies cheap compaction before destructive trimming. The record tool
+carries important findings forward in typed run state and includes the accumulated list in later
+results, so clearing an old verbose result does not discard the finding it contained. Recent
+call/return pairs remain intact; if clearing is insufficient, history is trimmed only at a
+provider-valid boundary. `ReportContextUsage` then reports the post-compaction request size,
+including whether the context-window figure came from the model profile or the configured fallback.
 
 Token estimation uses the configured tokenizer or a character heuristic. It is a budgeting signal,
 not provider billing data. Registering the optional context observer consumes the agent's event stream,
@@ -35,12 +36,14 @@ so a custom model implementation must support streamed requests.
 `protect_coding_agent_secrets.py` applies controls at four different boundaries:
 
 1. `FileSystem.denied_patterns` keeps known secret paths out of file tools.
-2. `Shell.denied_env_patterns` removes common model-provider credentials from child-process environments.
-3. `ToolGuardrail` redacts credentials returned by allowed shell commands.
+2. `Shell.env` starts its only allowed command (`env`) with a minimal environment, while
+   `denied_env_patterns` removes common model-provider credential names if the allowlist expands.
+3. `ToolGuardrail` redacts credentials returned by allowed file or shell tools.
 4. `OutputGuardrail` redacts credentials in the final value returned to the caller.
 
-File policy does not constrain shell commands, and these controls are not an OS sandbox. Run
-untrusted commands under a separate operating-system identity or an isolated execution environment.
+File policy does not constrain shell commands, so the example does not expose a general-purpose
+file-reading command through `Shell`. These controls are not an OS sandbox. Run untrusted commands
+under a separate operating-system identity or an isolated execution environment.
 Output redaction changes `result.output`; retain and protect the underlying model transcript according
 to your data policy.
 

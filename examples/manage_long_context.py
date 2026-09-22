@@ -2,6 +2,7 @@
 
 import os
 from collections.abc import Callable
+from dataclasses import dataclass, field
 
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models import Model
@@ -19,17 +20,25 @@ DEFAULT_MODEL = os.environ.get('PYDANTIC_AI_MODEL', 'anthropic:claude-fable-5')
 ContextObserver = Callable[[ContextUsageEvent], None]
 
 
+@dataclass
+class InvestigationState:
+    """Findings that must survive destructive history compaction."""
+
+    findings: list[int] = field(default_factory=list[int])
+
+
 def build_agent(
     model: Model | str = DEFAULT_MODEL,
     *,
     observe_context: ContextObserver | None = None,
     target_fraction: float = 0.75,
     fallback_context_window: int = 200_000,
-) -> Agent[object, str]:
+) -> Agent[InvestigationState, str]:
     """Build an investigator that clears old tool output before trimming history."""
-    agent: Agent[object, str] = Agent(
+    agent: Agent[InvestigationState, str] = Agent(
         model,
         name='bounded_investigator',
+        deps_type=InvestigationState,
         instructions=(
             'Inspect records one at a time. Keep the original investigation goal in view, '
             'and finish with a concise list of the records that need attention.'
@@ -48,16 +57,21 @@ def build_agent(
     )
 
     @agent.tool
-    async def read_record(ctx: RunContext[object], record_id: int) -> str:
-        """Read one verbose local diagnostic record."""
-        del ctx
-        status = 'needs attention' if record_id in {3, 7} else 'healthy'
-        return f'Record {record_id}: status={status}; details=' + ('diagnostic context ' * 80)
+    async def read_record(ctx: RunContext[InvestigationState], record_id: int) -> str:
+        """Read one record and carry important findings into later results."""
+        needs_attention = record_id in {3, 7}
+        if needs_attention and record_id not in ctx.deps.findings:
+            ctx.deps.findings.append(record_id)
+        status = 'needs attention' if needs_attention else 'healthy'
+        retained = ', '.join(str(item) for item in ctx.deps.findings) or 'none'
+        return f'Record {record_id}: status={status}; retained findings={retained}; details=' + (
+            'diagnostic context ' * 80
+        )
 
     if observe_context is not None:
 
         @agent.on_event(ContextUsageEvent)
-        async def observe(ctx: RunContext[object], event: ContextUsageEvent) -> None:
+        async def observe(ctx: RunContext[InvestigationState], event: ContextUsageEvent) -> None:
             del ctx
             observe_context(event)
 
@@ -71,7 +85,7 @@ def main() -> None:
         source = 'model profile' if event.resolved else 'configured fallback'
         print(f'context: {event.used_tokens}/{event.window_tokens} tokens ({source})')
 
-    build_agent(observe_context=report).to_cli_sync()
+    build_agent(observe_context=report).to_cli_sync(deps=InvestigationState())
 
 
 if __name__ == '__main__':
