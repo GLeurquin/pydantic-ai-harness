@@ -326,7 +326,7 @@ class RedisSpendStore:
     async def get_many(self, keys: Sequence[str]) -> Mapping[str, Spent]:
         """What each key has accumulated. An absent hash reads as zero.
 
-        Two round trips per key while the pre-hash-tag fallback is in place: the key's own
+        Two round trips per key: the key's own
         hash, and the one an earlier release would have written; see `_before_hash_tags`.
         """
         totals: dict[str, Spent] = {}
@@ -340,7 +340,7 @@ class RedisSpendStore:
 
         One unit of work: every window of the response lands or none does, and the script
         returns each new total, so the totals need no second read. What does cost a read
-        is the pre-hash-tag fallback, one per key, until it goes away; see `_before_hash_tags`.
+        is the pre-hash-tag fallback, one per key; see `_before_hash_tags`.
 
         A failure before the server runs the script -- the client cannot connect, the
         request never lands -- writes nothing. A failure after it does not say which:
@@ -389,13 +389,9 @@ class RedisSpendStore:
             for entry, row in zip(entries, rows)
         }
 
-    # `_before_hash_tags` and `_legacy_name` carry counters written before the keys gained a
-    # hash tag. Delete both and their three call sites (`get_many` and the two in `add_many`)
-    # in 0.28.0 -- but not as a bare deletion: a `total` window never expires and a
-    # `retain='forever'` one does not either, so whatever is still under the old name is
-    # subtracted from the enforced total the moment the fallback goes. What that release owes
-    # an operator is settled in
-    # <https://github.com/pydantic/pydantic-ai-harness/issues/694>.
+    # Keep legacy reads: `total` and `retain='forever'` counters need not expire, and
+    # get_many receives no retention metadata with which to distinguish them.
+    # See https://github.com/pydantic/pydantic-ai-harness/issues/694.
     async def _before_hash_tags(self, key: str) -> Spent:
         """What this budget key accumulated under the name an earlier release used.
 
