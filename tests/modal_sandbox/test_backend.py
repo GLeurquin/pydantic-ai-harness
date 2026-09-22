@@ -16,15 +16,15 @@ from pydantic_ai.workspaces import (
     WorkspaceUnavailableError,
 )
 
-from pydantic_ai_harness.modal_workspace import ModalWorkspaceBackend
+from pydantic_ai_harness.modal_sandbox import ModalSandboxBackend
 
 from .fake_modal import FakeModal, FileInfo
 
 pytestmark = pytest.mark.anyio(backends=['asyncio'])
 
 
-async def started(**settings: Any) -> ModalWorkspaceBackend:
-    backend = ModalWorkspaceBackend(**settings)
+async def started(**settings: Any) -> ModalSandboxBackend:
+    backend = ModalSandboxBackend(**settings)
     await backend.get_client()
     return backend
 
@@ -246,7 +246,7 @@ class TestRun:
 class TestWorkingDir:
     async def test_configured_workdir_is_resolved_before_first_operation(self, fake_modal: FakeModal) -> None:
         fake_modal.responder = lambda argv, timeout: ('/canonical/work\n', '', 0)
-        backend = ModalWorkspaceBackend(workdir='/alias')
+        backend = ModalSandboxBackend(workdir='/alias')
         assert await backend.working_dir() == '/canonical/work'
         assert backend.ref is not None
 
@@ -292,7 +292,7 @@ class TestWorkingDir:
 class TestCreate:
     @pytest.mark.parametrize('operation', ['run', 'write_bytes'])
     async def test_ref_is_recorded_by_the_first_operation(self, fake_modal: FakeModal, operation: str) -> None:
-        backend = ModalWorkspaceBackend()
+        backend = ModalSandboxBackend()
         assert backend.ref is None
         if operation == 'run':
             await backend.run(['true'])
@@ -364,7 +364,7 @@ class TestConnect:
 
     async def test_an_operation_on_a_gone_sandbox_does_not_create_a_replacement(self, fake_modal: FakeModal) -> None:
         fake_modal.attach_error = fake_modal.unavailable_type('not found')
-        backend = ModalWorkspaceBackend(ref=WorkspaceRef(provider='modal', id='sb-nope'))
+        backend = ModalSandboxBackend(ref=WorkspaceRef(provider='modal', id='sb-nope'))
         for _ in range(2):
             with pytest.raises(WorkspaceUnavailableError, match="'sb-nope'"):
                 await backend.run(['true'])
