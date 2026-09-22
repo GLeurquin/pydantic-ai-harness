@@ -91,7 +91,7 @@ async def resume_migration(
     return await agent.run(
         f'Resume the migration. Re-read each target before retrying; failed tools: {failed}.',
         message_history=history,
-        run_id=f'{failed_run_id}-recovery',
+        run_id=f'{failed_run_id}-recovery-{uuid4().hex[:12]}',
     )
 
 

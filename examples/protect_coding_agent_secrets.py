@@ -46,8 +46,10 @@ def build_agent(model: Model | str = DEFAULT_MODEL, *, workspace: Path | None = 
 
 
 def main() -> None:
-    """Start an interactive coding session in the current directory."""
-    build_agent().to_cli_sync()
+    """Run one screened request without exposing partial streamed output."""
+    request = input('What should the coding agent inspect? ')
+    result = build_agent().run_sync(request)
+    print(result.output)
 
 
 if __name__ == '__main__':

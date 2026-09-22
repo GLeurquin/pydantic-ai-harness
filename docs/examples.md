@@ -45,7 +45,8 @@ File policy does not constrain shell commands, so the example does not expose a 
 file-reading command through `Shell`. These controls are not an OS sandbox. Run untrusted commands
 under a separate operating-system identity or an isolated execution environment.
 Output redaction changes `result.output`; retain and protect the underlying model transcript according
-to your data policy.
+to your data policy. The example uses `run_sync()` so the guard screens the complete output before it
+is exposed. Do not stream partial text to callers when final-output screening is a requirement.
 
 ### Recover a partially applied migration
 
