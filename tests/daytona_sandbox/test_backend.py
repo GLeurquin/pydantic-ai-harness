@@ -324,18 +324,6 @@ async def test_argv_rejects_shell_mode(fake_daytona: FakeDaytona) -> None:
         await DaytonaSandboxBackend().run(['true'], shell=True)
 
 
-async def test_client_cleanup_failure_can_be_retried(fake_daytona: FakeDaytona) -> None:
-    backend = await started()
-    error = RuntimeError('client close failed')
-    fake_daytona.close_error = error
-    with pytest.raises(WorkspaceError) as caught:
-        await backend.disconnect()
-    assert caught.value.__cause__ is error
-    fake_daytona.close_error = None
-    await backend.disconnect()
-    assert fake_daytona.closed_clients == 1
-
-
 async def test_working_directory_is_cached(fake_daytona: FakeDaytona) -> None:
     backend = DaytonaSandboxBackend()
     first = await backend.working_dir()
@@ -370,7 +358,6 @@ async def test_supplied_client_is_used_and_never_closed(fake_daytona: FakeDayton
     backend = DaytonaSandboxBackend(client=client)
     await backend.get_client()
     assert fake_daytona.sandboxes[0].client is client
-    await backend.disconnect()
     assert fake_daytona.closed_clients == 0
 
 

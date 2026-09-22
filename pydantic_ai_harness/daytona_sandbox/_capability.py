@@ -30,7 +30,7 @@ class DaytonaSandbox(AbstractCapability[AgentDepsT]):
 
     client: AsyncDaytona | None = None
     """A caller-owned `daytona.AsyncDaytona` client. When omitted, the backend creates one while
-    acquiring the workspace and closes it again on release; supply one to keep the client open
+    acquiring the workspace and keeps it for its own lifetime; supply one to share the client
     across runs and own its lifecycle with `async with AsyncDaytona() as client:`."""
 
     snapshot: str | None = None

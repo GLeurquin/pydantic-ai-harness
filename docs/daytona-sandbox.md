@@ -81,9 +81,10 @@ async def resume(ref: WorkspaceRef) -> str:
 
 Retain a `DaytonaSandboxBackend` and call `await backend.get_client()` to obtain the typed `daytona.AsyncSandbox`. The first call creates or attaches to the environment; later calls return the same object. An existing native handle can be supplied with `DaytonaSandboxBackend(workspace=native)`. Supply either a native handle or `ref=`, not both; the caller retains ownership of an injected handle and its SDK client.
 
-Without `client=`, the backend creates and owns its `AsyncDaytona` API client on first acquisition. Retain that backend and call `disconnect()` in `finally`. This example also deletes the remote workspace using the native SDK:
+Without `client=`, the backend creates its own `AsyncDaytona` API client from the environment on first acquisition and keeps it for its lifetime. To control when local HTTP connections close, construct the client yourself and pass `client=`. This example owns the client and deletes the remote workspace through the native SDK after the run:
 
 ```python
+from daytona import AsyncDaytona
 from pydantic_ai import Agent, RunContext
 from pydantic_ai_harness.daytona_sandbox import DaytonaSandboxBackend
 
@@ -94,19 +95,17 @@ async def working_directory(ctx: RunContext[None]) -> str:
     return await ctx.workspace.working_dir()
 
 async def run_with_cleanup() -> str:
-    backend = DaytonaSandboxBackend()
-    try:
+    async with AsyncDaytona() as client:
+        backend = DaytonaSandboxBackend(client=client)
         native = await backend.get_client()
         try:
             result = await agent.run('What is the working directory?', workspace=backend)
             return result.output
         finally:
             await native.delete(wait=True)
-    finally:
-        await backend.disconnect()
 ```
 
-To keep the remote workspace, omit `native.delete()` and retain the outer `finally` that disconnects the backend. `disconnect()` closes only a backend-owned SDK client; it does not delete or start a workspace, or close a caller-supplied client. Finish in-flight operations before disconnecting or leaving the SDK client context.
+To keep the remote workspace, omit `native.delete()`. The backend does not delete, stop, or start a workspace on its own, and it does not close a caller-supplied client. Finish in-flight operations before leaving the SDK client context.
 
 ## Lifetimes and cleanup
 

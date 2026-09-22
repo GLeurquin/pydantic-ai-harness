@@ -2,8 +2,8 @@
 
 External assumptions last verified 2026-09-08 against Daytona Python SDK 0.198.0:
 
-* `AsyncDaytona.create`, `get`, `delete(wait=True)`, and `close` own sandbox lifecycle;
-  `get` accepts a sandbox ID or name:
+* `AsyncDaytona.create`, `get`, and `close` and `AsyncSandbox.start` cover the lifecycle used
+  here; `get` accepts a sandbox ID or name:
   https://www.daytona.io/docs/en/python-sdk/async/async-daytona/
 * process sessions provide asynchronous execution, separate stdout and stderr callbacks,
   exit status, and deletion as the per-command kill mechanism:
@@ -13,9 +13,6 @@ External assumptions last verified 2026-09-08 against Daytona Python SDK 0.198.0
 * `auto_stop_interval` and `auto_delete_interval=-1` keep an owned sandbox stopped but
   available until explicit deletion:
   https://www.daytona.io/docs/en/python-sdk/async/async-daytona/
-* `AsyncSandbox.pause` is supported only by VM sandbox classes; `stop` retains disk according
-  to the sandbox's configured auto-delete policy:
-  https://www.daytona.io/docs/en/python-sdk/async/async-sandbox/
 
 Re-check those sources and the installed 0.198.0 signatures before changing lifecycle,
 command, or filesystem handling.
@@ -344,18 +341,6 @@ class DaytonaSandboxBackend(WorkspaceBackend, SupportsCommands, SupportsFilesyst
         if self._client is not None and self._owns_client:
             await self._client.close()
             self._client = None
-
-    async def disconnect(self) -> None:
-        async with self._lock:
-            if self._client is None or not self._owns_client:
-                return
-            try:
-                await self._client.close()
-            except Exception as error:
-                raise self._operation_error(error, 'Could not disconnect from Daytona workspace') from error
-            self._client = None
-            self._workspace = None
-            self._canonical_working_dir = None
 
     async def working_dir(self) -> str:
         """Return the filesystem-canonical default directory inside the workspace."""

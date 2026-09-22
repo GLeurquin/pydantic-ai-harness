@@ -230,9 +230,6 @@ class FakeClient:
         raise DaytonaNotFoundError(f'no sandbox: {sandbox_id}')
 
     async def close(self) -> None:
-        self.owner.close_calls += 1
-        if self.owner.close_error is not None:
-            raise self.owner.close_error
         self.closed = True
         self.owner.closed_clients += 1
 
@@ -243,8 +240,6 @@ class FakeDaytona:
         self.create_params: list[CreateParams] = []
         self.closed_clients = 0
         self.create_error: Exception | None = None
-        self.close_error: Exception | None = None
-        self.close_calls = 0
         self.create_gate: asyncio.Event | None = None
         self.get_gate: asyncio.Event | None = None
         self.get_error: Exception | None = None
