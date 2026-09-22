@@ -1,6 +1,7 @@
 """Real loopback requests exercise the browser trust and lifecycle boundaries."""
 
 import json
+from http.server import HTTPServer
 from urllib.parse import urlsplit
 
 import anyio
@@ -12,6 +13,30 @@ from pydantic_clai2.web_transport import serve_chat
 
 async def echo(text: str) -> str:
     return text
+
+
+async def test_default_http_port_normalization(monkeypatch: pytest.MonkeyPatch) -> None:
+    bind = HTTPServer.server_bind
+    ports: list[int] = []
+
+    def bind_as_default(server: HTTPServer) -> None:
+        bind(server)
+        ports.append(server.server_port)
+        server.server_port = 80
+
+    monkeypatch.setattr(HTTPServer, 'server_bind', bind_as_default)
+    async with serve_chat(echo) as url, httpx.AsyncClient() as client:
+        assert url.startswith('http://127.0.0.1/#')
+        response = await client.post(
+            f'http://127.0.0.1:{ports[0]}/api/chat',
+            json={'text': 'default port'},
+            headers={
+                'Host': '127.0.0.1',
+                'Origin': 'http://127.0.0.1',
+                'Authorization': f'Bearer {urlsplit(url).fragment}',
+            },
+        )
+        assert response.json() == {'output': 'default port'}
 
 
 async def test_chat_and_page() -> None:

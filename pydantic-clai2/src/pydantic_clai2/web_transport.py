@@ -30,7 +30,7 @@ class _ChatServer(ThreadingHTTPServer):
         self.page = Path(__file__).with_name('web.html').read_bytes()
         super().__init__(('127.0.0.1', port), _Handler)
         self.daemon_threads = False
-        self.address = f'127.0.0.1:{self.server_port}'
+        self.address = '127.0.0.1' if self.server_port == 80 else f'127.0.0.1:{self.server_port}'
         self.origin = f'http://{self.address}'
 
 
@@ -61,7 +61,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         try:
             self.wfile.write(body)
-        except OSError:
+        except OSError:  # pragma: no cover -- peer disconnect timing is controlled by the OS.
             pass
 
     def trusted(self) -> bool:
