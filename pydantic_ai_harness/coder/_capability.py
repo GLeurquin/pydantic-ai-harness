@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
 from pydantic_ai import Agent
-from pydantic_ai.capabilities import AbstractCapability, Capability, CombinedCapability
+from pydantic_ai.capabilities import AbstractCapability, AgentCapability, Capability, CombinedCapability
 from pydantic_ai.tools import AgentDepsT
 
 from pydantic_ai_harness.coder._instructions import INSTRUCTIONS
@@ -60,7 +61,8 @@ class Coder(CombinedCapability[AgentDepsT]):
     untrusted work. Additional instructions supplement the default guidance.
     `repo_context=False` leaves out the bundled `RepoContext`, for hosts that
     bind their own and would otherwise load the instruction files twice.
-    `sub_agents=False` leaves out delegation.
+    `sub_agents=False` leaves out delegation. `sub_agent_capabilities` explicitly
+    applies host-selected capabilities to the delegate, not the parent.
     """
 
     def __init__(
@@ -71,6 +73,7 @@ class Coder(CombinedCapability[AgentDepsT]):
         unrestricted_filesystem: bool = False,
         repo_context: bool = True,
         sub_agents: bool = True,
+        sub_agent_capabilities: Sequence[AgentCapability[AgentDepsT]] = (),
     ) -> None:
         root = Path(workspace).resolve()
         capabilities: list[AbstractCapability[AgentDepsT]] = [
@@ -94,6 +97,7 @@ class Coder(CombinedCapability[AgentDepsT]):
                     instructions=instructions,
                     unrestricted_filesystem=unrestricted_filesystem,
                     repo_context=repo_context,
+                    sub_agent_capabilities=sub_agent_capabilities,
                 )
             )
         capabilities += [
@@ -108,7 +112,12 @@ class Coder(CombinedCapability[AgentDepsT]):
 
     @staticmethod
     def _sub_agents(
-        workspace: Path, *, instructions: str | None, unrestricted_filesystem: bool, repo_context: bool
+        workspace: Path,
+        *,
+        instructions: str | None,
+        unrestricted_filesystem: bool,
+        repo_context: bool,
+        sub_agent_capabilities: Sequence[AgentCapability[AgentDepsT]],
     ) -> SubAgents[AgentDepsT]:
         """One delegate: the same `Coder`, with delegation off so the recursion terminates.
 
@@ -127,4 +136,8 @@ class Coder(CombinedCapability[AgentDepsT]):
                 )
             ],
         )
-        return SubAgents[AgentDepsT](agents=[SubAgent[AgentDepsT](delegate)], agent_folders=None)
+        return SubAgents[AgentDepsT](
+            agents=[SubAgent[AgentDepsT](delegate)],
+            agent_folders=None,
+            shared_capabilities=sub_agent_capabilities,
+        )

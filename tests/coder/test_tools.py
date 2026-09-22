@@ -4,11 +4,12 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
-from pydantic_ai import Agent
-from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai import Agent, ModelRetry, RunContext
+from pydantic_ai.capabilities import AbstractCapability, Capability
 from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.tools import ToolDefinition
 
 from pydantic_ai_harness.coder import Coder
 
@@ -54,10 +55,20 @@ class TestCoder:
 
     async def test_sub_agents_can_be_left_out(self, tmp_path: Path) -> None:
         model = TestModel(call_tools=[])
-        await Agent(model, capabilities=[Coder(tmp_path, sub_agents=False)]).run('Inspect tools')
+        await Agent(
+            model,
+            capabilities=[
+                Coder(
+                    tmp_path,
+                    sub_agents=False,
+                    sub_agent_capabilities=[Capability(instructions='Delegate-only policy')],
+                )
+            ],
+        ).run('Inspect tools')
         assert model.last_model_request_parameters is not None
         tools = [tool.name for tool in model.last_model_request_parameters.function_tools]
         assert tools == ['read_file', 'write_file', 'edit_file', 'list_files', 'grep', 'shell']
+        assert 'Delegate-only policy' not in str(model.last_model_request_parameters.instruction_parts)
 
     async def test_the_delegate_does_not_delegate_further(self, tmp_path: Path) -> None:
         """The delegate is another `Coder` with delegation off, so a delegation cannot recurse.
@@ -79,6 +90,49 @@ class TestCoder:
         assert 'delegate_task' in parent_tools
         assert 'delegate_task' not in delegate_tools
         assert 'edit_file' in delegate_tools
+
+    @pytest.mark.parametrize('forward', [False, True])
+    @pytest.mark.parametrize('block', [False, True])
+    async def test_host_policy_forwarding(self, tmp_path: Path, forward: bool, block: bool) -> None:
+        seen: list[str] = []
+
+        class Policy(AbstractCapability[None]):
+            async def before_tool_execute(
+                self,
+                ctx: RunContext[None],
+                *,
+                call: ToolCallPart,
+                tool_def: ToolDefinition,
+                args: dict[str, object],
+            ) -> dict[str, object]:
+                seen.append(call.tool_name)
+                if block and call.tool_name == 'shell':
+                    raise ModelRetry('Shell blocked by host policy')
+                return args
+
+        requests = 0
+
+        def respond(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            nonlocal requests
+            requests += 1
+            if requests == 1:
+                return ModelResponse(
+                    parts=[ToolCallPart('delegate_task', {'agent_name': 'coder', 'task': 'Run shell'})]
+                )
+            if requests == 2:
+                return ModelResponse(parts=[ToolCallPart('shell', {'command': 'touch policy-marker'})])
+            return ModelResponse(parts=[TextPart('done')])
+
+        policy = Policy()
+        coder = (
+            Coder[None](tmp_path, repo_context=False, sub_agent_capabilities=[policy])
+            if forward
+            else Coder[None](tmp_path, repo_context=False)
+        )
+        await Agent(FunctionModel(respond), deps_type=type(None), capabilities=[coder, policy]).run('Delegate it')
+
+        assert seen == (['delegate_task', 'shell'] if forward else ['delegate_task'])
+        assert (tmp_path / 'policy-marker').exists() is not (forward and block)
 
     @pytest.mark.parametrize('extra_instructions', [None, '', 'Keep new files under 400 lines.'])
     async def test_instructions(self, tmp_path: Path, extra_instructions: str | None) -> None:

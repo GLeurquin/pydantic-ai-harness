@@ -102,12 +102,37 @@ same `Coder` you configured -- same workspace, same `instructions=`, same filesy
 `sub_agents=False`, which is what terminates the recursion. It carries no model of its own, so each
 delegation runs on the parent run's model.
 
-Capabilities the host binds alongside `Coder` -- an approval gate, a tool guardrail, an audit hook --
-apply to the parent run, and a delegation is a separate run. Those hooks see the `delegate_task` call
-and not the tool calls the delegate makes inside it, so a command a parent-level guard would block can
-still run in a delegation. This follows from sub-agent isolation rather than from `Coder` (see
-`shared_capabilities` on [`SubAgents`](https://pydantic.dev/docs/ai/harness/subagents/)), but `sub_agents=True` makes it the default. Pass `sub_agents=False`
-where parent-level tool policy has to cover every command.
+Capabilities the host binds alongside `Coder` apply only to the parent run by default: their tool
+hooks see `delegate_task`, not the delegate's shell or filesystem calls. To apply a host policy to
+both runs, register it on the parent and explicitly pass it to `Coder`:
+
+```python
+from pydantic_ai import Agent
+from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai_harness.coder import Coder
+
+
+def guarded_coder(policy: AbstractCapability[None]) -> Agent[None, str]:
+    return Agent(
+        deps_type=type(None),
+        capabilities=[Coder[None]('.', sub_agent_capabilities=[policy]), policy],
+    )
+```
+
+`sub_agent_capabilities` is passed to `SubAgents.shared_capabilities`. It defaults to an empty
+sequence, does not discover sibling capabilities, and does not register the supplied capabilities
+on the parent. With `sub_agents=False`, it has no effect.
+
+This opt-in is not a complete solution to policy inheritance. Forward capability definitions, not
+parent-bound toolsets: capability-owned toolsets require their owning capability to be registered in
+the child run for `CapabilityOwnedToolset` ownership resolution. Capabilities that retain parent-bound
+toolsets or depend on other parent capabilities may not be suitable for forwarding. Verify the
+policy in delegated runs; use `sub_agents=False` when parent-level policy must cover every command
+and forwarding has not been verified. Delegation through the running agent, with a depth cap and
+explicit decisions about which behavior should cascade, remains a separate design follow-up.
+
+Propagation adds no telemetry of its own; core child-run and tool spans cover execution, along with
+any telemetry emitted by the forwarded capabilities.
 
 Delegates are not loaded from disk (`agent_folders=None`): the roster is this one delegate. Pass
 `sub_agents=False` to drop `delegate_task` and the capability with it, or compose
