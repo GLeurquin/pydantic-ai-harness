@@ -53,9 +53,8 @@ class TestTrajectoryJudgeDurability:
             result = await asyncio.wait_for(task, timeout=5)
         finally:
             release.set()
-            if not task.done():
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
         assert result.output == 'done'
         assert verdicts == [AllGood()]
         assert usage.requests == 2
