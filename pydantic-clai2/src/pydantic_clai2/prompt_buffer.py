@@ -33,7 +33,6 @@ class PromptBuffer:
         ]
         self.text = self.text[:start] + text + self.text[end:]
         self.cursor = start + len(text)
-        self.history_index = None
 
     def insert(self, text: str, *, paste: bool = False) -> None:
         """Insert literal text; terminal control bytes do not become escape output."""
@@ -41,6 +40,7 @@ class PromptBuffer:
         text = ''.join(char for char in text if char.isprintable() or char in ('\n', '\t'))
         start = self.cursor
         self.replace_range(start, start, text)
+        self.history_index = None
         if paste and (len(text.splitlines()) >= 5 or len(text) >= 1000):
             self._pastes.append((start, self.cursor))
             self._pastes.sort()
@@ -128,14 +128,17 @@ class PromptBuffer:
     def display(self) -> tuple[str, int]:
         """Fold pasted ranges unless the cursor has entered them to edit."""
         self._pastes = [(start, end) for start, end in self._pastes if not start < self.cursor < end]
-        text, cursor = self.text, self.cursor
-        for start, end in reversed(self._pastes):
+        parts: list[str] = []
+        previous, cursor = 0, self.cursor
+        for start, end in self._pastes:
             lines = max(1, len(self.text[start:end].splitlines()))
             label = f'[paste {lines} lines]'
-            text = text[:start] + label + text[end:]
+            parts.extend((self.text[previous:start], label))
+            previous = end
             if self.cursor >= end:
                 cursor += len(label) - (end - start)
-        return text, cursor
+        parts.append(self.text[previous:])
+        return ''.join(parts), cursor
 
     def rows(self, *, width: int, limit: int) -> list[str]:
         """Wrap into terminal cells and keep the nonblinking cursor in view."""

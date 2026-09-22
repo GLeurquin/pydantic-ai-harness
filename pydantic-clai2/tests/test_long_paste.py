@@ -91,6 +91,26 @@ def test_replace_completion_and_history_clear_or_shift_folds() -> None:
     assert buffer.text == '[paste 5 lines]'
 
 
+@pytest.mark.parametrize('key', ['delete', 'backspace'])
+def test_noop_deletion_preserves_history_navigation(key: str) -> None:
+    buffer = PromptBuffer(history=['older', 'newer'])
+    buffer.recall(backwards=True)
+    if key == 'backspace':
+        buffer.cursor = 0
+    buffer.edit(key)
+    buffer.recall(backwards=True)
+    assert buffer.text == 'older'
+
+
+def test_many_pastes_render_in_order() -> None:
+    buffer = PromptBuffer()
+    for index in range(100):
+        buffer.insert(f'{index}:')
+        buffer.insert(PASTE, paste=True)
+    expected = ''.join(f'{index}:[paste 5 lines]' for index in range(100))
+    assert buffer.display() == (expected, len(expected))
+
+
 def test_paste_normalization_precedes_folding() -> None:
     buffer = PromptBuffer()
     buffer.insert(PASTE.replace('\n', '\r\n') + '\x1b', paste=True)
