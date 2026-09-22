@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := all
 
-.PHONY: .uv .prek install format lint typecheck test testcov integration-localstack integration-mongodb integration-redis all
+.PHONY: .uv .prek install format lint typecheck test testcov integration-localstack integration-mongodb integration-redis integration-redis-cluster integration-redis-cluster-up integration-redis-cluster-down all
 
 .uv:
 	@uv --version || echo 'Please install uv: https://docs.astral.sh/uv/getting-started/installation/'
@@ -42,5 +42,19 @@ integration-mongodb:
 # tests skip. Set REDIS_TEST_URL to point at a server elsewhere.
 integration-redis:
 	uv run pytest integration_tests/redis/test_live_redis.py
+
+integration-redis-cluster:
+	uv run pytest integration_tests/redis/test_live_cluster.py
+
+# Dedicated disposable cluster. Run down before up to create a fresh topology.
+integration-redis-cluster-up:
+	docker compose -f integration_tests/redis/compose.yaml up -d --wait --wait-timeout 60
+	docker compose -f integration_tests/redis/compose.yaml exec -T redis-0 redis-cli --cluster create \
+		127.0.0.1:7000 127.0.0.1:7001 127.0.0.1:7002 --cluster-replicas 0 --cluster-yes
+	docker compose -f integration_tests/redis/compose.yaml exec -T redis-0 sh -c \
+		'for attempt in $$(seq 1 30); do redis-cli -p 7000 cluster info | grep -q cluster_state:ok && exit 0; sleep 1; done; exit 1'
+
+integration-redis-cluster-down:
+	docker compose -f integration_tests/redis/compose.yaml down --volumes
 
 all: format lint typecheck testcov

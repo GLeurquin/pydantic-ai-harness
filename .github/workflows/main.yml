@@ -537,6 +537,20 @@ jobs:
 
       - run: make integration-redis
 
+      - run: make integration-redis-cluster-up
+
+      - run: make integration-redis-cluster
+        env:
+          REDIS_CLUSTER_TEST_URL: redis://127.0.0.1:7000
+
+      - name: Redis cluster logs
+        if: failure()
+        run: docker compose -f integration_tests/redis/compose.yaml logs
+
+      - name: Stop Redis cluster
+        if: always()
+        run: make integration-redis-cluster-down
+
   coverage:
     needs: [test]
     runs-on: ubuntu-latest
