@@ -20,7 +20,7 @@ class GoalVerifier(Protocol[AgentDepsT]):
     message history through `ctx`. Exceptions propagate to the caller.
     """
 
-    async def __call__(self, ctx: RunContext[AgentDepsT], output: object, /) -> str | None:
+    async def __call__(self, ctx: RunContext[AgentDepsT], output: object, /) -> str | None:  # pragma: no cover
         """Evaluate fresh evidence of completion, not just the model's claim."""
         ...
 

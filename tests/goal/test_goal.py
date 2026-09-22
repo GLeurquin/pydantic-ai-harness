@@ -82,7 +82,7 @@ class TestGoal:
 
     async def test_interactive_skips_verifier(self) -> None:
         async def fail(ctx: RunContext[object], output: object) -> None:
-            pytest.fail('Interactive runs must not enforce completion')
+            pytest.fail('Interactive runs must not enforce completion')  # pragma: no cover
 
         goal = Goal(goal='Finish', verify=fail, headless=False)
         assert goal.get_instructions() == 'Your goal is:\nFinish'
