@@ -249,7 +249,13 @@ no agent telemetry spans.
 ## GitHub Copilot authentication
 
 Run `/login github-copilot` to authorize a GitHub.com account with a Copilot
-subscription. CLAI displays a one-time code and opens
+subscription. This authorizes **OpenCode's third-party OAuth application**, not a
+Pydantic-owned application. Continue only if you trust that application. GitHub's
+consent screen and Settings > Applications > Authorized OAuth Apps identify the
+application; revoke access there to disconnect it. CLAI sends the device grant
+only to GitHub and keeps the returned token in its local credential store.
+
+CLAI displays a one-time code and opens
 `https://github.com/login/device`. Enter the code there; over SSH, open the URL
 on another machine. Ctrl-C or Ctrl-D cancels. Login expires when GitHub's device
 code expires, or after fifteen minutes, whichever comes first. Failed or cancelled

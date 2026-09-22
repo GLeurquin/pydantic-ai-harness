@@ -3,6 +3,7 @@
 import asyncio
 import io
 import json
+import threading
 import webbrowser
 from collections.abc import Awaitable
 from pathlib import Path
@@ -92,12 +93,17 @@ async def test_login(monkeypatch: pytest.MonkeyPatch, browser: str, *, fallback:
     assert ('plaintext' in message) is fallback
     assert delays == [1, 1, 6, 20]
     assert 'ABCD-EFGH' in output.getvalue()
+    assert "OpenCode's third-party OAuth application" in output.getvalue()
+    assert 'Authorized OAuth Apps' in output.getvalue()
     assert ('manually' in output.getvalue()) is (browser != 'opened')
     assert 'secret-' not in output.getvalue()
     assert load_codex_credentials(account='github-copilot') == '{"access_token": "secret-access"}'
     assert load_codex_credentials() is None
     if fallback:
         assert credentials_path(account='github-copilot').stat().st_mode & 0o777 == 0o600
+    monkeypatch.setenv('GITHUB_COPILOT_BASE_URL', 'https://attacker.example')
+    monkeypatch.setenv('COPILOT_API_URL', 'https://attacker.example')
+    monkeypatch.setenv('GITHUB_COPILOT_API_BASE', 'https://attacker.example')
     model = await SubscriptionAuth(Console(file=io.StringIO())).resolve_model('github-copilot:test-model')
     assert isinstance(model, GitHubCopilotModel)
     assert model.model_name == 'test-model'
@@ -143,7 +149,17 @@ async def test_failed_login_keeps_previous(monkeypatch: pytest.MonkeyPatch, fail
 
 
 @pytest.mark.parametrize('cancel', ['eof', 'interrupt', 'outer', 'timeout'])
-async def test_cancellation_cleans_up(cancel: str) -> None:
+async def test_cancellation_cleans_up(cancel: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    timeouts: list[asyncio.Timeout] = []
+    real_timeout = asyncio.timeout
+
+    def controlled_timeout(delay: float | None) -> asyncio.Timeout:
+        timeout = real_timeout(None)
+        timeouts.append(timeout)
+        return timeout
+
+    if cancel == 'timeout':
+        monkeypatch.setattr('pydantic_clai2.copilot_auth.asyncio.timeout', controlled_timeout)
     polling = anyio.Event()
     cleaned = anyio.Event()
     prompt_cleaned = anyio.Event()
@@ -165,6 +181,8 @@ async def test_cancellation_cleans_up(cancel: str) -> None:
                 raise EOFError()
             if cancel == 'interrupt':
                 raise KeyboardInterrupt()
+            if cancel == 'timeout':
+                timeouts[0].reschedule(asyncio.get_running_loop().time())
             await anyio.sleep_forever()
         finally:
             prompt_cleaned.set()
@@ -175,7 +193,7 @@ async def test_cancellation_cleans_up(cancel: str) -> None:
         read_line=prompt,
         open_browser=lambda _: False,
         transport=httpx.MockTransport(respond),
-        timeout=1.1 if cancel == 'timeout' else 30,
+        timeout=30,
     )
     if cancel == 'outer':
         async with anyio.create_task_group() as group:
@@ -217,8 +235,18 @@ async def test_models_and_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
     assert await auth.login([]) == 'codex'
     assert await auth.login(['openai-codex']) == 'codex'
 
+    loop_thread = threading.get_ident()
+
     def other_model(name: str) -> TestModel:
+        assert threading.get_ident() != loop_thread
         return TestModel()
+
+    def copilot_model(self: CopilotAuth, name: str) -> GitHubCopilotModel:
+        assert threading.get_ident() != loop_thread
+        return GitHubCopilotModel('test')
+
+    monkeypatch.setattr(CopilotAuth, 'model', copilot_model)
+    assert isinstance(await auth.resolve_model('github-copilot:test'), GitHubCopilotModel)
 
     monkeypatch.setattr('pydantic_clai2.openrouter.model', other_model)
     monkeypatch.setattr('pydantic_clai2.vllm.model', other_model)

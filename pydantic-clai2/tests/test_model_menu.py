@@ -30,9 +30,10 @@ def anyio_backend() -> str:
 
 def test_catalog_merges_sources_and_only_lists_runnable_providers() -> None:
     providers = runnable_providers()
-    assert {'openai', 'anthropic', 'google', 'openai-codex'} <= providers
+    assert {'openai', 'anthropic', 'google', 'openai-codex', 'github-copilot'} <= providers
     priced = genai_prices_models()
     assert priced and all(model.provider in providers for model in priced)
+    assert any(model.provider == 'github-copilot' for model in priced)
     assert all(':' not in model.name.partition(':')[2] for model in priced)
     priced_names = {model.name for model in priced}
     merged = catalog(include=['openai-codex:gpt-6-astra', ''])

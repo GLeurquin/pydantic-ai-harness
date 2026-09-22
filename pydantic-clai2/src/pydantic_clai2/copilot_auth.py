@@ -100,6 +100,11 @@ class CopilotAuth:
                 self.console.print(
                     f'Open {_VERIFY_URL} and enter code: {device.user_code}', markup=False, highlight=False
                 )
+                self.console.print(
+                    "This login authorizes OpenCode's third-party OAuth application, not a Pydantic application. "
+                    'Continue in GitHub only if you trust that application. '
+                    'Revoke access in GitHub Settings > Applications > Authorized OAuth Apps.'
+                )
                 self.console.print('A GitHub Copilot subscription is required. Press Ctrl-C to cancel.')
                 try:
                     opened = await asyncio.to_thread(self.open_browser, _VERIFY_URL)

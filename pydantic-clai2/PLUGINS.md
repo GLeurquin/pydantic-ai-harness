@@ -53,7 +53,10 @@ multiple entries to fit Windows Credential Manager's size limit. When no keyring
 backend exists, credentials go to a per-account `0600` file under the user's CLAI config
 directory instead. None of this changes plugin APIs. See
 [Codex authentication](README.md#codex-authentication) for storage and security
-details. `/login github-copilot` uses GitHub's browser device-code flow, with
+details. `/login github-copilot` authorizes OpenCode's third-party OAuth application,
+not a Pydantic-owned application. The terminal discloses this before opening the
+browser; continue only if you trust that application. Revoke access in GitHub
+Settings > Applications > Authorized OAuth Apps. The command uses GitHub's browser device-code flow, with
 Ctrl-C/Ctrl-D cancellation and a maximum fifteen-minute wait bounded by the code's
 expiry. It requires a GitHub.com Copilot subscription and saves to a separate
 `github-copilot` account. It does not select a model: add and select a
