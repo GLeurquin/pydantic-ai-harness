@@ -110,7 +110,7 @@ REFLECT_PAYLOAD = json.dumps(
         'endpoints': [
             {'provider': 'anthropic', 'configured': True, 'models_url': 'http://host.docker.internal:10001/v1/models'},
             {'provider': 'openai', 'configured': True, 'models_url': 'http://host.docker.internal:10000/v1/models'},
-            {'provider': 'github', 'configured': True, 'models_url': 'http://host.docker.internal:10002/v1/models'},
+            {'provider': 'github', 'configured': True, 'models_url': 'http://host.docker.internal:10002/models'},
         ]
     }
 )
@@ -355,7 +355,7 @@ def test_the_default_target_is_the_packaged_agent(tmp_path: Path) -> None:
     # gh-aw sets this for the copilot backend; the proxy holds the real credential,
     # so the agent has no use for it.
     assert 'COPILOT_GITHUB_TOKEN' not in invocation.env
-    assert invocation.env['GITHUB_COPILOT_BASE_URL'] == 'http://host.docker.internal:10002/v1'
+    assert invocation.env['GITHUB_COPILOT_BASE_URL'] == 'http://host.docker.internal:10002'
     assert invocation.env['GITHUB_COPILOT_API_KEY'] == 'awf-copilot-proxy'
     assert 'OPENAI_API_KEY' not in invocation.env
 
