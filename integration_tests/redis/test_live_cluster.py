@@ -85,9 +85,8 @@ class TestRedisSpendStoreCluster:
         # This read-only script needs no namespace isolation; fix the slot pair.
         prefix = 'harness-cluster-negative-control'
         day, month = f'{prefix}:day', f'{prefix}:month'
-        node = cluster.get_node_from_key(day)
-        assert node is not None
-        async with Redis(host=node.host, port=int(node.port), socket_connect_timeout=2, socket_timeout=2) as direct:
+        url = os.environ.get('REDIS_CLUSTER_TEST_URL', 'redis://127.0.0.1:7000')
+        async with Redis.from_url(url, socket_connect_timeout=2, socket_timeout=2) as direct:
             assert await direct.cluster('KEYSLOT', day) != await direct.cluster('KEYSLOT', month)
             assert await direct.cluster('KEYSLOT', f'{{{prefix}}}:day') == await direct.cluster(
                 'KEYSLOT', f'{{{prefix}}}:month'
