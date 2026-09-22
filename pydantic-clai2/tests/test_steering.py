@@ -237,6 +237,8 @@ async def test_shell_routes_steering_and_reports_expired_images(tmp_path: Path) 
         live.steer = shell.steer
         live.buffer.replace('idle')
         live.feed('enter')
+        live.feed('alt-enter')
+        assert live.queued_messages == ('idle',)
         assert await live.read() == 'idle'
         async with anyio.create_task_group() as tasks:
             tasks.start_soon(shell.session.prompt, 'start')
