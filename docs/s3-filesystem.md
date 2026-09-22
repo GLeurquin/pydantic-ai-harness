@@ -20,21 +20,26 @@ The workspace image must include `s3fs`, `fusermount`, FUSE support, and permiss
 ## Usage
 
 ```python
+from e2b import AsyncSandbox
 from pydantic_ai.workspaces import Workspace
 from pydantic_ai_harness.e2b_workspace import E2BWorkspaceBackend
 from pydantic_ai_harness.s3_filesystem import S3Filesystem
 
-filesystem = S3Filesystem(
-    'reports-bucket',
-    prefix='agent-data',
-    region='us-east-1',
-    read_only=True,
-)
-workspace = Workspace(
-    E2BWorkspaceBackend(template='fuse-tools'),
-    mounts={'/data': filesystem},
-)
+
+def workspace_with_reports(sandbox: AsyncSandbox) -> Workspace:
+    filesystem = S3Filesystem(
+        'reports-bucket',
+        prefix='agent-data',
+        region='us-east-1',
+        read_only=True,
+    )
+    return Workspace(
+        E2BWorkspaceBackend(sandbox),
+        mounts={'/data': filesystem},
+    )
 ```
+
+The caller creates `sandbox` and is responsible for using an image with `s3fs` and FUSE support.
 
 Filesystem operations use the S3 API. Before the first command, `Workspace` mounts the same bucket and prefix at `/data`. Mount failure is strict: the command does not run and a later command retries.
 
