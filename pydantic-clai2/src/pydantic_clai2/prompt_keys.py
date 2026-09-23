@@ -8,16 +8,45 @@ from prompt_toolkit.input import Input
 from prompt_toolkit.key_binding import KeyPress
 from prompt_toolkit.keys import Keys
 
-_MODIFIED_KEYS = {
-    '\x1b[13;3u': 'alt-enter',
-    '\x1b[27;3;13~': 'alt-enter',
-    '\x1b[13;2u': 'shift-enter',
-    '\x1b[27;2;13~': 'shift-enter',
-    '\x1b[27;3;127~': 'alt-backspace',
-    '\x1b[27;3;8~': 'alt-backspace',
-    '\x1b[127;3u': 'alt-backspace',
-    '\x1b[8;3u': 'alt-backspace',
-}
+_KEY_NAMES = {8: 'backspace', 9: 'tab', 13: 'enter', 27: 'escape', 32: 'space', 127: 'backspace'}
+_MODIFIER_NAMES = ((4, 'ctrl'), (2, 'alt'), (1, 'shift'))
+
+
+def modified_key(sequence: str) -> str | None:
+    """Name an xterm `CSI 27;mods;code~` or kitty `CSI code;mods u` key report, or None.
+
+    Only the shift, alt, and control bits are named. Terminals disagree about the
+    higher bits (xterm's meta is kitty's super) and the lock bits carry no meaning
+    here. Printable keys with no modifiers are reported only when a terminal has
+    been asked to report every key, which the editor never does, so they are not
+    turned into draft text.
+    """
+    if not sequence.startswith('\x1b[') or sequence[-1] not in '~u':
+        return None
+    fields = [field.split(':')[0] for field in sequence[2:-1].split(';')]
+    if not all(field.isdigit() for field in fields):
+        return None
+    numbers = [int(field) for field in fields]
+    if sequence.endswith('~'):
+        if len(numbers) != 3 or numbers[0] != 27:
+            return None
+        _, modifiers, code = numbers
+    elif len(numbers) == 1:
+        code, modifiers = numbers[0], 1
+    elif len(numbers) == 2:
+        code, modifiers = numbers
+    else:
+        return None
+    bits = (modifiers - 1) & 7
+    base = _KEY_NAMES.get(code)
+    if base is None:
+        if not bits or code < 32 or code > 0x10FFFF or not chr(code).isprintable():
+            return None
+        # iTerm2 reports the shifted letter where xterm and kitty report the unshifted one.
+        base = chr(code).lower() if bits & 1 else chr(code)
+    if bits == 1 and base == 'tab':
+        return 'backtab'
+    return '-'.join([name for bit, name in _MODIFIER_NAMES if bits & bit] + [base])
 
 
 class PromptKeys:
@@ -93,9 +122,10 @@ class PromptKeys:
         if key.key == Keys.CPRResponse:
             # Ignore a late response left over from a previous renderer/menu.
             return
-        if key.data in _MODIFIED_KEYS and key.key != Keys.BracketedPaste:
+        name = modified_key(key.data) if key.key != Keys.BracketedPaste else None
+        if name is not None:
             self._escape = False
-            self.feed(_MODIFIED_KEYS[key.data], key.data)
+            self.feed(name, key.data)
             return
         if self._csi:
             # The installed decoder splits unrecognized modified keys into individual
@@ -103,8 +133,9 @@ class PromptKeys:
             self._csi += key.data
             if len(self._csi) > 32 or len(key.data) != 1 or '@' <= key.data <= '~':
                 sequence, self._csi = self._csi, ''
-                if sequence in _MODIFIED_KEYS:
-                    self.feed(_MODIFIED_KEYS[sequence], sequence)
+                name = modified_key(sequence)
+                if name is not None:
+                    self.feed(name, sequence)
             return
         if key.key == Keys.Escape:
             self._escape = True

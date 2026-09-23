@@ -108,8 +108,11 @@ class PromptSurface(io.StringIO):
         changed_geometry = self._geometry != (width, height) or len(rows) != len(self._rows)
         parts: list[str] = []
         if not self._active:
+            # modifyOtherKeys level 2 reports Option+Enter from iTerm2 (and Alt+Enter
+            # from xterm) as `CSI 27;3;13~` even when Option types characters, so the
+            # steer chord does not depend on the terminal's Option-as-Meta setting.
             parts.extend(
-                ['\x1b[?25l\x1b[?2004h\x1b[>4;1m', '\r\n' * len(rows), f'\x1b[1;{bottom}r', f'\x1b[{bottom};1H']
+                ['\x1b[?25l\x1b[?2004h\x1b[>4;2m', '\r\n' * len(rows), f'\x1b[1;{bottom}r', f'\x1b[{bottom};1H']
             )
             self._active = True
         elif changed_geometry:
