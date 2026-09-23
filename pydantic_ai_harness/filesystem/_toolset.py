@@ -452,10 +452,17 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
                 self.add_function(registrations[name], name=name)
 
     async def get_tools(self, ctx: RunContext[AgentDepsT]) -> dict[str, ToolsetTool[AgentDepsT]]:
-        """Offer only the read-only tools when the run's workspace refuses mutations."""
+        """Offer only the tools the run's workspace can serve.
+
+        A read-only workspace keeps only `READ_ONLY_TOOL_NAMES`. The ripgrep tools also need
+        `workspace.run`, which a read-only or filesystem-only workspace cannot serve, so they
+        are dropped there; `search_files` and `find_files` cover the same ground without it.
+        """
         tools = await super().get_tools(ctx)
         if ctx.workspace.read_only:
-            return {name: tool for name, tool in tools.items() if name in READ_ONLY_TOOL_NAMES}
+            tools = {name: tool for name, tool in tools.items() if name in READ_ONLY_TOOL_NAMES}
+        if not supports_commands(ctx.workspace):
+            tools = {name: tool for name, tool in tools.items() if name not in RIPGREP_TOOL_NAMES}
         return tools
 
     async def _scope(self, workspace: WorkspaceBackend) -> _Scope:

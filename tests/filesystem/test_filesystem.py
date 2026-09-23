@@ -22,6 +22,7 @@ from pydantic_ai.workspaces import (
     LocalWorkspaceBackend,
     ReadOnlyWorkspace,
     Workspace,
+    WorkspaceBackend,
     WorkspaceError,
     WorkspaceReadOnlyError,
     WorkspaceRef,
@@ -1621,7 +1622,32 @@ class TestFileSystemCapability:
         ]
         await Agent(model, deps_type=type(None), capabilities=capabilities).run('Inspect tools')
         assert model.last_model_request_parameters is not None
-        assert {tool.name for tool in model.last_model_request_parameters.function_tools} == READ_ONLY_TOOL_NAMES
+        # The ripgrep tools need `workspace.run`, which a read-only workspace refuses.
+        assert {tool.name for tool in model.last_model_request_parameters.function_tools} == (
+            READ_ONLY_TOOL_NAMES - set(RIPGREP_TOOL_NAMES)
+        )
+
+    @pytest.mark.parametrize('read_only', [True, False], ids=['read-only', 'filesystem-only'])
+    async def test_ripgrep_tools_need_commands(self, tmp_path: Path, anyio_backend: object, read_only: bool) -> None:
+        if str(anyio_backend) != 'asyncio':
+            pytest.skip('Agent.run requires asyncio event loop')
+        (tmp_path / 'notes.txt').write_text('needle\n')
+        workspace: WorkspaceBackend = (
+            ReadOnlyWorkspace(Workspace(LocalWorkspaceBackend(tmp_path)))
+            if read_only
+            else FilesystemOnlyWorkspace(tmp_path)
+        )
+        capability = FileSystem[None](root_dir=tmp_path, tools=FILE_SYSTEM_TOOL_NAMES)
+        model = TestModel(call_tools=[])
+        await Agent(model, deps_type=type(None), capabilities=[capability]).run('Inspect', workspace=workspace)
+        assert model.last_model_request_parameters is not None
+        names = {tool.name for tool in model.last_model_request_parameters.function_tools}
+        assert names.isdisjoint(RIPGREP_TOOL_NAMES)
+        assert {'search_files', 'find_files'} <= names
+        assert await call_tool([capability], 'search_files', {'pattern': 'needle'}, workspace=workspace) == (
+            'notes.txt:1:needle'
+        )
+        assert await call_tool([capability], 'find_files', {'pattern': '*.txt'}, workspace=workspace) == 'notes.txt'
 
     async def test_read_only_refusal_is_a_failed_tool_result(self, tmp_path: Path, anyio_backend: object) -> None:
         """A mutation a read-only workspace refuses fails the call; it is not a permission retry."""

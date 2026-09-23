@@ -7,10 +7,12 @@ from pydantic_ai.exceptions import ToolFailed, UserError
 from pydantic_ai.workspaces import (
     SupportsCommands,
     Workspace,
+    WorkspaceBackend,
     WorkspaceError,
     WorkspaceReadOnlyError,
     WorkspaceTimeoutError,
     WorkspaceUnavailableError,
+    WrapperWorkspace,
 )
 
 READ_ONLY_FAILURE = 'The workspace is read-only; the change was refused.'
@@ -49,10 +51,14 @@ def raise_tool_failure(error: WorkspaceError) -> NoReturn:
 
 
 def supports_commands(workspace: Workspace) -> bool:
-    """Whether `workspace.run` can succeed: the innermost backend executes commands and no policy refuses them."""
+    """Whether `workspace.run` can succeed: the innermost backend executes commands and no policy refuses them.
+
+    Wrappers are unwrapped through `wrapped`, not `backend`: a durable workspace refuses
+    `backend` in workflow code, where tool registration runs.
+    """
     if workspace.read_only:
         return False
-    backend = workspace.backend
-    while isinstance(backend, Workspace):
-        backend = backend.backend
-    return isinstance(backend, SupportsCommands)
+    current: WorkspaceBackend = workspace
+    while isinstance(current, Workspace):
+        current = current.wrapped if isinstance(current, WrapperWorkspace) else current.backend
+    return isinstance(current, SupportsCommands)

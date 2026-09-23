@@ -43,7 +43,10 @@ ends the run with a `UserError` that says how to attach one. `root_dir` and
 `cwd` are paths inside the workspace; relative ones resolve against its working
 directory, which is also the default root. A read-only workspace
 (`LocalWorkspace(..., read_only=True)`, or any `ReadOnlyWorkspace`) narrows the
-tools to `READ_ONLY_TOOL_NAMES` for that run, as `read_only=True` does.
+tools to `READ_ONLY_TOOL_NAMES` for that run, as `read_only=True` does. A
+workspace that cannot run commands -- a read-only one, or a filesystem-only
+backend -- does not offer `list_files` and `grep`, which run `rg` inside it;
+`search_files` and `find_files` work without commands.
 
 Calling a `FileSystemToolset` method directly, outside a run, takes the
 workspace as a keyword argument:
