@@ -15,8 +15,9 @@ import os
 from collections.abc import Awaitable, Callable, Iterator
 
 import pytest
-from pydantic_ai.workspaces import WorkspaceBackend, WorkspaceRef
+from pydantic_ai.workspaces import WorkspaceBackend, WorkspaceRef, WorkspaceUnavailableError
 from pydantic_ai.workspaces.testing import WorkspaceBackendSuite
+from sprites.exceptions import NotFoundError
 
 from pydantic_ai_harness.sprites import SpriteWorkspaceBackend
 
@@ -48,6 +49,33 @@ class TestFakeSpriteWorkspaceBackend(WorkspaceBackendSuite):
     @pytest.fixture
     def destroy_environment(self) -> Callable[[WorkspaceBackend], Awaitable[None]]:
         return _delete
+
+
+# The suite's reattach and destroy rules skip for this command-only backend, so these cover the
+# helpers it would hand them.
+@pytest.mark.anyio
+async def test_attach_and_delete_helpers(transport: SpriteTransport) -> None:
+    owner = SpriteWorkspaceBackend()
+    assert (await owner.run(['true'])).exit_code == 0
+    assert owner.ref is not None
+
+    attached = _attach(owner.ref)
+    assert isinstance(attached, SpriteWorkspaceBackend)
+    assert (await attached.run(['true'])).exit_code == 0
+    assert transport.created == [owner.ref.id]
+
+    await _delete(attached)
+    with pytest.raises(WorkspaceUnavailableError):
+        await attached.run(['true'])
+
+
+@pytest.mark.anyio
+async def test_delete_helper_on_a_deleted_sprite(transport: SpriteTransport) -> None:
+    backend = SpriteWorkspaceBackend()
+    assert (await backend.run(['true'])).exit_code == 0
+    await _delete(backend)
+    with pytest.raises(NotFoundError):
+        await _delete(backend)
 
 
 @pytest.mark.sprites_live
