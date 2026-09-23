@@ -30,6 +30,7 @@ from e2b.exceptions import (
     SandboxException,
     SandboxNotFoundException,
     TimeoutException,
+    format_sandbox_timeout_exception,
 )
 
 __all__ = (
@@ -90,8 +91,18 @@ class FakeCommandHandle:
     deadline kill cancels the wait.
     """
 
-    def __init__(self, control: FakeE2B, *, pid: int, stdout: str, stderr: str, exit_code: int) -> None:
+    def __init__(
+        self,
+        control: FakeE2B,
+        sandbox: FakeSandbox,
+        *,
+        pid: int,
+        stdout: str,
+        stderr: str,
+        exit_code: int,
+    ) -> None:
         self._control = control
+        self._sandbox = sandbox
         self._pid = pid
         self._stdout = stdout
         self._stderr = stderr
@@ -113,6 +124,7 @@ class FakeCommandHandle:
         # A real wait suspends; yield so a test can cancel it and so concurrent tool calls
         # actually interleave.
         await anyio.lowlevel.checkpoint()
+        self._sandbox.check_alive()
         if self._control.wait_error is not None:
             raise self._control.wait_error
         if self._control.command_hangs:
@@ -151,12 +163,14 @@ class FakeCommands:
         # too, or a bad kwarg in the backend would only fail in production.
         del user
         await anyio.lowlevel.checkpoint()
+        self._sandbox.check_alive()
         self.calls.append(FakeCommandCall(cmd, background is True, cwd, envs, timeout))
         if self._control.run_error is not None:
             raise self._control.run_error
         stdout, stderr, exit_code = self._control.responder(cmd, timeout)
         handle = FakeCommandHandle(
             self._control,
+            self._sandbox,
             pid=self._control.next_pid + len(self.handles),
             stdout=stdout,
             stderr=stderr,
@@ -170,6 +184,7 @@ class FakeCommands:
     async def kill(self, pid: int, request_timeout: float | None = None) -> bool:
         del request_timeout
         await anyio.lowlevel.checkpoint()
+        self._sandbox.check_alive()
         self.killed_pids.append(pid)
         if self._control.kill_command_error is not None:
             raise self._control.kill_command_error
@@ -179,7 +194,8 @@ class FakeCommands:
 class FakeFilesystem:
     """Mirrors `sandbox.files`: an in-memory tree the tests can drive and inspect."""
 
-    def __init__(self, control: FakeE2B) -> None:
+    def __init__(self, sandbox: FakeSandbox, control: FakeE2B) -> None:
+        self._sandbox = sandbox
         self._control = control
         self.files: dict[str, bytes] = {}
         self.directories: set[str] = set()
@@ -293,6 +309,7 @@ class FakeFilesystem:
         # would in prod, instead of silently keying the in-memory store on a relative path.
         assert posixpath.isabs(path), f'E2B filesystem requires an absolute path, got {path!r}'
         await anyio.lowlevel.checkpoint()
+        self._sandbox.check_alive()
         if self._control.fs_error is not None:
             raise self._control.fs_error
 
@@ -310,14 +327,29 @@ class FakeSandbox:
         self.id = id
         self.sandbox_id = id
         self.metadata = metadata or {}
-        self.files = FakeFilesystem(control)
+        self.files = FakeFilesystem(self, control)
         self.commands = FakeCommands(self, control)
         self.killed = False
 
     async def kill(self) -> bool:
+        # Real `kill` is a DELETE on the control plane that returns once E2B has removed the
+        # sandbox, and `False` when it was already gone (a 404). From then on the SDK's own
+        # docs show `is_running()` as `False`.
         await anyio.lowlevel.checkpoint()
+        if self.killed:
+            return False
         self.killed = True
         return True
+
+    def check_alive(self) -> None:
+        """Fail an envd call the way the SDK does once the sandbox is gone.
+
+        E2B's proxy answers a request for a killed sandbox with a 502, which the SDK raises as
+        a `TimeoutException` blaming the sandbox timeout -- the same type it uses for a slow
+        request, so only the health probe tells the two apart.
+        """
+        if self.killed:
+            raise format_sandbox_timeout_exception('The sandbox was not found')
 
     async def is_running(self, request_timeout: float | None = None) -> bool:
         del request_timeout
@@ -358,6 +390,9 @@ class FakeAsyncSandboxFactory:
         if self._control.connect_error is not None:
             raise self._control.connect_error
         existing = next((sandbox for sandbox in self._control.sandboxes if sandbox.id == id), None)
+        if existing is not None and existing.killed:
+            # The connect endpoint 404s for a killed sandbox, which the SDK raises like this.
+            raise SandboxNotFoundException(f'Paused sandbox {id} not found')
         if existing is not None:
             return existing
         return self._control.new_sandbox(id)
@@ -475,6 +510,6 @@ if TYPE_CHECKING:
     _fake_entry_conforms: _EntryInfoSurface = FakeEntryInfo(name='n', path='/n', type=FileType.FILE, size=0)
     _real_entry_conforms: _EntryInfoSurface = e2b.EntryInfo.__new__(e2b.EntryInfo)
     _fake_handle_conforms: _CommandHandleSurface = FakeCommandHandle(
-        FakeE2B(), pid=1, stdout='', stderr='', exit_code=0
+        FakeE2B(), FakeSandbox(FakeE2B(), 'sbx'), pid=1, stdout='', stderr='', exit_code=0
     )
     _real_handle_conforms: _CommandHandleSurface = e2b.AsyncCommandHandle.__new__(e2b.AsyncCommandHandle)

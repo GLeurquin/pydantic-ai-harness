@@ -20,7 +20,7 @@ from pydantic_ai.workspaces import (
 
 from pydantic_ai_harness.e2b_sandbox import E2BSandboxBackend
 
-from .fake_e2b import FakeE2B
+from .fake_e2b import FakeCommandHandle, FakeE2B
 
 
 async def started(**settings: Any) -> E2BSandboxBackend:
@@ -328,6 +328,56 @@ class TestRun:
         assert 'the command may still be running' in str(exc.value)
         # The command may still be running, so it is killed on the way out.
         assert fake_e2b.sandboxes[0].commands.killed_pids == [4242]
+
+
+class TestKilledSandbox:
+    """A sandbox killed through the native client is gone for every later operation.
+
+    The fake follows the SDK after `kill()`: connecting 404s into `SandboxNotFoundException`,
+    and envd calls on a handle that is still held fail with the 502 `TimeoutException` the
+    SDK blames on the sandbox timeout, which only the health probe tells from a slow request.
+    """
+
+    async def test_attaching_after_kill_is_unavailable(self, fake_e2b: FakeE2B) -> None:
+        owner = await started()
+        assert owner.ref is not None
+        assert await (await owner.get_client()).kill() is True
+        attached = E2BSandboxBackend(ref=owner.ref)
+        with pytest.raises(WorkspaceUnavailableError, match="'sbx-1' is no longer running"):
+            await attached.working_dir()
+        assert await fake_e2b.sandboxes[0].kill() is False
+
+    async def test_a_command_on_a_killed_sandbox_is_unavailable(self, fake_e2b: FakeE2B) -> None:
+        backend = await started()
+        await (await backend.get_client()).kill()
+        with pytest.raises(WorkspaceUnavailableError, match='or been killed'):
+            await backend.run(['true'])
+
+    async def test_a_filesystem_call_on_a_killed_sandbox_is_unavailable(self, fake_e2b: FakeE2B) -> None:
+        backend = await started()
+        await (await backend.get_client()).kill()
+        with pytest.raises(WorkspaceUnavailableError, match='or been killed'):
+            await backend.read_bytes('/tmp/a.txt')
+
+    async def test_a_backend_attached_before_the_kill_is_unavailable(self, fake_e2b: FakeE2B) -> None:
+        owner = await started()
+        assert owner.ref is not None
+        attached = await started(ref=owner.ref)
+        await (await owner.get_client()).kill()
+        with pytest.raises(WorkspaceUnavailableError, match='sbx-1 is no longer running'):
+            await attached.write_bytes('/tmp/a.txt', b'x')
+
+    async def test_a_kill_while_a_command_runs_is_unavailable(self, fake_e2b: FakeE2B) -> None:
+        backend = await started()
+        sandbox = fake_e2b.sandboxes[0]
+        fake_e2b.responder = lambda command, timeout: ('', '', 0)
+        handle = await sandbox.commands.run('sleep 1', background=True)
+        assert isinstance(handle, FakeCommandHandle)
+        await sandbox.kill()
+        with pytest.raises(fake_e2b.ambiguous_type):
+            await handle.wait()
+        with pytest.raises(WorkspaceUnavailableError):
+            await backend.run(['true'])
 
 
 class TestWorkingDir:
