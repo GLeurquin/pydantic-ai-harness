@@ -18,7 +18,7 @@ from pydantic_ai_harness.modal_sandbox._backend import (
     ModalSandboxBackend,
 )
 
-_DOCS_URL = 'https://pydantic.dev/docs/ai/harness/modal-sandbox/#upgrading-from-the-previous-modalsandbox'
+UPGRADE_DOCS_URL = 'https://pydantic.dev/docs/ai/harness/modal-sandbox/#upgrading-from-the-previous-modalsandbox'
 
 # Constructor arguments of the previous `ModalSandbox`, which registered its own `run_command`,
 # `read_file`, `write_file`, and `list_directory` tools, that have no counterpart now that the
@@ -63,7 +63,7 @@ def _legacy_argument_message(names: list[str]) -> str:
         '`ctx.workspace` and registers no tools of its own; add `Shell()` and/or `FileSystem()` alongside it '
         'to give the model command and file tools that run in the sandbox.\n'
         f'{moves}\n'
-        f'See {_DOCS_URL}'
+        f'See {UPGRADE_DOCS_URL}'
     )
 
 

@@ -22,6 +22,7 @@ from pydantic_ai.workspaces import (
     WorkspaceUnavailableError,
 )
 
+import pydantic_ai_harness.modal_sandbox as modal_sandbox_package
 from pydantic_ai_harness.modal_sandbox import ModalSandbox, ModalSandboxBackend
 
 from .fake_modal import FakeModal
@@ -320,3 +321,34 @@ async def test_agent_uses_modal_sandbox(fake_modal: FakeModal) -> None:
     result = await agent.run('go')
     assert 'run_command' in result.output
     assert fake_modal.sandboxes[0].exec_calls[0].argv == ['printf', 'hello']
+
+
+@pytest.mark.parametrize(
+    ('name', 'replacement'),
+    [
+        ('ModalSandboxSession', 'ModalSandboxBackend(workspace=<modal.Sandbox>)'),
+        ('ModalSandboxExecResult', 'pydantic_ai.workspaces.CommandResult'),
+        ('ModalSandboxError', 'pydantic_ai.workspaces.WorkspaceError'),
+        ('ModalSandboxTerminalError', 'pydantic_ai.workspaces.WorkspaceUnavailableError'),
+        ('ModalSandboxUnavailableError', 'pydantic_ai.workspaces.WorkspaceUnavailableError'),
+        ('ModalSandboxAuthError', 'pydantic_ai.workspaces.WorkspaceUnavailableError'),
+    ],
+)
+def test_removed_names_raise_import_error_naming_the_replacement(name: str, replacement: str) -> None:
+    with pytest.raises(ImportError) as exc_info:
+        getattr(modal_sandbox_package, name)
+    message = str(exc_info.value)
+    assert message.startswith(f'`{name}` was removed from `pydantic_ai_harness.modal_sandbox`.')
+    assert replacement in message
+    assert message.endswith('#upgrading-from-the-previous-modalsandbox')
+    assert exc_info.value.name == name
+
+
+def test_removed_name_fails_a_from_import_with_the_guidance() -> None:
+    with pytest.raises(ImportError, match='ModalSandboxBackend'):
+        from pydantic_ai_harness.modal_sandbox import ModalSandboxSession  # noqa: F401, I001, PLC0415  # pyright: ignore[reportUnusedImport]
+
+
+def test_other_missing_names_are_attribute_errors() -> None:
+    with pytest.raises(AttributeError, match="has no attribute 'ModalSandboxTypo'"):
+        getattr(modal_sandbox_package, 'ModalSandboxTypo')
