@@ -15,6 +15,7 @@ from pydantic_ai.exceptions import ModelAPIError, UnexpectedModelBehavior, Usage
 from pydantic_ai.messages import (
     AgentStreamEvent,
     ModelMessage,
+    ModelRequest,
     ModelResponse,
     RetryPromptPart,
     TextPart,
@@ -860,24 +861,56 @@ class TestIncludeSelf:
         assert offered == {'go': ['parent_tool', 'delegate_task'], 'subtask': ['parent_tool', 'delegate_task']}
 
     async def test_depth_is_capped(self) -> None:
-        prompts: list[str] = []
+        """A run at `max_depth` gets neither the delegate tool nor the listing, so it does the work itself."""
+        seen: dict[str, tuple[list[str], bool]] = {}
 
         def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
             prompt = _prompt(messages)
+            instructions = str(messages[0].instructions) if isinstance(messages[0], ModelRequest) else ''
+            seen.setdefault(
+                prompt, ([tool.name for tool in info.function_tools], 'Available sub-agents' in instructions)
+            )
             if len(messages) > 1:
-                return ModelResponse(parts=[TextPart(f'{prompt}: {_last_return(messages)}')])
-            prompts.append(prompt)
-            return _delegate_to_self(f'level {len(prompts) + 1}')
+                return ModelResponse(parts=[TextPart(f'{prompt} done')])
+            if 'delegate_task' in [tool.name for tool in info.function_tools]:
+                return _delegate_to_self(f'level {len(seen) + 1}')
+            return ModelResponse(parts=[TextPart(f'{prompt} done')])
 
         agent = Agent(
             FunctionModel(model_fn), capabilities=[SubAgents(include_self=True, max_depth=2, agent_folders=None)]
         )
         result = await agent.run('level 1')
-        assert prompts == ['level 1', 'level 2']
-        assert result.output == (
-            "level 1: level 2: Delegation is limited to 2 levels and this run is at level 2, so 'self' was not run. "
-            'Do the task yourself.'
+        assert result.output == 'level 1 done'
+        assert _delegate_returns(result) == ['level 2 done']
+        assert seen == {'level 1': (['delegate_task'], True), 'level 2': ([], False)}
+
+    async def test_directly_registered_toolset_hides_the_tool_at_max_depth(self) -> None:
+        offered: list[list[str]] = []
+
+        def worker_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            offered.append([tool.name for tool in info.function_tools])
+            return ModelResponse(parts=[TextPart('w')])
+
+        worker: Agent[object, str] = Agent(FunctionModel(worker_fn), name='worker')
+        toolset = SubAgentToolset[object](
+            agents={'worker': SubAgent(worker)},
+            forward_usage=True,
+            inherit_tools=False,
+            shared_capabilities=(),
+            event_stream_handler=None,
+            tool_name='delegate_task',
+            tool_retries=2,
+            contain_errors=False,
+            call_counts={},
+            max_depth=2,
         )
+        worker_with_toolset = Agent(FunctionModel(worker_fn), name='nested', toolsets=[toolset])
+        parent = Agent(
+            _delegate_then_finish('nested'),
+            capabilities=[SubAgents(agents=[SubAgent(worker_with_toolset)], agent_folders=None)],
+        )
+        await parent.run('go')
+        assert offered == [[]]
 
     async def test_depth_is_restored_after_a_delegation(self) -> None:
         """Consecutive delegations each start one level down, rather than one level below the last."""
@@ -959,12 +992,3 @@ class TestIncludeSelf:
         assert isinstance(merged, SubAgents)
         assert merged.include_self
         assert '- self: ' in str(merged.get_instructions())
-
-
-def _last_return(messages: list[ModelMessage]) -> str:
-    return next(
-        str(part.content)
-        for message in reversed(messages)
-        for part in message.parts
-        if isinstance(part, ToolReturnPart)
-    )

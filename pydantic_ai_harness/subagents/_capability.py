@@ -26,7 +26,13 @@ from pydantic_ai_harness.subagents._disk import (
 )
 from pydantic_ai_harness.subagents._effort import clamp_effort
 from pydantic_ai_harness.subagents._models import ModelOption, as_option, model_label, validate_restriction
-from pydantic_ai_harness.subagents._toolset import DEFAULT_MAX_DEPTH, SELF_AGENT_NAME, SubAgent, SubAgentToolset
+from pydantic_ai_harness.subagents._toolset import (
+    DEFAULT_MAX_DEPTH,
+    SELF_AGENT_NAME,
+    SubAgent,
+    SubAgentToolset,
+    at_max_depth,
+)
 
 if TYPE_CHECKING:
     from pydantic_ai._instructions import AgentInstructions
@@ -235,7 +241,7 @@ class SubAgents(AbstractCapability[AgentDepsT]):
     """How many levels a delegation tree may have, counting the top-level run as the first.
 
     The default of `3` lets the top-level run delegate, and its delegates delegate once more.
-    A delegation that would go deeper returns a steering message instead of running. The level
+    A run at the limit gets neither the delegate tool nor the sub-agent listing. The level
     is tracked per task tree, across every `SubAgents` capability, and each capability enforces
     its own limit. This bounds `include_self`, whose delegate carries the delegate tool again,
     and a roster that reaches the same agent through another path."""
@@ -249,6 +255,9 @@ class SubAgents(AbstractCapability[AgentDepsT]):
     _menu: dict[str, ModelOption] = field(default_factory=dict[str, ModelOption], init=False, repr=False, compare=False)
     """`models` normalized to `ModelOption` entries, built in `__post_init__`.
     Insertion order matches `models` for a stable prompt listing and enum."""
+
+    _delegation_off: bool = field(default=False, init=False, repr=False, compare=False)
+    """Set on the instance `for_run` returns for a run at `max_depth`, which contributes nothing."""
 
     _call_counts: dict[str, dict[str, int]] = field(
         default_factory=dict[str, 'dict[str, int]'], init=False, repr=False, compare=False
@@ -366,6 +375,12 @@ class SubAgents(AbstractCapability[AgentDepsT]):
             toolsets.extend(resolved)
         return toolsets
 
+    async def for_run(self, ctx: RunContext[AgentDepsT]) -> AbstractCapability[AgentDepsT]:
+        """This capability, or for a run at `max_depth` a copy without the delegate tool and listing."""
+        if not at_max_depth(self.max_depth):
+            return self
+        return replace_no_init(self, _delegation_off=True)
+
     async def wrap_run(self, ctx: RunContext[AgentDepsT], *, handler: WrapRunHandler) -> AgentRunResult[Any]:
         """Run the parent agent, then drop this run's delegation counts so they don't accumulate."""
         if self.include_self:
@@ -399,7 +414,7 @@ class SubAgents(AbstractCapability[AgentDepsT]):
 
     def get_instructions(self) -> AgentInstructions[AgentDepsT] | None:
         """Static, cache-stable listing of the available sub-agents and models."""
-        if not self._by_name and not self.include_self:
+        if self._delegation_off or (not self._by_name and not self.include_self):
             return None
         lines: list[str] = [f'- {SELF_AGENT_NAME}: {_SELF_DESCRIPTION}'] if self.include_self else []
         for name, sub_agent in self._by_name.items():
@@ -423,7 +438,7 @@ class SubAgents(AbstractCapability[AgentDepsT]):
 
     def get_toolset(self) -> AgentToolset[AgentDepsT] | None:
         """Toolset providing the delegate tool, or `None` when no sub-agents are configured."""
-        if not self._by_name and not self.include_self:
+        if self._delegation_off or (not self._by_name and not self.include_self):
             return None
         return SubAgentToolset(
             agents=self._by_name,

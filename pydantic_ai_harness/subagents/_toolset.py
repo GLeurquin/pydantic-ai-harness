@@ -58,6 +58,12 @@ of a delegation -- reads its own level, and sibling delegations running concurre
 parent step each read the level their parent set.
 """
 
+
+def at_max_depth(max_depth: int) -> bool:
+    """Whether the current run is as deep in its delegation tree as `max_depth` allows, so it may not delegate."""
+    return _depth.get() >= max_depth
+
+
 _MODEL_ARG = 'model'
 """Name of the delegate tool's model-selection argument, shared by the function
 signature and the schema rewrite that shapes it to the configured menu."""
@@ -247,15 +253,18 @@ class SubAgentToolset(FunctionToolset[AgentDepsT]):
         self._call_counts = call_counts
         self.add_function(self.delegate_task, name=tool_name, retries=tool_retries, prepare=self._prepare_delegate)
 
-    def _prepare_delegate(self, ctx: RunContext[AgentDepsT], tool_def: ToolDefinition) -> ToolDefinition:
-        """Shape the delegate tool's `model` argument to the configured menu.
+    def _prepare_delegate(self, ctx: RunContext[AgentDepsT], tool_def: ToolDefinition) -> ToolDefinition | None:
+        """Shape the delegate tool's `model` argument to the configured menu, or hide it at `max_depth`.
 
         With no menu the argument is dropped from the schema, so a capability that
         does not opt in exposes exactly the tool it did before. With a menu the
         argument becomes an enum of its keys, so the model picks from the offered
         options rather than inventing a model name. The result depends only on
-        static configuration, which keeps the tool schema cache-stable.
+        static configuration and on the run's delegation depth, which does not change during
+        a run, so the tool schema stays cache-stable.
         """
+        if at_max_depth(self._max_depth):
+            return None
         schema: ObjectJsonSchema = {**tool_def.parameters_json_schema}
         properties: dict[str, object] = {**schema.get('properties', {})}
         if self._models:
@@ -348,14 +357,6 @@ class SubAgentToolset(FunctionToolset[AgentDepsT]):
                 model. Only offered when a model menu is configured.
         """
         sub_agent = self._resolve_agent(ctx, agent_name)
-
-        depth = _depth.get()
-        if depth >= self._max_depth:
-            return self._steer(
-                sub_agent.on_failure,
-                f'Delegation is limited to {self._max_depth} levels and this run is at level {depth}, '
-                f'so {agent_name!r} was not run. Do the task yourself.',
-            )
 
         # Resolved before the call budget is charged, so a bad model key costs nothing.
         key = self._resolve_model_key(agent_name, sub_agent, model)
