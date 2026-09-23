@@ -141,6 +141,19 @@ class TestSpriteWorkspace:
             await backend.get_client()
         assert transport.close_calls == 0
 
+    async def test_deleted_sprite_is_unavailable_to_attach_commands_and_files(self, transport: SpriteTransport) -> None:
+        owner = SpriteWorkspaceBackend()
+        native = await owner.get_client()
+        assert owner.ref is not None
+        await native.delete()
+
+        with pytest.raises(WorkspaceUnavailableError):
+            await SpriteWorkspaceBackend(ref=owner.ref).working_dir()
+        with pytest.raises(WorkspaceUnavailableError):
+            await owner.run(['true'])
+        with pytest.raises(WorkspaceUnavailableError):
+            await Workspace(owner).read_bytes('/tmp/anything')
+
     @pytest.mark.parametrize(
         'status_code,expected_type',
         [

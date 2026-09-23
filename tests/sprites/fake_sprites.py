@@ -4,6 +4,10 @@ The Sprite handles, clients and exception classes are the real ones from the ins
 the network calls are replaced. Commands run for real: the backend's control payloads execute in
 local subprocesses whose working directory is `SpriteTransport.root`, so commands share one host
 directory and deadlines are real.
+
+Deletion follows the SDK: `destroy_sprite` (and `AsyncSprite.delete()`) returns once the API accepts
+the request, after which `get_sprite` raises `NotFoundError` and a control connection to the
+deleted Sprite fails its WebSocket handshake with HTTP 404 (`websockets.exceptions.InvalidStatus`).
 """
 
 from __future__ import annotations
@@ -18,6 +22,9 @@ from typing import BinaryIO
 import anyio
 from sprites import AsyncSprite, AsyncSpritesClient
 from sprites.exceptions import NotFoundError, SpriteError
+from websockets.datastructures import Headers
+from websockets.exceptions import InvalidStatus
+from websockets.http11 import Response
 
 
 class FakeOperation:
@@ -85,6 +92,8 @@ class FakeControlConnection:
     async def connect(self) -> None:
         if self.transport.connect_error is not None:
             raise self.transport.connect_error
+        if self.sprite.name not in self.transport.names:
+            raise InvalidStatus(Response(404, 'Not Found', Headers()))
 
     async def start_op(self, op: str, *, cmd: list[str], stdin: bool) -> FakeOperation:
         assert op == 'exec'
@@ -145,6 +154,11 @@ class SpriteTransport:
         if self.release_create is not None:
             await self.release_create.wait()
         return AsyncSprite(name, client)
+
+    async def destroy(self, client: AsyncSpritesClient, name: str) -> None:
+        if name not in self.names:
+            raise NotFoundError(name)
+        self.names.discard(name)
 
     async def close(self, client: AsyncSpritesClient) -> None:
         self.close_calls += 1

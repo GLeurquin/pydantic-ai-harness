@@ -47,6 +47,11 @@ if _HAS_SPRITES:  # pragma: no branch - the fixture requires the SDK-backed fake
             await transport.close(client)
 
         monkeypatch.setattr(AsyncSpritesClient, 'aclose', close)
+
+        async def destroy(client: AsyncSpritesClient, name: str) -> None:
+            await transport.destroy(client, name)
+
+        monkeypatch.setattr(AsyncSpritesClient, 'destroy_sprite', destroy)
         yield transport
         for client in transport.clients:
             await client.aclose()
