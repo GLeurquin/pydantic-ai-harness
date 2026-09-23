@@ -26,7 +26,13 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import AgentDepsT, RunContext
 from pydantic_ai.toolsets import FunctionToolset
 from pydantic_ai.usage import UsageLimits
-from pydantic_ai.workspaces import LocalWorkspaceBackend, ReadOnlyWorkspace, UnavailableWorkspace, Workspace
+from pydantic_ai.workspaces import (
+    LocalWorkspaceBackend,
+    ReadOnlyWorkspace,
+    UnavailableWorkspace,
+    Workspace,
+    WorkspaceReadOnlyError,
+)
 
 from pydantic_ai_harness.subagents import ModelOption, SubAgent, SubAgents, SubAgentToolset
 
@@ -254,7 +260,7 @@ class TestDelegation:
         async def workspace_details(ctx: RunContext[object]) -> str:
             assert ctx.workspace is facade
             working_dir = await ctx.workspace.working_dir()
-            with pytest.raises(UserError, match='read-only'):
+            with pytest.raises(WorkspaceReadOnlyError):
                 await ctx.workspace.run(['echo', 'blocked'])
             return working_dir
 
