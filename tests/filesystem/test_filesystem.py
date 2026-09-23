@@ -1824,6 +1824,25 @@ class TestWorkspaceBackends:
         # Without commands there is no `readlink`, so the symlink lines are left out.
         info = await toolset.file_info('link.txt', workspace=workspace)
         assert 'type: file' in info and 'symlink_target' not in info
+        assert await toolset.create_directory('made', workspace=workspace) == 'Created directory: made'
+        assert (fs_root / 'made').is_dir()
+
+    async def test_filesystem_only_backend_resolves_a_relative_root(self, fs_root: Path) -> None:
+        # The default root is the workspace's working directory, asked of the backend itself.
+        toolset = FileSystem[None]().get_toolset()
+        assert isinstance(toolset, FileSystemToolset)
+        assert 'Hello, world!' in await toolset.read_file('hello.txt', workspace=FilesystemOnlyWorkspace(fs_root))
+
+    async def test_failures_elsewhere_pass_through(self, toolset: FileSystemToolset[None], fs_root: Path) -> None:
+        # The fake fails only on paths ending in `where`; everything else reaches the local disk.
+        failing: dict[str, Exception] = {
+            'write_bytes': OSError(errno.ENOSPC, 'No space'),
+            'make_dir': OSError(errno.EROFS, 'Read-only'),
+        }
+        workspace = FailingWorkspace('/', failing, where='/elsewhere')
+        assert 'Wrote' in await toolset.write_file('passed.txt', 'ok\n', workspace=workspace)
+        assert await toolset.create_directory('passed', workspace=workspace) == 'Created directory: passed'
+        assert (fs_root / 'passed.txt').read_text() == 'ok\n' and (fs_root / 'passed').is_dir()
 
     async def test_unlistable_subdirectory_is_skipped(self, toolset: FileSystemToolset[None]) -> None:
         workspace = FailingWorkspace('/', {'list_dir': PermissionError(errno.EACCES, 'denied')}, where='/subdir')
