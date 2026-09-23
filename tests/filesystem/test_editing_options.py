@@ -6,10 +6,14 @@ from pathlib import Path
 import pytest
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.workspaces import LocalWorkspaceBackend
 
 from pydantic_ai_harness.filesystem import FILE_SYSTEM_TOOL_NAMES, FileSystem, FileSystemToolset, Replacement
 
 from .._tool_calls import call_tool
+
+WS = LocalWorkspaceBackend('/')
+"""The workspace for direct calls; the toolsets here all have absolute roots, so its working directory is moot."""
 
 pytestmark = pytest.mark.anyio
 
@@ -28,13 +32,15 @@ def toolset(root: Path, **settings: object) -> FileSystemToolset[None]:
 
 async def call(root: Path, name: str, arguments: dict[str, object], **settings: object) -> str:
     capability = FileSystem[None](root_dir=root, **settings)  # pyright: ignore[reportArgumentType]
-    return await call_tool([capability], name, arguments)
+    return await call_tool([capability], name, arguments, workspace=WS)
 
 
 class TestContentHashes:
     async def test_schema_omits_expected_hash(self, tmp_path: Path) -> None:
         model = TestModel(call_tools=[])
-        await Agent(model, capabilities=[FileSystem(root_dir=tmp_path, content_hashes=False)]).run('Inspect')
+        await Agent(model, capabilities=[FileSystem(root_dir=tmp_path, content_hashes=False)]).run(
+            'Inspect', workspace=WS
+        )
         assert model.last_model_request_parameters is not None
         schemas = {t.name: t.parameters_json_schema for t in model.last_model_request_parameters.function_tools}
         assert 'expected_hash' not in schemas['write_file']['properties']
@@ -42,7 +48,7 @@ class TestContentHashes:
         assert 'replacements' in schemas['edit_file']['properties']
 
         model = TestModel(call_tools=[])
-        await Agent(model, capabilities=[FileSystem(root_dir=tmp_path)]).run('Inspect')
+        await Agent(model, capabilities=[FileSystem(root_dir=tmp_path)]).run('Inspect', workspace=WS)
         assert model.last_model_request_parameters is not None
         schemas = {t.name: t.parameters_json_schema for t in model.last_model_request_parameters.function_tools}
         assert 'expected_hash' in schemas['write_file']['properties']
@@ -116,7 +122,7 @@ class TestReplacements:
 
     async def test_direct_method_keeps_single_pair(self, tmp_path: Path) -> None:
         (tmp_path / 'f.txt').write_text('one')
-        assert (await toolset(tmp_path).edit_file('f.txt', 'one', 'two')).startswith('Edited f.txt.')
+        assert (await toolset(tmp_path).edit_file('f.txt', 'one', 'two', workspace=WS)).startswith('Edited f.txt.')
         assert (tmp_path / 'f.txt').read_text() == 'two'
         assert Replacement(old_text='a', new_text='b').new_text == 'b'
 
@@ -184,17 +190,19 @@ class TestCwd:
         target.write_text('Project instructions')
         capability = FileSystem[None](root_dir=tmp_path, cwd=project, tools=FILE_SYSTEM_TOOL_NAMES)
 
-        discovered = await call_tool([capability], name, {'path': search_path, **arguments})
+        discovered = await call_tool([capability], name, {'path': search_path, **arguments}, workspace=WS)
         path = discovered.partition(':')[0].partition('  (')[0]
         assert path == os.path.relpath(target, project)
 
         decoy = project / target.relative_to(tmp_path)
         decoy.parent.mkdir(parents=True, exist_ok=True)
         decoy.write_text('Different instructions')
-        assert 'Project instructions' in await call_tool([capability], 'read_file', {'path': path})
-        await call_tool([capability], 'edit_file', {'path': path, 'old_text': 'Project', 'new_text': 'Updated'})
+        assert 'Project instructions' in await call_tool([capability], 'read_file', {'path': path}, workspace=WS)
+        await call_tool(
+            [capability], 'edit_file', {'path': path, 'old_text': 'Project', 'new_text': 'Updated'}, workspace=WS
+        )
         assert target.read_text() == 'Updated instructions'
-        await call_tool([capability], 'write_file', {'path': path, 'content': 'Replaced instructions'})
+        await call_tool([capability], 'write_file', {'path': path, 'content': 'Replaced instructions'}, workspace=WS)
         assert target.read_text() == 'Replaced instructions'
         assert decoy.read_text() == 'Different instructions'
 
@@ -224,11 +232,13 @@ class TestCwd:
             protected_patterns=['project/allowed.txt'],
         )
 
-        result = await call_tool([capability], name, arguments)
+        result = await call_tool([capability], name, arguments, workspace=WS)
         path = result.partition(':')[0].partition('  (')[0]
         assert path == 'allowed.txt'
-        assert 'content' in await call_tool([capability], 'read_file', {'path': path})
-        assert 'protected' in await call_tool([capability], 'write_file', {'path': path, 'content': 'changed'})
+        assert 'content' in await call_tool([capability], 'read_file', {'path': path}, workspace=WS)
+        assert 'protected' in await call_tool(
+            [capability], 'write_file', {'path': path, 'content': 'changed'}, workspace=WS
+        )
         assert (project / 'allowed.txt').read_text() == 'content'
 
     @pytest.mark.parametrize('content_hashes', [False, True])
@@ -237,7 +247,7 @@ class TestCwd:
         await Agent(
             model,
             capabilities=[FileSystem(root_dir=tmp_path, tools=FILE_SYSTEM_TOOL_NAMES, content_hashes=content_hashes)],
-        ).run('Inspect tools')
+        ).run('Inspect tools', workspace=WS)
         assert model.last_model_request_parameters is not None
         for tool in model.last_model_request_parameters.function_tools:
             description = tool.parameters_json_schema['properties']['path']['description']
@@ -248,11 +258,11 @@ class TestCwd:
         project.mkdir()
         (tmp_path / 'shared.txt').write_text('outside the project')
         built = toolset(tmp_path, cwd=project)
-        await built.write_file('local.txt', 'inside')
+        await built.write_file('local.txt', 'inside', workspace=WS)
         assert (project / 'local.txt').read_text() == 'inside'
-        assert 'outside the project' in await built.read_file('../shared.txt')
-        assert 'outside the project' in await built.read_file(str(tmp_path / 'shared.txt'))
-        assert await built.list_directory('.') == await built.list_directory('../project')
+        assert 'outside the project' in await built.read_file('../shared.txt', workspace=WS)
+        assert 'outside the project' in await built.read_file(str(tmp_path / 'shared.txt'), workspace=WS)
+        assert await built.list_directory('.', workspace=WS) == await built.list_directory('../project', workspace=WS)
 
     @pytest.mark.skipif(os.name == 'nt', reason='POSIX symlinks')
     async def test_file_info_reports_the_symlink_at_cwd(self, tmp_path: Path) -> None:
@@ -261,7 +271,7 @@ class TestCwd:
         (tmp_path / 'target.txt').write_text('shared')
         (project / 'link.txt').symlink_to(tmp_path / 'target.txt')
         (tmp_path / 'link.txt').write_text('a regular file at the root with the same name')
-        info = await toolset(tmp_path, cwd=project).file_info('link.txt')
+        info = await toolset(tmp_path, cwd=project).file_info('link.txt', workspace=WS)
         assert 'symlink' in info and 'target.txt' in info
 
     def test_cwd_must_be_inside_root(self, tmp_path: Path) -> None:

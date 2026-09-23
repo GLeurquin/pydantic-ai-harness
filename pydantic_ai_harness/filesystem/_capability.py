@@ -25,15 +25,22 @@ _DEFAULT_PROTECTED: list[str] = [
 
 @dataclass
 class FileSystem(AbstractCapability[AgentDepsT]):
-    """File system access scoped to a root directory.
+    """File system access to the run's workspace, scoped to a root directory.
 
-    Relative paths are resolved from `cwd` (by default `root_dir` itself).
-    Traversal above the root is rejected. Symlinks are resolved before
-    authorization.
+    Every operation goes through `ctx.workspace`, so attach a workspace to the
+    run: `LocalWorkspace(...)` for a local checkout, or a sandbox provider's
+    capability. Relative paths are resolved from `cwd` (by default `root_dir`
+    itself). Traversal above the root is rejected by comparing normalized paths
+    as text; symlinks inside the root are followed by the workspace, and
+    `protected_patterns` remains the guard for what may be written.
     """
 
     root_dir: str | Path = '.'
-    """Root directory for all file operations. Defaults to the current directory."""
+    """Root directory for all file operations, as a workspace path.
+
+    Relative paths resolve against the workspace's working directory, which is
+    also the default root.
+    """
 
     cwd: str | Path | None = None
     """Directory that relative paths resolve from; must be inside `root_dir`.
@@ -79,7 +86,10 @@ class FileSystem(AbstractCapability[AgentDepsT]):
     """Maximum number of matches returned by `find_files`."""
 
     read_only: bool = False
-    """Whether to expose only the tools in `READ_ONLY_TOOL_NAMES`."""
+    """Whether to expose only the tools in `READ_ONLY_TOOL_NAMES`.
+
+    A read-only workspace (`Workspace.read_only`) narrows the tools the same way for that run.
+    """
 
     content_hashes: bool = True
     """Whether tool results report content hashes and `write_file`/`edit_file` accept `expected_hash`.
@@ -92,9 +102,10 @@ class FileSystem(AbstractCapability[AgentDepsT]):
     tools: Sequence[str] = DEFAULT_TOOL_NAMES
     """Which tools to register, from `FILE_SYSTEM_TOOL_NAMES`.
 
-    The default is every pure-Python tool. Name `list_files` and `grep` to add
-    the ripgrep-backed listing and search tools, which need the `rg` executable
-    on `PATH` (the `coder` extra installs it) and respect `.gitignore`.
+    The default is every tool that needs only the workspace's filesystem. Name
+    `list_files` and `grep` to add the ripgrep-backed listing and search tools,
+    which run the `rg` executable inside the workspace (the `coder` extra
+    installs it for a local workspace) and respect `.gitignore`.
     `read_only` further narrows the selection to `READ_ONLY_TOOL_NAMES`.
     """
 

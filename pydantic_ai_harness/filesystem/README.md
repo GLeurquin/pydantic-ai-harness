@@ -7,28 +7,58 @@ Give an agent sandboxed, pattern-filtered access to a directory tree.
 ## The problem
 
 Letting an agent touch the filesystem directly is risky: path traversal
-(`../../etc/passwd`), symlinks that escape the project, clobbering `.git`, or
-leaking `.env` secrets. Hand-rolling the guards around every tool call is
+(`../../etc/passwd`), clobbering `.git`, or leaking `.env` secrets. Hand-rolling the guards around every tool call is
 repetitive and easy to get subtly wrong.
 
 ## The solution
 
 `FileSystem` exposes a fixed set of file tools, all scoped to a single
-`root_dir`. Every path is resolved and containment-checked (symlinks included)
-before any I/O, and access is filtered through allow / deny / protected glob
-patterns.
+`root_dir` in the run's workspace. Every path is resolved and
+containment-checked before any I/O, and access is filtered through allow / deny
+/ protected glob patterns.
 
 ```python
+from pathlib import Path
+
 from pydantic_ai import Agent
+from pydantic_ai.capabilities import LocalWorkspace
 from pydantic_ai_harness import FileSystem
 
 agent = Agent(
     'anthropic:claude-sonnet-4-6',
-    capabilities=[FileSystem(root_dir='./workspace')],
+    capabilities=[FileSystem(root_dir='./workspace'), LocalWorkspace(Path.cwd())],
 )
 
 result = agent.run_sync('Read config.toml and tell me the package name.')
 print(result.output)
+```
+
+## Where files live
+
+Every file operation goes through the run's workspace (`ctx.workspace`), not the
+agent process. Attach one to the run: `LocalWorkspace(...)` from
+`pydantic_ai.capabilities` for a local checkout, or a sandbox provider's
+workspace for an isolated environment. Without a workspace the first tool call
+ends the run with a `UserError` that says how to attach one. `root_dir` and
+`cwd` are paths inside the workspace; relative ones resolve against its working
+directory, which is also the default root. A read-only workspace
+(`LocalWorkspace(..., read_only=True)`, or any `ReadOnlyWorkspace`) narrows the
+tools to `READ_ONLY_TOOL_NAMES` for that run, as `read_only=True` does.
+
+Calling a `FileSystemToolset` method directly, outside a run, takes the
+workspace as a keyword argument:
+
+```python
+from pathlib import Path
+
+from pydantic_ai.workspaces import LocalWorkspaceBackend
+from pydantic_ai_harness.filesystem import FileSystem, FileSystemToolset
+
+
+async def main() -> None:
+    toolset = FileSystem(root_dir='.').get_toolset()
+    assert isinstance(toolset, FileSystemToolset)
+    print(await toolset.read_file('README.md', workspace=LocalWorkspaceBackend(Path.cwd())))
 ```
 
 ## Tools
@@ -42,16 +72,17 @@ print(result.output)
 | `search_files` | Regex search over file contents, optionally narrowed by an `include_glob`. |
 | `find_files` | Glob search over file names (e.g. `*.py`, `**/*.json`). The pattern is relative to `path`; absolute patterns are rejected. |
 | `create_directory` | Create a directory and any missing parents. |
-| `file_info` | Metadata for a file or directory (size, type, line count, hash, symlink target). |
+| `file_info` | Metadata for a file or directory (size when the workspace reports it, type, line count, hash, and the symlink target when the workspace can run `readlink`). |
 | `list_files` | Opt-in, ripgrep-backed: files under a directory, recursively, sorted by path, with an optional `glob`. |
 | `grep` | Opt-in, ripgrep-backed: content search with `glob`, `file_type`, `ignore_case`, `literal`, and `context` (0 to 20) options; a `path` may name a file or a directory. |
 
 ### Tool selection and the ripgrep tools
 
 `tools` names the tools to register, from `FILE_SYSTEM_TOOL_NAMES`. The default,
-`DEFAULT_TOOL_NAMES`, is the eight pure-Python tools. `list_files` and `grep` run
-the `rg` executable, which must be on `PATH` (the `coder` extra installs it), so
-they are opt-in by name:
+`DEFAULT_TOOL_NAMES`, is the eight tools that need only the workspace's
+filesystem. `list_files` and `grep` run the `rg` executable inside the
+workspace, which must be on its `PATH` (the `coder` extra installs it for a
+local workspace), so they are opt-in by name:
 
 ```python
 from pydantic_ai_harness import FileSystem
@@ -69,7 +100,9 @@ to `cwd`; a pattern uses ripgrep's regex syntax unless `literal` is set. A
 missing `rg` or a pattern ripgrep rejects comes back to the model as a retry, so
 it can correct the call or use `search_files`/`find_files` instead. Every path
 ripgrep prints goes through the same containment and pattern checks as the other
-walkers before it is shown. `read_only=True` keeps only the tools in
+walkers before it is shown. The workspace returns a command's output whole, so
+ripgrep's output is cut at 8 MiB inside the workspace, and a search that prints
+more is reported as truncated. `read_only=True` keeps only the tools in
 `READ_ONLY_TOOL_NAMES` from whatever `tools` selects.
 
 ### Content hashes
@@ -119,19 +152,19 @@ file emits no request, so a listener cannot approve what the policy or the
 filesystem refuses. A
 listener may take a while (a human approving the diff, say), so once the
 request returns the path is resolved and checked again, and a write or edit
-checks under its open descriptor that the file still holds what the listener
-was shown: a path or file replaced in the meantime fails after it was
-announced instead of being redirected or overwritten, and an edit does not
-recreate a file deleted in the meantime. This holds the window between the
-containment check and the I/O (see [Security model](#security-model)) to what
-it is without a listener for readable targets. For a target the process cannot
-read, an approved write has no content guard; passing `expected_hash` instead
-refuses the write before announcement. A listener that calls `cancel(reason)`
+re-reads the file just before writing and checks that it still holds what the
+listener was shown: a file changed in the meantime fails after it was
+announced instead of being overwritten, and an edit does not recreate a file
+deleted in the meantime. This holds the window between the check and the write
+(see [Security model](#security-model)) to what it is without a listener for
+readable targets. For a target the workspace cannot read, an approved write has
+no content guard; passing `expected_hash` instead refuses the write before
+announcement. A listener that calls `cancel(reason)`
 stops the change before it touches the disk, and the model gets the reason as the tool
 result. A listener that raises instead aborts the run, as any raising event
 listener does, and the change is not applied. `diff` is the unified diff from
 the current content to the proposed content: a new file diffs from empty, a
-file the process cannot read is announced with the file headers alone and
+file the workspace cannot read is announced with the file headers alone and
 `truncated` set, since what it holds cannot be shown, and a `create_directory`
 has no diff. A `create_directory` on a directory that already exists changes
 nothing and emits nothing. The other events are notifications.
@@ -153,11 +186,12 @@ change to the final newline alone is visible. A `FilesSearchedEvent` counts
 the matches the model received; `truncated` says the search stopped at
 `max_search_results` or `max_find_results`.
 
-`path` is the normalized, symlink-resolved location relative to `root_dir`,
-never an absolute host path, so it is safe to echo to the model or a UI.
-`root_dir` is the emitting filesystem's resolved root, so a subscriber rooted
-elsewhere can locate the file as `Path(root_dir) / path` instead of assuming
-it shares the emitter's root.
+`path` is the normalized location relative to `root_dir`, never an absolute
+path, so it is safe to echo to the model or a UI. `root_dir` is the emitting
+filesystem's root as an absolute POSIX path inside the run's workspace, so a
+subscriber rooted elsewhere can locate the file as
+`posixpath.join(root_dir, path)` in that workspace instead of assuming it
+shares the emitter's root.
 
 Every event path has passed the containment check and the denied patterns. A
 `DirectoryListedEvent` or `FilesSearchedEvent` names the walk root, which is
@@ -194,8 +228,11 @@ a path name rejected by Windows, a path name the filesystem cannot encode, an
 over-long path name, a symlink loop -- are surfaced as
 [`ModelRetry`](https://ai.pydantic.dev/agents/#reflection-and-self-correction),
 so the agent gets the error message back and can adjust rather than aborting
-the run. Failures the model can do nothing about, such as a full or read-only
-disk, still abort.
+the run. A workspace that refuses an operation -- a read-only workspace
+refusing a write, an operation past its deadline, another deliberate backend
+failure -- is reported as a failed tool call the model sees, with no retry
+prompt. Failures the model can do nothing about, such as a full disk or a
+workspace that is gone, still abort.
 
 When an OS error supplies a filename, `FileSystem` reports it relative to
 `root_dir`; paths outside `root_dir` become `<outside-workspace>`. `file_info`
@@ -204,53 +241,36 @@ applies the same rule to absolute symlink targets.
 ## Security model
 
 - **Containment.** Relative paths resolve from `cwd`; anything resolving
-  outside `root_dir` -- via `..`, an absolute path, or a symlink -- is rejected. Symlinks
-  are resolved with `os.path.realpath` *before* the containment check, and I/O
-  then uses the resolved path. Directory walks (`list_directory`,
-  `search_files`, `find_files`, `list_files`, `grep`) resolve each entry the same way and match the
-  patterns against that resolved target, so a symlink cannot name a file
-  outside the tree or present a denied file under a permitted name. These
-  checks are pathname-based: if another process mutates the tree between
-  resolution and I/O, the path read can differ from the path checked.
+  outside `root_dir` via `..` or an absolute path is rejected. The check
+  compares normalized workspace paths as text: there is no host `realpath`, so
+  a symlink inside the root is followed by the workspace backend wherever it
+  points. Patterns match the root-relative path as it is spelled, in direct
+  access and in directory walks (`list_directory`, `search_files`,
+  `find_files`, `list_files`, `grep`), so `protected_patterns` and
+  `denied_patterns` remain the guard for what the agent may write or see. The
+  workspace is the isolation boundary: use a sandboxed workspace when the tree
+  itself is untrusted.
 - **Binary detection.** `read_file` returns a placeholder instead of dumping
   binary bytes into the model context.
 - **Optimistic concurrency.** `write_file`/`edit_file` accept an
   `expected_hash` so an agent operating on a stale read is told to re-read
-  rather than silently overwriting newer content. Content hashes identify
-  the file's bytes decoded without newline translation, so `read_file`,
-  `write_file`, `edit_file`, and `file_info` agree regardless of line
-  endings.
-- **Regular write targets.** `write_file` rejects an existing target that is
-  not a regular file. On POSIX, it opens the final target descriptor in
-  non-blocking mode and checks that descriptor's type before truncating, so a
-  FIFO at the final component cannot stall the tool even if it is swapped into
-  place during the write.
+  rather than silently overwriting newer content. Content hashes are the
+  SHA-256 of the file's raw bytes (first 12 hex characters), so `read_file`,
+  `write_file`, `edit_file`, and `file_info` agree regardless of line endings
+  or encoding.
+- **Write targets.** `write_file` rejects an existing directory at the target.
+  Special files (a FIFO, a device) are read and written the way the workspace
+  backend reads and writes them; the local workspace blocks on a FIFO.
 
-### Custom file streams
+### Custom storage
 
-`FileSystem` uses local `pathlib.Path` paths; passing a remote `UPath` as
-`root_dir` is not supported. For a custom `FileSystemToolset`, override
-`open_read(resolved)` and `open_write(resolved, *, read_back, create)` to
-replace descriptor-based I/O used by write snapshots, `write_file`, and
-`edit_file`. Return the subclass from a custom `FileSystem.get_toolset()`
-implementation and register that capability with `Agent(capabilities=[...])`
-so filesystem events retain their capability ownership.
-
-`open_read` returns a binary stream for the pre-change snapshot and edit source. `open_write`
-returns `(stream, created)`: a seekable, non-truncated binary stream and
-whether this open exclusively created the file. When `read_back=True`, the
-stream must be readable from position zero. When `create=False`, a missing
-file must raise `FileNotFoundError`. The tool closes both streams, compares
-content hashes before truncating, and writes UTF-8 bytes without newline
-translation. A stream need not implement `fileno()`.
-
-Overrides must provide their backend's file-type checks and creation/race
-semantics. These methods do not implement remote path resolution,
-containment, directory operations, or discovery; a remote adapter must also
-supply those behaviors. The local implementation retains descriptor checks
-and POSIX non-blocking/no-follow flags. Hash checking is optimistic, not a
-lock against concurrent writers. Tool spans and filesystem events are
-unchanged; the opening methods add no telemetry.
+Before this release, `FileSystemToolset` had `open_read` and `open_write` hooks
+for replacing its descriptor-based I/O. They are removed: a workspace backend is
+the abstraction they were reaching for. Implement `SupportsFilesystem` (and
+`SupportsCommands`, for the ripgrep tools and `file_info` symlink targets) on a
+`WorkspaceBackend` and attach it to the run; containment, patterns, events, and
+hashes then apply unchanged. Hash checking is optimistic, not a lock against
+concurrent writers.
 
 ## Pattern filtering
 
@@ -300,7 +320,7 @@ reject them.
 from pydantic_ai_harness import FileSystem
 
 FileSystem(
-    root_dir='.',                  # str | Path -- sandbox root
+    root_dir='.',                  # str | Path -- root, as a path inside the workspace
     cwd=None,                      # where relative paths resolve from (defaults to root_dir)
     allowed_patterns=[],           # allowlist globs (empty = allow all)
     denied_patterns=[],            # denylist globs

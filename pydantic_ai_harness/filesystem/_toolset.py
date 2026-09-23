@@ -1,25 +1,31 @@
-"""Filesystem toolset providing sandboxed file operations."""
+"""Filesystem toolset providing file operations inside the run's workspace."""
 
 from __future__ import annotations
 
-import codecs
 import errno
 import fnmatch
 import functools
 import hashlib
-import itertools
 import os
+import posixpath
 import re
-import stat
-from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import KW_ONLY, dataclass
 from pathlib import Path
-from typing import BinaryIO, Concatenate, ParamSpec, TypedDict
+from typing import Concatenate, ParamSpec, TypedDict
 
-from pydantic_ai.exceptions import ModelRetry
+from pydantic_ai.exceptions import ModelRetry, UserError
 from pydantic_ai.tools import AgentDepsT, RunContext
-from pydantic_ai.toolsets import FunctionToolset
+from pydantic_ai.toolsets import FunctionToolset, ToolsetTool
+from pydantic_ai.workspaces import (
+    Workspace,
+    WorkspaceBackend,
+    WorkspaceError,
+    WorkspaceFileEntry,
+    WorkspaceReadOnlyError,
+)
 
+from pydantic_ai_harness._workspace import raise_tool_failure, supports_commands, workspace_path
 from pydantic_ai_harness.filesystem._changes import Change
 from pydantic_ai_harness.filesystem._events import (
     MAX_DIFF_SOURCE_CHARS,
@@ -44,7 +50,7 @@ DEFAULT_TOOL_NAMES: tuple[str, ...] = (
     'create_directory',
     'file_info',
 )
-"""The tools `FileSystem` registers by default; all are pure Python."""
+"""The tools `FileSystem` registers by default; none needs a command-capable workspace."""
 
 RIPGREP_TOOL_NAMES: tuple[str, ...] = ('list_files', 'grep')
 """Opt-in tools backed by the `rg` executable, which respects `.gitignore` and skips hidden files."""
@@ -59,6 +65,9 @@ READ_ONLY_TOOL_NAMES: frozenset[str] = frozenset(
     {'read_file', 'list_directory', 'search_files', 'find_files', 'file_info', *RIPGREP_TOOL_NAMES}
 )
 """Names of filesystem tools that do not modify the workspace."""
+
+_READLINK_TIMEOUT = 10.0
+"""Deadline for the `readlink` probe `file_info` runs to report a symlink target."""
 
 
 @dataclass
@@ -76,14 +85,10 @@ class Replacement:
 # converts these so the agent can correct itself and continue.
 _RECOVERABLE_ERRORS = (PermissionError, FileNotFoundError, NotADirectoryError, IsADirectoryError, ValueError)
 
-# The same idea one level down, for failures Python raises as a bare `OSError`
-# with no dedicated subclass for `_RECOVERABLE_ERRORS` to name. Entries are
-# explicit so other errors keep aborting the run; for example, retrying cannot
-# fix `ENOSPC` or `EROFS`.
-#
-# Which operations reach these depends on the Python version. `Path.is_file`
-# and friends stopped propagating `ENAMETOOLONG` in 3.14, so on 3.10 through
-# 3.13 the read operations surface it too, not just the write path.
+# The same idea one level down, for failures the workspace raises as a bare
+# `OSError` with no dedicated subclass for `_RECOVERABLE_ERRORS` to name.
+# Entries are explicit so other errors keep aborting the run; for example,
+# retrying cannot fix `ENOSPC` or `EROFS`.
 #
 # Keyed by `OSError.errno`, which the stdlib types as `int | None`.
 _RECOVERABLE_ERRNOS: dict[int | None, str] = {
@@ -103,8 +108,8 @@ _ABSENT_HASH = '<absent>'
 """The guard for a write announced against a path with nothing at it.
 
 No file hashes to a bracketed marker, so one that appears while the create is
-announced fails the descriptor check even when it is empty -- which the empty
-file's own hash, and so `_disk_hash([b''])`, would have matched.
+announced fails the check before the write even when it is empty -- which the
+empty file's own hash would have matched.
 """
 
 
@@ -115,7 +120,33 @@ class _EventLocation(TypedDict):
     root_dir: str
 
 
-def _model_safe_filename(filename: str | bytes, real_root: Path) -> str:
+@dataclass(frozen=True)
+class _Scope:
+    """The workspace a call acts on, with the configured root and cwd resolved inside it."""
+
+    workspace: Workspace
+    root: str
+    """Absolute, normalized workspace path of `root_dir`."""
+    cwd: str
+    """Absolute, normalized workspace path relative paths resolve from; inside `root`."""
+
+
+def _contains(root: str, path: str) -> bool:
+    """Whether the normalized absolute `path` is `root` or below it, compared as text."""
+    return path == root or path.startswith(root.rstrip('/') + '/')
+
+
+def _is_hidden(relative: str) -> bool:
+    """Whether a root-relative path has a dot-prefixed component."""
+    return relative != '.' and any(part.startswith('.') for part in relative.split('/'))
+
+
+def _sort_key(path: str) -> list[str]:
+    """Order paths component by component, as sorting `Path` objects does."""
+    return path.split('/')
+
+
+def _model_safe_filename(filename: str | bytes, root: str) -> str:
     """Return the path relative to the workspace root.
 
     Paths not inside the root become `_OUTSIDE_WORKSPACE`; values that are
@@ -125,52 +156,51 @@ def _model_safe_filename(filename: str | bytes, real_root: Path) -> str:
         raw = os.fsdecode(filename)
     except TypeError:
         return _NOT_A_PATH
-    path = Path(raw)
-    if not path.is_absolute():
-        return path.as_posix()
-    try:
-        return path.relative_to(real_root).as_posix()
-    except ValueError:
-        pass
-    try:
-        return Path(os.path.realpath(path)).relative_to(real_root).as_posix()
-    except (ValueError, OSError):
-        return _OUTSIDE_WORKSPACE
+    if not posixpath.isabs(raw):
+        return raw
+    path = posixpath.normpath(raw)
+    if _contains(root, path):
+        return posixpath.relpath(path, root)
+    return _OUTSIDE_WORKSPACE
 
 
-def _sanitize_recoverable_error(error: BaseException, real_root: Path) -> str:
-    """Render a recoverable error without exposing absolute host paths.
+def _sanitize_recoverable_error(error: BaseException, root: str) -> str:
+    """Render a recoverable error without exposing absolute paths outside the root.
 
     Errors without an OS-supplied `filename` keep their original message.
     OS errors keep `errno` and `strerror`, with the path rewritten relative
-    to `real_root` (see `_model_safe_filename` for the fallback placeholders).
+    to `root` (see `_model_safe_filename` for the fallback placeholders).
     """
     if not isinstance(error, OSError) or error.filename is None:
         return str(error)
 
-    filename = _model_safe_filename(error.filename, real_root)
+    filename = _model_safe_filename(error.filename, root)
     return f'[Errno {error.errno}] {error.strerror}: {filename!r}'
 
 
 def _recoverable(
-    fn: Callable[Concatenate[FileSystemToolset, _P], Awaitable[str]],
-) -> Callable[Concatenate[FileSystemToolset, _P], Awaitable[str]]:
-    """Surface model-correctable tool errors as `ModelRetry`."""
+    fn: Callable[Concatenate[FileSystemToolset, _Scope, _P], Awaitable[str]],
+) -> Callable[Concatenate[FileSystemToolset, _Scope, _P], Awaitable[str]]:
+    """Surface model-correctable tool errors as `ModelRetry`, and workspace refusals as `ToolFailed`."""
 
     @functools.wraps(fn)
-    async def wrapper(self: FileSystemToolset, *args: _P.args, **kwargs: _P.kwargs) -> str:
+    async def wrapper(self: FileSystemToolset, scope: _Scope, *args: _P.args, **kwargs: _P.kwargs) -> str:
         try:
-            return await fn(self, *args, **kwargs)
+            return await fn(self, scope, *args, **kwargs)
+        # Before the recoverable tuple and `OSError`: `WorkspaceReadOnlyError` is a
+        # `PermissionError` and `WorkspaceTimeoutError` a `TimeoutError`, and neither is
+        # something the model fixes by changing its arguments.
+        except WorkspaceError as e:
+            raise_tool_failure(e)
         except _RECOVERABLE_ERRORS as e:
-            real_root = self._real_root  # pyright: ignore[reportPrivateUsage]
-            raise ModelRetry(_sanitize_recoverable_error(e, real_root)) from e
+            raise ModelRetry(_sanitize_recoverable_error(e, scope.root)) from e
         except OSError as e:
             reason = _RECOVERABLE_ERRNOS.get(e.errno)
             if reason is None and getattr(e, 'winerror', None) == _WINDOWS_ERROR_INVALID_NAME:
                 reason = 'The path name is invalid.'
             if reason is None:
                 raise
-            # The full error may embed the absolute host path; the reason is path-free.
+            # The full error may embed an absolute path; the reason is path-free.
             raise ModelRetry(reason) from e
 
     return wrapper
@@ -242,99 +272,23 @@ def _matching_lines(text: str, compiled: re.Pattern[str], rel_str: str, limit: i
     return matches, False
 
 
-def _content_hash(content: str) -> str:
-    """Compute a short content hash for conflict detection.
-
-    The hash is defined over the file's text as decoded from its bytes with
-    no newline translation, the view `read_file` returns. Every tool that
-    reports a hash (`read_file`, `write_file`, `edit_file`, `file_info`)
-    computes it over that same view, so a hash from any of them identifies
-    the same bytes on disk and the optimistic-concurrency handshake holds
-    regardless of line endings.
-    """
-    return _bytes_hash(content.encode('utf-8'))
-
-
 def _bytes_hash(data: bytes) -> str:
+    """The content hash every tool reports: SHA-256 of the file's raw bytes, first 12 hex characters.
+
+    `read_file`, `write_file`, `edit_file`, and `file_info` all hash the bytes
+    in the workspace, so a hash from any of them identifies the same content and
+    the `expected_hash` handshake holds whatever the line endings or encoding.
+    """
     return hashlib.sha256(data).hexdigest()[:12]
 
 
-_HASH_CHUNK_BYTES = 1 << 20
+def _content_hash(content: str) -> str:
+    """The hash of `content` as the tools write it: its UTF-8 bytes."""
+    return _bytes_hash(content.encode('utf-8'))
+
 
 _DIFF_SOURCE_BYTES = 4 * MAX_DIFF_SOURCE_CHARS
 """Bytes that can hold `MAX_DIFF_SOURCE_CHARS` of UTF-8; a longer file is past the bound whatever it holds."""
-
-_SPECIAL_FILE_FLAGS = os.O_BINARY if os.name == 'nt' else os.O_NONBLOCK | os.O_NOFOLLOW
-"""Open flags that keep a special file swapped onto a checked path from stalling or redirecting the open.
-
-POSIX non-blocking mode stops a FIFO from waiting for the other end, and
-O_NOFOLLOW stops a symlink swap from redirecting the descriptor. Windows has
-neither hazard; O_BINARY keeps its text I/O from translating the bytes.
-"""
-
-
-def _chunks(source: BinaryIO) -> Iterator[bytes]:
-    """`source` in `_HASH_CHUNK_BYTES` pieces, so hashing a file never holds it whole."""
-    return iter(functools.partial(source.read, _HASH_CHUNK_BYTES), b'')
-
-
-def _disk_hash(chunks: Iterable[bytes]) -> str:
-    """The hash `read_file` reports for a file: of the bytes for a binary file, of the decoded text otherwise.
-
-    Decoding is lenient, as `read_file` decodes, so a text file holding an
-    invalid byte hashes to what the model was told and its `expected_hash`
-    handshake holds. Every check against the disk uses this one rule. The
-    first chunk decides whether the file is binary, so it must cover the
-    `_is_binary` sample: a whole file, or at least that sample's 8192 bytes.
-    """
-    digest = hashlib.sha256()
-    decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
-    binary = False
-    for index, chunk in enumerate(chunks):
-        if index == 0:
-            binary = _is_binary(chunk)
-        digest.update(chunk if binary else decoder.decode(chunk).encode('utf-8'))
-    if not binary:
-        digest.update(decoder.decode(b'', final=True).encode('utf-8'))
-    return digest.hexdigest()[:12]
-
-
-def _announced_state(
-    resolved: Path,
-    path: str,
-    *,
-    expected_hash: str | None,
-    open_read: Callable[[Path], BinaryIO],
-) -> tuple[str | None, str | None]:
-    """The text a listener is shown a write replacing, and the hash the write is then guarded with.
-
-    A stale `expected_hash` for a file that exists is rejected here first, so
-    a listener only sees a write that would go ahead; for a missing file the
-    hash is ignored, as documented, and the write is announced as a create.
-    A new file diffs from empty and is guarded as absent, so one that appears
-    while the write is announced is a conflict whether or not it is empty: the
-    guard cannot be `_disk_hash([b''])`, which an empty file does hash to. The
-    text is `None` when it cannot be shown: a file the process cannot read (a
-    write-only mode, say) is announced as headers alone, marked as cut, and
-    written unguarded, while an `expected_hash` it cannot check propagates the
-    error; past `MAX_DIFF_SOURCE_CHARS` it would not be diffed, so only as
-    many bytes as can hold that many characters are read into memory and the
-    rest is hashed in chunks.
-    """
-    if not resolved.is_file():
-        return '', _ABSENT_HASH
-    try:
-        with open_read(resolved) as source:
-            head = source.read(_DIFF_SOURCE_BYTES + 1)
-            current_hash = _disk_hash(itertools.chain([head], _chunks(source)))
-    except OSError:
-        if expected_hash is not None:
-            raise
-        return None, None
-    if expected_hash is not None:
-        _check_expected_hash(path, current_hash, expected_hash)
-    old = head.decode('utf-8', errors='replace') if len(head) <= _DIFF_SOURCE_BYTES else None
-    return old, current_hash
 
 
 def _check_expected_hash(path: str, current_hash: str, expected_hash: str) -> None:
@@ -344,67 +298,6 @@ def _check_expected_hash(path: str, current_hash: str, expected_hash: str) -> No
             f'Conflict: file {path!r} has changed (expected hash:{expected_hash}, '
             f'got hash:{current_hash}). Re-read the file and retry.'
         )
-
-
-def _nearest_existing(path: Path) -> Path:
-    """The path itself or its closest ancestor that exists, or its anchor when nothing on the chain does."""
-    # The anchor is its own parent, so an absent one (a Windows drive that
-    # went away) would otherwise never end the walk.
-    while not path.exists() and path.parent != path:
-        path = path.parent
-    return path
-
-
-def _open_for_write(resolved: Path, path: str, *, read_back: bool, create: bool) -> tuple[int, bool]:
-    """Open `resolved` for writing without truncating it; returns the descriptor and whether it was created.
-
-    Opening without O_TRUNC lets the caller classify the descriptor and check
-    the expected hash before changing the file (`read_back` opens it
-    read-write for that). An edit passes `create=False`: a file that vanished
-    while its change was announced is reported missing, not recreated.
-    `_SPECIAL_FILE_FLAGS` keeps a swapped-in special file from stalling or
-    redirecting the open, and binary I/O on Windows means the written bytes
-    are exactly the encoded content, so the reported hash matches the bytes a
-    later `read_file` hashes.
-    """
-    access_flags = os.O_RDWR if read_back else os.O_WRONLY
-    try:
-        if not create:
-            return os.open(resolved, access_flags | _SPECIAL_FILE_FLAGS), False
-        # The target can disappear after O_EXCL reports that it exists. Retry
-        # the complete atomic classification so an ordinary write still
-        # recreates it, while bounding churn from a concurrently replaced path.
-        for _ in range(3):
-            try:
-                descriptor = os.open(resolved, access_flags | _SPECIAL_FILE_FLAGS | os.O_CREAT | os.O_EXCL, 0o666)
-            except FileExistsError:
-                try:
-                    return os.open(resolved, access_flags | _SPECIAL_FILE_FLAGS), False
-                except FileNotFoundError:
-                    continue
-            return descriptor, True
-        raise ModelRetry(f'Path {path!r} changed repeatedly while opening. Retry the write.')
-    except OSError as e:
-        if e.errno == errno.ELOOP:
-            raise ModelRetry(f'Path {path!r} encountered a symlink loop or changed to a symlink before opening.') from e
-        if e.errno in (errno.EISDIR, errno.ENODEV, errno.ENXIO):
-            raise ModelRetry(f'Path {path!r} exists and is not a regular file.') from e
-        raise
-
-
-def _write_content(source: BinaryIO, path: str, content: str, *, expected_hash: str | None, created: bool) -> None:
-    """Check the existing stream's hash before truncating and writing UTF-8 bytes.
-
-    This uses the same stream for checking and writing, but does not lock out
-    concurrent writers. Invalid UTF-8 is hashed as `read_file` hashes it.
-    """
-    with source:
-        if expected_hash is not None and not created:
-            _check_expected_hash(path, _disk_hash(_chunks(source)), expected_hash)
-
-        source.seek(0)
-        source.truncate(0)
-        source.write(content.encode('utf-8'))
 
 
 def _replacements(
@@ -438,14 +331,39 @@ def _apply_replacements(text: str, replacements: Sequence[Replacement], path: st
     return text
 
 
-class FileSystemToolset(FunctionToolset[AgentDepsT]):
-    """Toolset providing filesystem operations scoped to a root directory.
+def _glob_parts(pattern: str) -> tuple[list[str], bool]:
+    """Split a relative glob into its components and whether it only matches directories (a trailing `/`)."""
+    parts = [part for part in pattern.split('/') if part not in ('', '.')]
+    if not parts or '..' in parts:
+        raise ModelRetry(f'Pattern {pattern!r} is not a valid glob pattern.')
+    return parts, pattern.endswith('/')
 
-    Security model:
+
+def _glob_match(pattern: Sequence[str], path: Sequence[str]) -> bool:
+    """Match path components against glob components the way `Path.glob` does.
+
+    `*`, `?`, and `[...]` stay within one component; a `**` component matches
+    zero or more whole components.
+    """
+    if not pattern:
+        return not path
+    head, rest = pattern[0], pattern[1:]
+    if head == '**':
+        return any(_glob_match(rest, path[index:]) for index in range(len(path) + 1))
+    return bool(path) and fnmatch.fnmatchcase(path[0], head) and _glob_match(rest, path[1:])
+
+
+def _as_workspace(workspace: WorkspaceBackend) -> Workspace:
+    return workspace if isinstance(workspace, Workspace) else Workspace(workspace)
+
+
+class FileSystemToolset(FunctionToolset[AgentDepsT]):
+    """Toolset providing filesystem operations inside the run's workspace, scoped to a root directory.
+
+    Every file operation goes through `ctx.workspace`. Security model:
     - Relative paths resolved from `cwd` and checked for containment in `root_dir`
-    - Symlinks resolved before authorization, and again after a listener has
-      held a change request; a rename on the path between that check and the
-      by-name I/O remains possible, as the documented security model says
+      as text; symlinks inside the root are followed by the workspace backend,
+      which is the isolation boundary
     - Glob-based allow/deny filtering
     - Protected path patterns (e.g. `.git/`, `.env`)
     - Binary file detection blocks text operations
@@ -469,11 +387,16 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
         tools: Sequence[str] = DEFAULT_TOOL_NAMES,
     ) -> None:
         super().__init__(id=id)
-        self._root = root_dir.resolve()
-        self._real_root = Path(os.path.realpath(self._root))
-        self._cwd = self._root if cwd is None else cwd.resolve()
-        if not Path(os.path.realpath(self._cwd)).is_relative_to(self._real_root):
-            raise ValueError(f'cwd {os.fspath(self._cwd)!r} is outside root_dir {os.fspath(root_dir)!r}.')
+        # Workspace paths, absolute or relative to the workspace's working directory; each call
+        # resolves them against the workspace it acts on.
+        self._root_spelling = workspace_path(root_dir)
+        self._cwd_spelling = None if cwd is None else workspace_path(cwd)
+        if self._cwd_spelling is not None and posixpath.isabs(self._cwd_spelling) == posixpath.isabs(
+            self._root_spelling
+        ):
+            # Comparable without a workspace; a mixed pair is checked when a call resolves both.
+            if not _contains(posixpath.normpath(self._root_spelling), posixpath.normpath(self._cwd_spelling)):
+                raise ValueError(f'cwd {self._cwd_spelling!r} is outside root_dir {self._root_spelling!r}.')
         self._allowed_patterns = list(allowed_patterns)
         self._denied_patterns = list(denied_patterns)
         self._protected_patterns = list(protected_patterns)
@@ -497,7 +420,7 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
             'search_files': self._search_files_tool,
             'find_files': self._find_files_tool,
             'create_directory': self._create_directory_tool,
-            'file_info': self.file_info,
+            'file_info': self._file_info_tool,
             'list_files': self._list_files_tool,
             'grep': self._grep_tool,
         }
@@ -505,33 +428,21 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
             if name in self._tools:
                 self.add_function(registrations[name], name=name)
 
-    def open_read(self, resolved: Path) -> BinaryIO:
-        """Open an authorized path for a write's pre-change snapshot or an edit's source.
+    async def get_tools(self, ctx: RunContext[AgentDepsT]) -> dict[str, ToolsetTool[AgentDepsT]]:
+        """Offer only the read-only tools when the run's workspace refuses mutations."""
+        tools = await super().get_tools(ctx)
+        if ctx.workspace.read_only:
+            return {name: tool for name, tool in tools.items() if name in READ_ONLY_TOOL_NAMES}
+        return tools
 
-        The caller closes the binary stream. Override alongside `open_write`
-        for storage without local file descriptors.
-        """
-        return os.fdopen(os.open(resolved, os.O_RDONLY | _SPECIAL_FILE_FLAGS), 'rb')
-
-    def open_write(self, resolved: Path, *, read_back: bool, create: bool) -> tuple[BinaryIO, bool]:
-        """Open an authorized regular file without truncating it, returning `(stream, created)`.
-
-        The caller closes the seekable binary stream and checks the hash before
-        truncation. `read_back` requires read access from position zero. With
-        `create=False`, a missing file must raise `FileNotFoundError`; otherwise
-        creation must be exclusive so `created` describes this open, not a prior
-        existence check. Overrides own their backend's file-type and race checks.
-        """
-        path = self._relative_to_root(resolved)
-        descriptor, created = _open_for_write(resolved, path, read_back=read_back, create=create)
-        try:
-            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-                raise ModelRetry(f'Path {path!r} exists and is not a regular file.')
-            source = os.fdopen(descriptor, 'rb+' if read_back else 'wb')
-        except BaseException:
-            os.close(descriptor)
-            raise
-        return source, created
+    async def _scope(self, workspace: WorkspaceBackend) -> _Scope:
+        """Resolve the configured root and cwd inside `workspace`."""
+        facade = _as_workspace(workspace)
+        root = posixpath.normpath(await facade.resolve(self._root_spelling))
+        cwd = root if self._cwd_spelling is None else posixpath.normpath(await facade.resolve(self._cwd_spelling))
+        if not _contains(root, cwd):
+            raise UserError(f'cwd {cwd!r} is outside root_dir {root!r}.')
+        return _Scope(workspace=facade, root=root, cwd=cwd)
 
     def _matches(self, path: str, pattern: str) -> bool:
         """Glob-match a relative path, treating a leading `**/` as 'any directory, including the root'.
@@ -550,30 +461,17 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
         """Return the first pattern that matches path, or None."""
         return next((p for p in patterns if self._matches(path, p)), None)
 
-    def _resolve_path(self, path: str) -> Path:
+    async def _resolve_path(self, scope: _Scope, path: str) -> str:
         """Resolve path relative to `cwd`, rejecting traversal outside the root.
 
-        Uses os.path.realpath for symlink resolution before checking containment.
+        Resolution is textual (`Workspace.resolve`): `.` and `..` segments are
+        collapsed before the containment check, but symlinks are not inspected;
+        the workspace backend follows them.
         """
-        try:
-            candidate = (self._cwd / path).resolve()
-        except RuntimeError as e:
-            # Python 3.10-3.12 signal a symlink loop this way.
-            raise ModelRetry(f'Path {path!r} resolves through a symlink loop.') from e
-
-        if not candidate.exists():
-            try:
-                candidate.stat()
-            except OSError as e:
-                # Python 3.13+ suppresses `ELOOP` in `resolve` and `exists`, so
-                # probe the path before treating it as missing.
-                if e.errno == errno.ELOOP:
-                    raise ModelRetry(f'Path {path!r} resolves through a symlink loop.') from e
-        real = Path(os.path.realpath(candidate))
-        if not real.is_relative_to(self._real_root):
+        resolved = await scope.workspace.resolve(path, base=scope.cwd)
+        if not _contains(scope.root, resolved):
             raise PermissionError(f'Path {path!r} resolves outside the root directory.')
-
-        return real
+        return resolved
 
     def _check_access(self, path: str, *, write: bool = False, check_allowed: bool = True) -> None:
         """Validate path against allow/deny/protected patterns.
@@ -583,7 +481,7 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
         directory isn't required to match `allowed_patterns` itself -- `.` or
         `src` would never match a file pattern like `src/*.py`. The walk's
         entries are still filtered against `allowed_patterns` per-entry via
-        `_resolve_walk_entry`. Denied patterns continue to gate the root.
+        `_is_accessible`. Denied patterns continue to gate the root.
         """
         if write and self._protected_patterns:
             matched = self._first_matching_pattern(path, self._protected_patterns)
@@ -612,43 +510,32 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
             return False
         return True
 
-    def _resolve_walk_entry(self, entry: Path) -> Path | None:
-        """Authorize one entry of a directory walk, or return `None` to skip it.
+    def _walk_entry(self, scope: _Scope, path: str) -> str | None:
+        """Authorize one entry of a directory walk: its root-relative path, or `None` to skip it.
 
-        Callers must do their I/O on the returned path. Resolving once means the
-        path that was authorized is the path that gets read, and matching the
-        patterns against the resolved location keeps the walkers in step with
-        direct access: a symlink can neither escape the root nor alias a file
-        past a rule its own name would trip.
+        Hidden entries are skipped, matching `list_directory`, `search_files`,
+        and `find_files`, and entries are matched against the patterns by their
+        root-relative spelling.
         """
-        target = Path(os.path.realpath(entry))
-        if not target.is_relative_to(self._real_root):
+        if not _contains(scope.root, path):  # pragma: no cover -- walks and `rg` output stay below the root
+            # Walks start inside the root and `rg` prints paths below its cwd; this guards a
+            # backend or `rg` build that reports an entry elsewhere.
             return None
-        if not self._is_accessible(self._relative_to_root(target)):
+        relative = posixpath.relpath(path, scope.root)
+        if _is_hidden(relative) or not self._is_accessible(relative):
             return None
-        return target
+        return relative
 
-    def _relative_to_root(self, resolved: Path) -> str:
-        """Canonical path of a resolved location relative to the real root."""
-        return str(resolved.relative_to(self._real_root))
-
-    def _relative_to_cwd(self, path: Path) -> str:
-        """Format an authorized discovery path for reuse as a tool input."""
-        return os.path.relpath(path, self._cwd)
-
-    def _event_location(self, resolved: Path) -> _EventLocation:
+    def _event_location(self, scope: _Scope, resolved: str) -> _EventLocation:
         """Path fields for an event about `resolved`.
 
-        `path` is relative to the real root and `root_dir` is that root, so a
-        subscriber rooted elsewhere can rebuild the absolute location instead
-        of assuming the event came from its own root.
+        `path` is relative to the root and `root_dir` is that root, as a
+        workspace path, so a subscriber rooted elsewhere can rebuild the
+        location instead of assuming the event came from its own root.
         """
-        return _EventLocation(
-            path=_model_safe_filename(os.fspath(resolved), self._real_root),
-            root_dir=os.fspath(self._real_root),
-        )
+        return _EventLocation(path=_model_safe_filename(resolved, scope.root), root_dir=scope.root)
 
-    def _safe_resolve(self, path: str, *, write: bool = False, check_allowed: bool = True) -> Path:
+    async def _safe_resolve(self, scope: _Scope, path: str, *, write: bool = False, check_allowed: bool = True) -> str:
         """Resolve and access-check a path in one step.
 
         Resolution happens first so the access check matches patterns against
@@ -656,13 +543,49 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
         segments that would otherwise slip past a literal pattern (e.g.
         `config/./secret.txt` evading a `config/secret.txt` deny rule).
         """
-        resolved = self._resolve_path(path)
-        self._check_access(self._relative_to_root(resolved), write=write, check_allowed=check_allowed)
+        resolved = await self._resolve_path(scope, path)
+        self._check_access(posixpath.relpath(resolved, scope.root), write=write, check_allowed=check_allowed)
         return resolved
 
-    async def read_file(self, path: str, *, offset: int = 0, limit: int | None = None) -> str:
-        """Read a text file directly, outside an agent run."""
-        return await self._read_file(None, path, offset=offset, limit=limit)
+    async def _stat(self, scope: _Scope, resolved: str) -> WorkspaceFileEntry | None:
+        """The entry at `resolved`, or `None` when nothing is there (including below a file)."""
+        try:
+            return await scope.workspace.stat(resolved)
+        except (FileNotFoundError, NotADirectoryError):
+            return None
+
+    async def _walk(self, scope: _Scope, directory: str, *, max_depth: int | None = None) -> list[WorkspaceFileEntry]:
+        """Every entry below `directory`, walked iteratively with `list_dir`.
+
+        Hidden directories are not descended into, since everything under them
+        is hidden, and a subdirectory that cannot be listed (removed mid-walk,
+        unreadable, a symlink loop) is skipped. `max_depth` bounds how many
+        levels below `directory` are listed.
+        """
+        entries: list[WorkspaceFileEntry] = []
+        pending: list[tuple[str, int]] = [(directory, 1)]
+        while pending:
+            current, depth = pending.pop()
+            try:
+                children = await scope.workspace.list_dir(current)
+            except WorkspaceError:
+                raise
+            except OSError:
+                if current == directory:
+                    raise
+                continue
+            entries.extend(children)
+            if max_depth is None or depth < max_depth:
+                pending.extend(
+                    (child.path, depth + 1) for child in children if child.is_dir and not child.name.startswith('.')
+                )
+        return entries
+
+    async def read_file(
+        self, path: str, *, offset: int = 0, limit: int | None = None, workspace: WorkspaceBackend
+    ) -> str:
+        """Read a text file in `workspace` directly, outside an agent run."""
+        return await self._read_file(await self._scope(workspace), None, path, offset=offset, limit=limit)
 
     async def _read_file_tool(
         self, ctx: RunContext[AgentDepsT], path: str, *, offset: int = 0, limit: int | None = None
@@ -678,27 +601,29 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
         Returns:
             File content with line numbers, plus metadata header.
         """
-        return await self._read_file(ctx, path, offset=offset, limit=limit)
+        return await self._read_file(await self._scope(ctx.workspace), ctx, path, offset=offset, limit=limit)
 
     @_recoverable
     async def _read_file(
-        self, ctx: RunContext[AgentDepsT] | None, path: str, *, offset: int = 0, limit: int | None = None
+        self, scope: _Scope, ctx: RunContext[AgentDepsT] | None, path: str, *, offset: int = 0, limit: int | None = None
     ) -> str:
         if limit is None:
             limit = self._max_read_lines
-        resolved = self._safe_resolve(path)
-        if not resolved.is_file():
-            if resolved.is_dir():
-                raise FileNotFoundError(f"'{path}' is a directory, not a file.")
+        resolved = await self._safe_resolve(scope, path)
+        entry = await self._stat(scope, resolved)
+        if entry is None:
             raise FileNotFoundError(f'File not found: {path}')
+        if entry.is_dir:
+            raise FileNotFoundError(f"'{path}' is a directory, not a file.")
 
-        raw = resolved.read_bytes()
-        content_hash = _disk_hash([raw])
+        # The whole file: the header reports its line count and the hash write_file and
+        # edit_file verify against, and both need every byte.
+        raw = await scope.workspace.read_bytes(resolved)
+        content_hash = _bytes_hash(raw)
         if _is_binary(raw):
-            size = len(raw)
             if ctx is not None:
-                await ctx.emit(FileReadEvent(**self._event_location(resolved), content_hash=content_hash))
-            return f'[Binary file: {size} bytes. Use a binary-aware tool to inspect.]'
+                await ctx.emit(FileReadEvent(**self._event_location(scope, resolved), content_hash=content_hash))
+            return f'[Binary file: {len(raw)} bytes. Use a binary-aware tool to inspect.]'
 
         text = raw.decode('utf-8', errors='replace')
         lines = text.splitlines(keepends=True)
@@ -707,7 +632,7 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
         # a failed read must not look like a successful one to subscribers.
         body = _format_lines(lines, offset, limit, self._body_budget(header))
         if ctx is not None:
-            await ctx.emit(FileReadEvent(**self._event_location(resolved), content_hash=content_hash))
+            await ctx.emit(FileReadEvent(**self._event_location(scope, resolved), content_hash=content_hash))
         return header + body
 
     def _read_header(self, path: str, total: int, content_hash: str) -> str:
@@ -727,9 +652,11 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
         """The hash a write or edit result shows the model, or nothing when `content_hashes` is off."""
         return f' [hash:{content_hash}]' if self._content_hashes else ''
 
-    async def write_file(self, path: str, content: str, *, expected_hash: str | None = None) -> str:
-        """Write a text file directly, outside an agent run."""
-        return await self._write_file(None, path, content, expected_hash=expected_hash)
+    async def write_file(
+        self, path: str, content: str, *, expected_hash: str | None = None, workspace: WorkspaceBackend
+    ) -> str:
+        """Write a text file in `workspace` directly, outside an agent run."""
+        return await self._write_file(await self._scope(workspace), None, path, content, expected_hash=expected_hash)
 
     async def _write_file_tool(
         self,
@@ -751,7 +678,7 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
         Returns:
             Confirmation message with new hash.
         """
-        return await self._write_file(ctx, path, content, expected_hash=expected_hash)
+        return await self._write_file(await self._scope(ctx.workspace), ctx, path, content, expected_hash=expected_hash)
 
     async def _write_file_tool_unhashed(self, ctx: RunContext[AgentDepsT], path: str, content: str) -> str:
         """Create a file or replace its whole content.
@@ -761,72 +688,136 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
             path: File path relative to `cwd`.
             content: The text content to write.
         """
-        return await self._write_file(ctx, path, content)
+        return await self._write_file(await self._scope(ctx.workspace), ctx, path, content)
+
+    async def _announced_state(
+        self, scope: _Scope, resolved: str, path: str, *, exists: bool, expected_hash: str | None
+    ) -> tuple[str | None, str | None]:
+        """The text a listener is shown a write replacing, and the hash the write is then guarded with.
+
+        A stale `expected_hash` for a file that exists is rejected here first, so
+        a listener only sees a write that would go ahead; for a missing file the
+        hash is ignored, as documented, and the write is announced as a create.
+        A new file diffs from empty and is guarded as absent, so one that appears
+        while the write is announced is a conflict whether or not it is empty. The
+        text is `None` when it cannot be shown: a file the workspace refuses to
+        read is announced as headers alone, marked as cut, and written unguarded,
+        while an `expected_hash` it cannot check propagates the error; past
+        `MAX_DIFF_SOURCE_CHARS` it would not be diffed.
+        """
+        if not exists:
+            return '', _ABSENT_HASH
+        try:
+            raw = await scope.workspace.read_bytes(resolved)
+        except WorkspaceReadOnlyError:
+            raise
+        except PermissionError:
+            if expected_hash is not None:
+                raise
+            return None, None
+        current_hash = _bytes_hash(raw)
+        if expected_hash is not None:
+            _check_expected_hash(path, current_hash, expected_hash)
+        old = raw.decode('utf-8', errors='replace') if len(raw) <= _DIFF_SOURCE_BYTES else None
+        return old, current_hash
+
+    async def _check_guard(self, scope: _Scope, resolved: str, path: str, guard: str) -> None:
+        """Refuse a write whose target no longer holds the content it was checked or announced against.
+
+        A file that appeared where none was announced fails against `_ABSENT_HASH`;
+        a file that vanished meanwhile is written as a create, as with no guard at all.
+        """
+        try:
+            current = _bytes_hash(await scope.workspace.read_bytes(resolved))
+        except FileNotFoundError:
+            return
+        _check_expected_hash(path, current, guard)
 
     @_recoverable
     async def _write_file(
         self,
+        scope: _Scope,
         ctx: RunContext[AgentDepsT] | None,
         path: str,
         content: str,
         *,
         expected_hash: str | None = None,
     ) -> str:
-        resolved = self._safe_resolve(path, write=True)
+        resolved = await self._safe_resolve(scope, path, write=True)
 
-        if resolved.exists() and not resolved.is_file():
+        entry = await self._stat(scope, resolved)
+        if entry is not None and entry.is_dir:
             raise ModelRetry(f'Path {path!r} exists and is not a regular file.')
 
-        if not resolved.parent.exists():
-            parent_rel = str(resolved.parent.relative_to(self._root))
-            raise FileNotFoundError(f"Parent directory '{parent_rel}' does not exist. Use create_directory first.")
+        parent = posixpath.dirname(resolved)
+        try:
+            parent_entry = await scope.workspace.stat(parent)
+        except FileNotFoundError as e:
+            parent_rel = posixpath.relpath(parent, scope.root)
+            raise FileNotFoundError(
+                f"Parent directory '{parent_rel}' does not exist. Use create_directory first."
+            ) from e
+        except NotADirectoryError as e:
+            raise ModelRetry(f'Path {path!r} has a parent that is not a directory.') from e
         # Checked before the announcement, like `create_directory` does, so a
         # listener is only asked about a write the filesystem would accept.
-        if not resolved.parent.is_dir():
+        if not parent_entry.is_dir:
             raise ModelRetry(f'Path {path!r} has a parent that is not a directory.')
 
-        # `O_CREAT` in `_open_for_write` would already have created the file
-        # the listener is about to refuse, so the request cannot wait for the
-        # descriptor. Outside a run nothing is read: the diff is for listeners,
-        # and the descriptor check of `expected_hash` is the whole contract.
-        guard = expected_hash
+        # Outside a run nothing is announced: the diff is for listeners, and the
+        # check of `expected_hash` just before the write is the whole contract.
+        guard = expected_hash if entry is not None else None
         if ctx is not None:
-            old, guard = _announced_state(resolved, path, expected_hash=expected_hash, open_read=self.open_read)
-            change = Change.propose(**self._event_location(resolved), operation='write', old=old, new=content)
-            if (refusal := await self._request(ctx, change, path=path, resolved=resolved)) is not None:
+            old, guard = await self._announced_state(
+                scope, resolved, path, exists=entry is not None, expected_hash=expected_hash
+            )
+            change = Change.propose(**self._event_location(scope, resolved), operation='write', old=old, new=content)
+            if (refusal := await self._request(scope, ctx, change, path=path, resolved=resolved)) is not None:
                 return refusal
 
-        source, created = self.open_write(resolved, read_back=guard is not None, create=True)
-        _write_content(source, path, content, expected_hash=guard, created=created)
+        if guard is not None:
+            await self._check_guard(scope, resolved, path, guard)
+        await scope.workspace.write_bytes(resolved, content.encode('utf-8'))
 
         new_hash = _content_hash(content)
         lines = len(content.splitlines())
         if ctx is not None:
-            await ctx.emit(FileWrittenEvent(**self._event_location(resolved), content_hash=new_hash))
+            await ctx.emit(FileWrittenEvent(**self._event_location(scope, resolved), content_hash=new_hash))
         return f'Wrote {len(content)} chars ({lines} lines) to {path}.{self._hash_suffix(new_hash)}'
 
     async def _request(
-        self, ctx: RunContext[AgentDepsT] | None, change: Change, *, path: str, resolved: Path
+        self, scope: _Scope, ctx: RunContext[AgentDepsT] | None, change: Change, *, path: str, resolved: str
     ) -> str | None:
-        """Announce `change` and confirm that `path` still names `resolved` afterwards.
+        """Announce `change` and confirm that `path` still passes the access checks afterwards.
 
         A listener can hold the request for as long as a human takes, and the
         change is then applied by name, so the path is resolved and checked
-        again: the announcement must not widen the window between the
-        containment check and the I/O. Outside a run there is nobody to ask.
+        again before the write. Outside a run there is nobody to ask.
         """
         if ctx is None:
             return None
         if (refusal := await change.request(ctx)) is not None:
             return refusal
-        if self._safe_resolve(path, write=True) != resolved:
+        if await self._safe_resolve(scope, path, write=True) != resolved:  # pragma: no cover
+            # Resolution is textual, so the same path resolves the same way unless the
+            # workspace's working directory moved while the change was held.
             raise ModelRetry(f'Path {path!r} was replaced while the change was announced. Retry.')
         return None
 
-    async def edit_file(self, path: str, old_text: str, new_text: str, *, expected_hash: str | None = None) -> str:
-        """Edit a text file directly, outside an agent run."""
+    async def edit_file(
+        self,
+        path: str,
+        old_text: str,
+        new_text: str,
+        *,
+        expected_hash: str | None = None,
+        workspace: WorkspaceBackend,
+    ) -> str:
+        """Edit a text file in `workspace` directly, outside an agent run."""
         replacements = [Replacement(old_text=old_text, new_text=new_text)]
-        return await self._edit_file(None, path, replacements, expected_hash=expected_hash)
+        return await self._edit_file(
+            await self._scope(workspace), None, path, replacements, expected_hash=expected_hash
+        )
 
     async def _edit_file_tool(
         self,
@@ -858,7 +849,7 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
             Summary with new hash for subsequent operations.
         """
         edits = _replacements(old_text, new_text, replacements)
-        return await self._edit_file(ctx, path, edits, expected_hash=expected_hash)
+        return await self._edit_file(await self._scope(ctx.workspace), ctx, path, edits, expected_hash=expected_hash)
 
     async def _edit_file_tool_unhashed(
         self,
@@ -883,48 +874,56 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
             new_text: The replacement text.
             replacements: Replacements to apply in order, instead of a single pair.
         """
-        return await self._edit_file(ctx, path, _replacements(old_text, new_text, replacements))
+        edits = _replacements(old_text, new_text, replacements)
+        return await self._edit_file(await self._scope(ctx.workspace), ctx, path, edits)
 
     @_recoverable
     async def _edit_file(
         self,
+        scope: _Scope,
         ctx: RunContext[AgentDepsT] | None,
         path: str,
         replacements: Sequence[Replacement],
         *,
         expected_hash: str | None = None,
     ) -> str:
-        resolved = self._safe_resolve(path, write=True)
-        if not resolved.is_file():
+        resolved = await self._safe_resolve(scope, path, write=True)
+        entry = await self._stat(scope, resolved)
+        if entry is None or entry.is_dir:
             raise FileNotFoundError(f'File not found: {path}')
-        with self.open_read(resolved) as source:
-            head = source.read(8192)
-            if _is_binary(head):
-                raise ValueError(f'{path} is a binary file; edit_file only edits text files.')
-            # Decode without universal-newline translation to preserve CRLF and hashes.
-            text = (head + source.read()).decode('utf-8')
-        current_hash = _content_hash(text)
+        raw = await scope.workspace.read_bytes(resolved)
+        if _is_binary(raw):
+            raise ValueError(f'{path} is a binary file; edit_file only edits text files.')
+        # Strict decoding: an edit writes the whole file back, so undecodable bytes are refused
+        # rather than replaced. No newline translation, so CRLF and the hash are preserved.
+        text = raw.decode('utf-8')
+        current_hash = _bytes_hash(raw)
 
         if expected_hash is not None:
             _check_expected_hash(path, current_hash, expected_hash)
 
         new_content = _apply_replacements(text, replacements, path)
-        change = Change.propose(**self._event_location(resolved), operation='edit', old=text, new=new_content)
-        if (refusal := await self._request(ctx, change, path=path, resolved=resolved)) is not None:
+        change = Change.propose(**self._event_location(scope, resolved), operation='edit', old=text, new=new_content)
+        if (refusal := await self._request(scope, ctx, change, path=path, resolved=resolved)) is not None:
             return refusal
-        # A listener may take a while (a human approving the diff, say). The
-        # edit was computed from `text`, so the write checks that the file
-        # still holds it, and reports a file deleted in the meantime as missing.
-        source, created = self.open_write(resolved, read_back=True, create=False)
-        _write_content(source, path, new_content, expected_hash=current_hash, created=created)
+        if ctx is not None:
+            # A listener may take a while (a human approving the diff, say). The
+            # edit was computed from `text`, so the write checks that the file
+            # still holds it, and reports a file deleted in the meantime as missing.
+            try:
+                now = await scope.workspace.read_bytes(resolved)
+            except FileNotFoundError as e:
+                raise FileNotFoundError(f'File not found: {path}') from e
+            _check_expected_hash(path, _bytes_hash(now), current_hash)
+        await scope.workspace.write_bytes(resolved, new_content.encode('utf-8'))
         new_hash = _content_hash(new_content)
         if ctx is not None:
             await ctx.emit(change.edited(content_hash=new_hash))
         return f'Edited {path}.{self._hash_suffix(new_hash)}'
 
-    async def list_directory(self, path: str = '.') -> str:
-        """List a directory directly, outside an agent run."""
-        return await self._list_directory(None, path)
+    async def list_directory(self, path: str = '.', *, workspace: WorkspaceBackend) -> str:
+        """List a directory in `workspace` directly, outside an agent run."""
+        return await self._list_directory(await self._scope(workspace), None, path)
 
     async def _list_directory_tool(self, ctx: RunContext[AgentDepsT], path: str = '.') -> str:
         """List the contents of a directory.
@@ -936,41 +935,38 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
         Returns:
             Paths relative to `cwd`, with type indicators and sizes.
         """
-        return await self._list_directory(ctx, path)
+        return await self._list_directory(await self._scope(ctx.workspace), ctx, path)
 
     @_recoverable
-    async def _list_directory(self, ctx: RunContext[AgentDepsT] | None, path: str = '.') -> str:
+    async def _list_directory(self, scope: _Scope, ctx: RunContext[AgentDepsT] | None, path: str = '.') -> str:
         # The listing root is gated by denied patterns but not by
         # allowed_patterns: a directory like '.' never matches a file pattern.
         # Entries are filtered per-entry against allowed_patterns below.
-        resolved = self._safe_resolve(path, check_allowed=False)
-        if not resolved.is_dir():
-            raise NotADirectoryError(f'Not a directory: {path}')
+        resolved = await self._safe_resolve(scope, path, check_allowed=False)
+        try:
+            children = await scope.workspace.list_dir(resolved)
+        except (FileNotFoundError, NotADirectoryError) as e:
+            raise NotADirectoryError(f'Not a directory: {path}') from e
 
         entries: list[str] = []
         entry_count = 0
-        for entry in sorted(resolved.iterdir()):
-            try:
-                rel_path = entry.relative_to(self._real_root)
-            except ValueError:  # pragma: no cover
-                continue
+        for entry in sorted(children, key=lambda child: child.name):
             # Skip dotfiles and dot-directories, matching search_files and
             # find_files so the three walkers agree on what exists.
-            if any(part.startswith('.') for part in rel_path.parts):
+            if self._walk_entry(scope, entry.path) is None:
                 continue
-            target = self._resolve_walk_entry(entry)
-            if target is None:
-                continue
-            rel = self._relative_to_cwd(entry)
-            if target.is_dir():
+            rel = posixpath.relpath(entry.path, scope.cwd)
+            if entry.is_dir:
                 line = f'{rel}/'
             else:
-                try:
-                    size = target.stat().st_size
-                except OSError:
-                    # A dangling symlink, or an entry deleted mid-walk: it has
-                    # no size to report, so leave it out of the listing.
-                    continue
+                size = entry.size
+                if size is None:
+                    stat = await self._stat(scope, entry.path)
+                    if stat is None or stat.size is None:
+                        # A dangling symlink, or an entry deleted mid-walk: it has
+                        # no size to report, so leave it out of the listing.
+                        continue
+                    size = stat.size
                 line = f'{rel}  ({size} bytes)'
             # Only a listing that actually dropped an entry is marked truncated,
             # so one that merely fills the cap reads as complete.
@@ -980,12 +976,16 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
             entries.append(line)
             entry_count += 1
         if ctx is not None:
-            await ctx.emit(DirectoryListedEvent(**self._event_location(resolved), entry_count=entry_count))
+            await ctx.emit(DirectoryListedEvent(**self._event_location(scope, resolved), entry_count=entry_count))
         return '\n'.join(entries) if entries else '(empty directory)'
 
-    async def search_files(self, pattern: str, *, path: str = '.', include_glob: str | None = None) -> str:
-        """Search file contents directly, outside an agent run."""
-        return await self._search_files(None, pattern, path=path, include_glob=include_glob)
+    async def search_files(
+        self, pattern: str, *, path: str = '.', include_glob: str | None = None, workspace: WorkspaceBackend
+    ) -> str:
+        """Search file contents in `workspace` directly, outside an agent run."""
+        return await self._search_files(
+            await self._scope(workspace), None, pattern, path=path, include_glob=include_glob
+        )
 
     async def _search_files_tool(
         self, ctx: RunContext[AgentDepsT], pattern: str, *, path: str = '.', include_glob: str | None = None
@@ -1001,11 +1001,14 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
         Returns:
             str: Matching lines formatted as file:line_number:text, with paths relative to `cwd`.
         """
-        return await self._search_files(ctx, pattern, path=path, include_glob=include_glob)
+        return await self._search_files(
+            await self._scope(ctx.workspace), ctx, pattern, path=path, include_glob=include_glob
+        )
 
     @_recoverable
     async def _search_files(
         self,
+        scope: _Scope,
         ctx: RunContext[AgentDepsT] | None,
         pattern: str,
         *,
@@ -1014,69 +1017,67 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
     ) -> str:
         # See list_directory: the search root isn't gated by allowed_patterns;
         # matched files are filtered per-entry below.
-        resolved = self._safe_resolve(path, check_allowed=False)
+        resolved = await self._safe_resolve(scope, path, check_allowed=False)
         try:
             compiled = re.compile(pattern)
         except re.error as e:
             raise ValueError(f'Invalid regex pattern: {e}') from e
 
-        results: list[str] = []
-        capped = False
-
-        if resolved.is_file():
+        entry = await self._stat(scope, resolved)
+        if entry is None:
+            files: list[str] = []
+        elif not entry.is_dir:
             files = [resolved]
         else:
-            files = sorted(resolved.rglob('*'))
+            files = [child.path for child in await self._walk(scope, resolved) if not child.is_dir]
 
-        for file_path in files:
-            try:
-                rel_path = file_path.relative_to(self._real_root)
-            except ValueError:  # pragma: no cover
+        results: list[str] = []
+        capped = False
+        for file_path in sorted(files, key=_sort_key):
+            rel_str = self._walk_entry(scope, file_path)
+            if rel_str is None:
                 continue
-            if any(part.startswith('.') for part in rel_path.parts):
-                continue
-            rel_str = str(rel_path)
             if include_glob and not fnmatch.fnmatch(rel_str, include_glob):
                 continue
-            target = self._resolve_walk_entry(file_path)
-            if target is None:
-                continue
-            if not target.is_file():
-                continue
             try:
-                raw = target.read_bytes()
-            except OSError:  # pragma: no cover
+                raw = await scope.workspace.read_bytes(file_path)
+            except WorkspaceError:
+                raise
+            except OSError:
+                # A dangling symlink, or a file deleted or made unreadable mid-walk.
                 continue
             if _is_binary(raw):
                 continue
             text = raw.decode('utf-8', errors='replace')
             matches, capped = _matching_lines(
-                text, compiled, self._relative_to_cwd(file_path), self._max_search_results - len(results)
+                text, compiled, posixpath.relpath(file_path, scope.cwd), self._max_search_results - len(results)
             )
             results.extend(matches)
             if capped:
                 break
 
         if ctx is not None:
-            await ctx.emit(self._searched(resolved, pattern, search='grep', match_count=len(results), truncated=capped))
+            await ctx.emit(
+                self._searched(scope, resolved, pattern, search='grep', match_count=len(results), truncated=capped)
+            )
         if capped:
             results.append(f'[... truncated at {self._max_search_results} matches]')
         return '\n'.join(results) if results else 'No matches found.'
 
     def _searched(
-        self, resolved: Path, pattern: str, *, search: SearchKind, match_count: int, truncated: bool
+        self, scope: _Scope, resolved: str, pattern: str, *, search: SearchKind, match_count: int, truncated: bool
     ) -> FilesSearchedEvent:
         return FilesSearchedEvent(
-            **self._event_location(resolved),
+            **self._event_location(scope, resolved),
             pattern=pattern,
             search=search,
             match_count=match_count,
             truncated=truncated,
         )
 
-    async def find_files(self, pattern: str, *, path: str = '.') -> str:
-        """Find files by glob pattern directly, outside an agent run."""
-        return await self._find_files(None, pattern, path=path)
+    async def find_files(self, pattern: str, *, path: str = '.', workspace: WorkspaceBackend) -> str:
+        """Find files by glob pattern in `workspace` directly, outside an agent run."""
+        return await self._find_files(await self._scope(workspace), None, pattern, path=path)
 
     async def _find_files_tool(self, ctx: RunContext[AgentDepsT], pattern: str, *, path: str = '.') -> str:
         """Find files by glob pattern (name matching, not content search).
@@ -1090,66 +1091,58 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
         Returns:
             Newline-separated list of matching file paths relative to `cwd`.
         """
-        return await self._find_files(ctx, pattern, path=path)
+        return await self._find_files(await self._scope(ctx.workspace), ctx, pattern, path=path)
 
     @_recoverable
-    async def _find_files(self, ctx: RunContext[AgentDepsT] | None, pattern: str, *, path: str = '.') -> str:
-        if os.path.isabs(pattern):
+    async def _find_files(
+        self, scope: _Scope, ctx: RunContext[AgentDepsT] | None, pattern: str, *, path: str = '.'
+    ) -> str:
+        if posixpath.isabs(pattern):
             raise ValueError(f'Pattern {pattern!r} must be relative to the search path, not absolute.')
+        parts, directories_only = _glob_parts(pattern)
 
         # See list_directory: the find root isn't gated by allowed_patterns;
         # matched entries are filtered per-entry below.
-        resolved = self._safe_resolve(path, check_allowed=False)
-        if not resolved.is_dir():
+        resolved = await self._safe_resolve(scope, path, check_allowed=False)
+        entry = await self._stat(scope, resolved)
+        if entry is None or not entry.is_dir:
             raise NotADirectoryError(f'Not a directory: {path}')
 
-        try:
-            found = sorted(resolved.glob(pattern))
-        except NotImplementedError as e:
-            # The `isabs` guard above takes a rooted pattern first on POSIX. On
-            # Windows it does not: since 3.13 `os.path.isabs` reports a single
-            # leading slash as relative, so `/etc/*.conf` reaches `glob`, which
-            # rejects any rooted pattern. `NotImplementedError` is not an
-            # `OSError`, so neither the recoverable tuple nor the errno table
-            # can reach it.
-            raise ModelRetry(f'Pattern {pattern!r} must be relative to {path!r}, not an absolute path.') from e
-        except IndexError as e:
-            # Python 3.10 through 3.12 raise this for a pattern whose last
-            # component is a bare `.`. On 3.13+ the same pattern raises
-            # `ValueError`, which the recoverable tuple already covers.
-            raise ModelRetry(f'Pattern {pattern!r} is not a valid glob pattern.') from e
+        # Without `**`, nothing deeper than the pattern's own components can match.
+        max_depth = None if '**' in parts else len(parts)
+        found = [
+            child
+            for child in await self._walk(scope, resolved, max_depth=max_depth)
+            if (child.is_dir or not directories_only)
+            and _glob_match(parts, posixpath.relpath(child.path, resolved).split('/'))
+        ]
 
         matches: list[str] = []
         capped = False
-        for match in found:
-            try:
-                rel_path = match.relative_to(self._real_root)
-            except ValueError:  # pragma: no cover
+        for match in sorted(found, key=lambda child: _sort_key(child.path)):
+            if self._walk_entry(scope, match.path) is None:
                 continue
-            if any(part.startswith('.') for part in rel_path.parts):
-                continue
-            target = self._resolve_walk_entry(match)
-            if target is None:
-                continue
-            if not target.exists():
-                # A dangling symlink resolves inside the root but names nothing.
+            if not match.is_dir and match.size is None and not await scope.workspace.exists(match.path):
+                # A dangling symlink is inside the root but names nothing.
                 continue
             if len(matches) >= self._max_find_results:
                 capped = True
                 break
-            rel = self._relative_to_cwd(match)
-            suffix = '/' if target.is_dir() else ''
+            rel = posixpath.relpath(match.path, scope.cwd)
+            suffix = '/' if match.is_dir else ''
             matches.append(f'{rel}{suffix}')
 
         if ctx is not None:
-            await ctx.emit(self._searched(resolved, pattern, search='find', match_count=len(matches), truncated=capped))
+            await ctx.emit(
+                self._searched(scope, resolved, pattern, search='find', match_count=len(matches), truncated=capped)
+            )
         if capped:
             matches.append(f'[... truncated at {self._max_find_results} matches]')
         return '\n'.join(matches) if matches else 'No matches found.'
 
-    async def list_files(self, path: str = '.', *, glob: str | None = None) -> str:
-        """List files with ripgrep directly, outside an agent run."""
-        return await self._list_files(None, path, glob=glob)
+    async def list_files(self, path: str = '.', *, glob: str | None = None, workspace: WorkspaceBackend) -> str:
+        """List files with ripgrep in `workspace` directly, outside an agent run."""
+        return await self._list_files(await self._scope(workspace), None, path, glob=glob)
 
     async def _list_files_tool(self, ctx: RunContext[AgentDepsT], path: str = '.', *, glob: str | None = None) -> str:
         """List files under a directory, recursively, sorted by path, respecting ignore files and skipping hidden files.
@@ -1162,24 +1155,28 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
         Returns:
             One file path per line, relative to `cwd`.
         """
-        return await self._list_files(ctx, path, glob=glob)
+        return await self._list_files(await self._scope(ctx.workspace), ctx, path, glob=glob)
 
     @_recoverable
-    async def _list_files(self, ctx: RunContext[AgentDepsT] | None, path: str = '.', *, glob: str | None) -> str:
-        resolved = self._safe_resolve(path, check_allowed=False)
-        if not resolved.is_dir():
+    async def _list_files(
+        self, scope: _Scope, ctx: RunContext[AgentDepsT] | None, path: str = '.', *, glob: str | None
+    ) -> str:
+        resolved = await self._safe_resolve(scope, path, check_allowed=False)
+        entry = await self._stat(scope, resolved)
+        if entry is None or not entry.is_dir:
             raise NotADirectoryError(f'Path {path!r} is not a directory.')
         arguments = ['--files', '--sort', 'path', *(['--glob', glob] if glob is not None else [])]
         results, capped = await run_ripgrep(
+            scope.workspace,
             arguments,
             cwd=resolved,
             limit=self._max_find_results,
             listing=True,
-            accept=lambda record: self._ripgrep_entry(resolved, record),
+            accept=lambda record: self._ripgrep_entry(scope, resolved, record),
         )
         if ctx is not None:
             await ctx.emit(
-                self._searched(resolved, glob or '', search='find', match_count=len(results), truncated=capped)
+                self._searched(scope, resolved, glob or '', search='find', match_count=len(results), truncated=capped)
             )
         if capped:
             results.append(f'[... truncated at {self._max_find_results} files]')
@@ -1195,9 +1192,11 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
         ignore_case: bool = False,
         literal: bool = False,
         context: int = 0,
+        workspace: WorkspaceBackend,
     ) -> str:
-        """Search file contents with ripgrep directly, outside an agent run."""
+        """Search file contents with ripgrep in `workspace` directly, outside an agent run."""
         return await self._grep(
+            await self._scope(workspace),
             None,
             pattern,
             path=path,
@@ -1236,6 +1235,7 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
             Matches as `file:line:text`; context lines as `file-line-text`. Paths are relative to `cwd`.
         """
         return await self._grep(
+            await self._scope(ctx.workspace),
             ctx,
             pattern,
             path=path,
@@ -1249,6 +1249,7 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
     @_recoverable
     async def _grep(
         self,
+        scope: _Scope,
         ctx: RunContext[AgentDepsT] | None,
         pattern: str,
         *,
@@ -1261,13 +1262,14 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
     ) -> str:
         if not 0 <= context <= 20:
             raise ValueError('context must be between 0 and 20.')
-        resolved = self._safe_resolve(path, check_allowed=False)
-        if resolved.is_dir():
-            cwd, target = resolved, '.'
-        elif resolved.is_file():
-            cwd, target = resolved.parent, os.path.join('.', resolved.name)
-        else:
+        resolved = await self._safe_resolve(scope, path, check_allowed=False)
+        entry = await self._stat(scope, resolved)
+        if entry is None:
             raise FileNotFoundError(f'Path {path!r} is not a file or directory.')
+        if entry.is_dir:
+            cwd, target = resolved, '.'
+        else:
+            cwd, target = posixpath.dirname(resolved), posixpath.join('.', posixpath.basename(resolved))
         arguments = [
             '--line-number',
             '--with-filename',
@@ -1289,40 +1291,43 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
             arguments.append('--fixed-strings')
         arguments.extend(['--regexp', pattern, '--', target])
         results, capped = await run_ripgrep(
+            scope.workspace,
             arguments,
             cwd=cwd,
             limit=self._max_search_results,
-            accept=lambda record: self._match_line(cwd, record),
+            accept=lambda record: self._match_line(scope, cwd, record),
         )
         if ctx is not None:
-            await ctx.emit(self._searched(resolved, pattern, search='grep', match_count=len(results), truncated=capped))
+            await ctx.emit(
+                self._searched(scope, resolved, pattern, search='grep', match_count=len(results), truncated=capped)
+            )
         if capped:
             results.append(f'[... truncated at {self._max_search_results} lines]')
         return '\n'.join(results) if results else 'No matches found.'
 
-    def _ripgrep_entry(self, cwd: Path, record: Record) -> str | None:
+    def _ripgrep_entry(self, scope: _Scope, cwd: str, record: Record) -> str | None:
         """Authorize a path `rg` printed and return it relative to the configured `cwd`, or `None` to drop it.
 
         A `glob` makes ripgrep surface hidden files it would otherwise skip;
         dropping dot-prefixed entries here keeps these walkers in step with the
         pure-Python ones, which skip dotfiles regardless of patterns.
         """
-        if any(part.startswith('.') for part in Path(record.path).parts if part != '.'):
+        target = posixpath.normpath(posixpath.join(cwd, record.path))
+        if self._walk_entry(scope, target) is None:
             return None
-        target = self._resolve_walk_entry(cwd / record.path)
-        return None if target is None else self._relative_to_cwd(target)
+        return posixpath.relpath(target, scope.cwd)
 
-    def _match_line(self, cwd: Path, record: Record) -> str | None:
+    def _match_line(self, scope: _Scope, cwd: str, record: Record) -> str | None:
         """Rebuild ripgrep's `path:line:text` (match) or `path-line-text` (context) line for an authorized path."""
-        entry = self._ripgrep_entry(cwd, record)
+        entry = self._ripgrep_entry(scope, cwd, record)
         if entry is None:
             return None
         digits = len(record.text) - len(record.text.lstrip('0123456789'))
         return f'{entry}{record.text[digits : digits + 1]}{record.text}'
 
-    async def create_directory(self, path: str) -> str:
-        """Create a directory directly, outside an agent run."""
-        return await self._create_directory(None, path)
+    async def create_directory(self, path: str, *, workspace: WorkspaceBackend) -> str:
+        """Create a directory in `workspace` directly, outside an agent run."""
+        return await self._create_directory(await self._scope(workspace), None, path)
 
     async def _create_directory_tool(self, ctx: RunContext[AgentDepsT], path: str) -> str:
         """Create a directory and any missing parents.
@@ -1334,73 +1339,107 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
         Returns:
             Confirmation message.
         """
-        return await self._create_directory(ctx, path)
+        return await self._create_directory(await self._scope(ctx.workspace), ctx, path)
+
+    async def _nearest_existing_is_dir(self, scope: _Scope, path: str) -> bool:
+        """Whether the closest existing ancestor of `path` (or the filesystem root) is a directory."""
+        current = posixpath.dirname(path)
+        while True:
+            try:
+                return (await scope.workspace.stat(current)).is_dir
+            except FileNotFoundError:
+                parent = posixpath.dirname(current)
+                if parent == current:  # pragma: no cover -- the workspace root always exists
+                    return True
+                current = parent
+            except NotADirectoryError:
+                return False
 
     @_recoverable
-    async def _create_directory(self, ctx: RunContext[AgentDepsT] | None, path: str) -> str:
-        resolved = self._safe_resolve(path, write=True)
-        if resolved.is_dir():
-            # Nothing changes, so there is nothing to announce or report.
-            return f'Created directory: {path}'
-        # The same collisions `mkdir` reports below, checked first so a listener
-        # is only asked about a directory that can be created.
-        if resolved.exists():
+    async def _create_directory(self, scope: _Scope, ctx: RunContext[AgentDepsT] | None, path: str) -> str:
+        resolved = await self._safe_resolve(scope, path, write=True)
+        entry = await self._stat(scope, resolved)
+        if entry is not None:
+            if entry.is_dir:
+                # Nothing changes, so there is nothing to announce or report.
+                return f'Created directory: {path}'
+            # The same collisions `make_dir` reports below, checked first so a
+            # listener is only asked about a directory that can be created.
             raise ModelRetry(f'Path {path!r} exists and is not a directory.')
-        if not _nearest_existing(resolved.parent).is_dir():
+        if not await self._nearest_existing_is_dir(scope, resolved):
             raise ModelRetry(f'Path {path!r} has a parent that is not a directory.')
-        change = Change.propose(**self._event_location(resolved), operation='create_directory')
-        if (refusal := await self._request(ctx, change, path=path, resolved=resolved)) is not None:
+        change = Change.propose(**self._event_location(scope, resolved), operation='create_directory')
+        if (refusal := await self._request(scope, ctx, change, path=path, resolved=resolved)) is not None:
             return refusal
         # The checks above already named these collisions; here they mean the
         # path changed while the change was announced. A directory that
         # appeared in the meantime was not created here, so it is not reported.
-        try:
-            resolved.mkdir(parents=True)
-        except FileExistsError as e:
-            if resolved.is_dir():
+        if (appeared := await self._stat(scope, resolved)) is not None:
+            if appeared.is_dir:
                 return f'Created directory: {path}'
+            raise ModelRetry(f'Path {path!r} exists and is not a directory.')
+        try:
+            await scope.workspace.make_dir(resolved)
+        except FileExistsError as e:
             raise ModelRetry(f'Path {path!r} exists and is not a directory.') from e
         except NotADirectoryError as e:
             raise ModelRetry(f'Path {path!r} has a parent that is not a directory.') from e
         if ctx is not None:
-            await ctx.emit(DirectoryCreatedEvent(**self._event_location(resolved)))
+            await ctx.emit(DirectoryCreatedEvent(**self._event_location(scope, resolved)))
         return f'Created directory: {path}'
 
-    @_recoverable
-    async def file_info(self, path: str) -> str:
+    async def file_info(self, path: str, *, workspace: WorkspaceBackend) -> str:
+        """Get metadata about a file or directory in `workspace` directly, outside an agent run."""
+        return await self._file_info(await self._scope(workspace), path)
+
+    async def _file_info_tool(self, ctx: RunContext[AgentDepsT], path: str) -> str:
         """Get metadata about a file or directory.
 
         Args:
+            ctx: The current agent run context.
             path: File or directory path relative to `cwd`.
 
         Returns:
             Formatted metadata including size, type, and permissions.
         """
-        resolved = self._safe_resolve(path)
-        if not resolved.exists():
+        return await self._file_info(await self._scope(ctx.workspace), path)
+
+    @_recoverable
+    async def _file_info(self, scope: _Scope, path: str) -> str:
+        resolved = await self._safe_resolve(scope, path)
+        entry = await self._stat(scope, resolved)
+        if entry is None:
             raise FileNotFoundError(f'Path not found: {path}')
 
-        # Check if the original (pre-resolve) path is a symlink
-        original = self._cwd / path
-        is_link = original.is_symlink()
+        kind = 'directory' if entry.is_dir else 'file'
+        parts = [f'path: {path}', f'type: {kind}']
+        if entry.size is not None:
+            parts.append(f'size: {entry.size} bytes')
 
-        stat = resolved.stat()
-        kind = 'directory' if resolved.is_dir() else 'file'
-        size = stat.st_size
-
-        parts = [f'path: {path}', f'type: {kind}', f'size: {size} bytes']
-
-        if resolved.is_file():
-            raw = resolved.read_bytes()
+        if not entry.is_dir:
+            raw = await scope.workspace.read_bytes(resolved)
             is_bin = _is_binary(raw)
             parts.append(f'binary: {is_bin}')
             if not is_bin:
                 text = raw.decode('utf-8', errors='replace')
                 parts.append(f'lines: {len(text.splitlines())}')
-                parts.append(f'hash: {_disk_hash([raw])}')
+                parts.append(f'hash: {_bytes_hash(raw)}')
 
-        if is_link:
-            target = _model_safe_filename(os.readlink(original), self._real_root)
-            parts.append(f'symlink_target: {target}')
+        if (target := await self._symlink_target(scope, resolved)) is not None:
+            parts.append(f'symlink_target: {_model_safe_filename(target, scope.root)}')
 
         return '\n'.join(parts)
+
+    async def _symlink_target(self, scope: _Scope, resolved: str) -> str | None:
+        """What `resolved` points to when it is a symlink, or `None`.
+
+        The workspace filesystem API follows symlinks and has no way to report
+        one, so this asks `readlink` inside the workspace; a workspace that
+        cannot run commands reports no symlink.
+        """
+        if not supports_commands(scope.workspace):
+            return None
+        result = await scope.workspace.run(['readlink', resolved], timeout=_READLINK_TIMEOUT)
+        if result.exit_code != 0:
+            return None
+        return result.stdout.removesuffix('\n')
