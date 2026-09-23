@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Coroutine, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from typing import Any, Generic, cast
 
@@ -42,6 +43,20 @@ from pydantic_ai_harness.subagents._events import (
 from pydantic_ai_harness.subagents._models import ModelOption, validate_restriction
 
 logger = logging.getLogger(__name__)
+
+SELF_AGENT_NAME = 'self'
+"""The name a delegate to the running agent itself is listed and called by (`SubAgents.include_self`)."""
+
+DEFAULT_MAX_DEPTH = 3
+"""Default `SubAgents.max_depth`: the top-level run, its delegates, and theirs."""
+
+_depth: ContextVar[int] = ContextVar('pydantic_ai_harness.subagents.depth', default=1)
+"""How deep in a delegation tree the current run is, counting the top-level run as 1.
+
+Set around each child run, so every run started inside a delegation -- including a delegation
+of a delegation -- reads its own level, and sibling delegations running concurrently in one
+parent step each read the level their parent set.
+"""
 
 _MODEL_ARG = 'model'
 """Name of the delegate tool's model-selection argument, shared by the function
@@ -211,6 +226,8 @@ class SubAgentToolset(FunctionToolset[AgentDepsT]):
         contain_errors: bool,
         call_counts: dict[str, dict[str, int]],
         models: Mapping[str, ModelOption] | None = None,
+        include_self: bool = False,
+        max_depth: int = DEFAULT_MAX_DEPTH,
     ) -> None:
         super().__init__()
         self._agents: dict[str, SubAgent[AgentDepsT]] = dict(agents)
@@ -221,6 +238,8 @@ class SubAgentToolset(FunctionToolset[AgentDepsT]):
         self._tool_name = tool_name
         self._contain_errors = contain_errors
         self._models: dict[str, ModelOption] = dict(models or {})
+        self._include_self = include_self
+        self._max_depth = max_depth
         for name, sub_agent in self._agents.items():
             validate_restriction(name, sub_agent.models, self._models)
         # Run-scoped delegation counts, keyed by run_id then sub-agent name.
@@ -328,10 +347,15 @@ class SubAgentToolset(FunctionToolset[AgentDepsT]):
                 listed in the instructions. Omit it to use the sub-agent's default
                 model. Only offered when a model menu is configured.
         """
-        sub_agent = self._agents.get(agent_name)
-        if sub_agent is None:
-            available = ', '.join(sorted(self._agents))
-            raise ModelRetry(f'Unknown sub-agent {agent_name!r}. Available sub-agents: {available}.')
+        sub_agent = self._resolve_agent(ctx, agent_name)
+
+        depth = _depth.get()
+        if depth >= self._max_depth:
+            return self._steer(
+                sub_agent.on_failure,
+                f'Delegation is limited to {self._max_depth} levels and this run is at level {depth}, '
+                f'so {agent_name!r} was not run. Do the task yourself.',
+            )
 
         # Resolved before the call budget is charged, so a bad model key costs nothing.
         key = self._resolve_model_key(agent_name, sub_agent, model)
@@ -345,6 +369,23 @@ class SubAgentToolset(FunctionToolset[AgentDepsT]):
             )
         return await self._run_delegation(ctx, agent_name, sub_agent, task=task, key=key)
 
+    def _resolve_agent(self, ctx: RunContext[AgentDepsT], agent_name: str) -> SubAgent[AgentDepsT]:
+        """The delegate `agent_name` names, with the running agent resolved at call time for `include_self`.
+
+        Raises:
+            ModelRetry: no delegate has that name.
+        """
+        if self._include_self and agent_name == SELF_AGENT_NAME:
+            agent = ctx.agent
+            if agent is None:  # pragma: no cover - the running agent is always set during a run
+                raise UserError('Delegating to the running agent requires `RunContext.agent`.')
+            return SubAgent(agent, name=SELF_AGENT_NAME)
+        sub_agent = self._agents.get(agent_name)
+        if sub_agent is None:
+            names = [*self._agents, SELF_AGENT_NAME] if self._include_self else list(self._agents)
+            raise ModelRetry(f'Unknown sub-agent {agent_name!r}. Available sub-agents: {", ".join(sorted(names))}.')
+        return sub_agent
+
     async def _run_delegation(
         self,
         ctx: RunContext[AgentDepsT],
@@ -355,6 +396,10 @@ class SubAgentToolset(FunctionToolset[AgentDepsT]):
         key: str | None,
     ) -> str:
         """Run one accepted delegation, announcing its start and how it ended."""
+        # A delegation to the running agent already carries the parent's tools, so inheriting them
+        # again would register every tool twice.
+        is_self = sub_agent.agent is ctx.agent
+        inherit_tools = self._inherit_tools and not is_self
         # Announced before the child coroutine exists, so an emit that does not return
         # (a cancellation landing on the await) leaves no never-awaited coroutine behind.
         emits = _emits_events(ctx)
@@ -362,12 +407,12 @@ class SubAgentToolset(FunctionToolset[AgentDepsT]):
             text, truncated = bounded_text(task)
             await ctx.emit(
                 DelegationStartEvent(
-                    agent_name=agent_name, task=text, truncated=truncated, model=key, inherits_tools=self._inherit_tools
+                    agent_name=agent_name, task=text, truncated=truncated, model=key, inherits_tools=inherit_tools
                 )
             )
         started = time.perf_counter()
 
-        toolsets = self._inherited_toolsets(ctx) if self._inherit_tools else None
+        toolsets = self._inherited_toolsets(ctx) if inherit_tools else None
         capabilities = self._shared_capabilities or None
         usage_limits: UsageLimits | None
         if sub_agent.usage_limits is not None:
@@ -382,7 +427,8 @@ class SubAgentToolset(FunctionToolset[AgentDepsT]):
 
         # A selected menu option decides the model and how it runs. Without one, a
         # sub-agent with no model of its own (e.g. one loaded from disk) inherits the
-        # parent run's model, and one that brought its own keeps it.
+        # parent run's model, and one that brought its own keeps it. The running agent
+        # always runs on the parent run's model, which may be a run-level override of its own.
         run_model: Model | KnownModelName | str | None
         settings: ModelSettings | None
         if key is not None:
@@ -399,7 +445,7 @@ class SubAgentToolset(FunctionToolset[AgentDepsT]):
             ctx_model = ctx.model
             run_model = (
                 cast('Model[Any]', ctx_model)
-                if sub_agent.agent.model is None and isinstance(ctx_model, Model)
+                if (is_self or sub_agent.agent.model is None) and isinstance(ctx_model, Model)
                 else None
             )
             settings = None
@@ -414,7 +460,11 @@ class SubAgentToolset(FunctionToolset[AgentDepsT]):
             capabilities=capabilities,
             event_stream_handler=self._event_stream_handler,
         )
-        ended = await self._settle(agent_name, sub_agent, run, own_budget=own_budget)
+        token = _depth.set(_depth.get() + 1)
+        try:
+            ended = await self._settle(agent_name, sub_agent, run, own_budget=own_budget)
+        finally:
+            _depth.reset(token)
         if emits:
             text, truncated = bounded_text(ended.output)
             await ctx.emit(

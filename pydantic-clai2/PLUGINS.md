@@ -227,7 +227,7 @@ Two ways to install one:
 
    ```sh
    clai2 plugins add notify my_package.notify
-   /plugins add coder pydantic_ai_harness.coder:Coder '{"unrestricted_filesystem": true}'
+   /plugins add coder pydantic_ai_harness.coder:Coder '{"unrestricted_filesystem": true, "sub_agents": false}'
    ```
 
 No restart needed when you do it from inside CLAI. A plugin you add or enable is
@@ -272,7 +272,7 @@ order plugin instructions, renderers, and status segments are consulted in.
 
 | Id | Backed by | Settings | Does |
 |---|---|---|---|
-| `coder` | `pydantic_ai_harness.coder:Coder` | `{"unrestricted_filesystem": true, "repo_context": false}` | the file and shell tools |
+| `coder` | `pydantic_ai_harness.coder:Coder` | `{"unrestricted_filesystem": true, "repo_context": false, "sub_agents": false}` | the file and shell tools |
 | `ask_user` | `pydantic_clai2.ask_user_menu:activate` | `{}` | the `ask_user_question` tool: multiple-choice questions answered from the terminal |
 | `repo_context` | `pydantic_clai2.repo_context` | `{}` | reads `CLAUDE.md` or `AGENTS.md` from the launch directory into the instructions |
 | `persistence` | `pydantic_clai2.sessions` | `{}` | Harness step checkpoints for interrupted session recovery |
@@ -312,13 +312,16 @@ read. To run a built-in with different options, add your own declaration under
 the same name and it takes the built-in's place:
 
 ```text
-/plugins add coder pydantic_ai_harness.coder:Coder '{"unrestricted_filesystem": false, "repo_context": false}'
+/plugins add coder pydantic_ai_harness.coder:Coder '{"unrestricted_filesystem": false, "repo_context": false, "sub_agents": false}'
 /plugins add repo_context pydantic_clai2.repo_context '{"walk_up": true}'
 ```
 
 Keep `"repo_context": false` on a replacement `coder`: `Coder` bundles its own
 `RepoContext`, and with the `repo_context` plugin also on, the instruction file
-would reach the model twice.
+would reach the model twice. Keep `"sub_agents": false` as well: `Coder`'s
+delegation runs the agent again, which only brings along what is bound to the
+agent, and CLAI passes its plugins to each run instead, so `Coder` refuses to
+start with delegation on.
 
 `repo_context` wraps harness `RepoContext` with the launch directory as the
 workspace and its default filenames. Its settings:
