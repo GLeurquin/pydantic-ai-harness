@@ -2,9 +2,11 @@
 
 import io
 import json
+import sqlite3
 import subprocess
 import sys
 from collections.abc import Callable
+from contextlib import closing
 from pathlib import Path
 
 import keyring
@@ -65,7 +67,9 @@ class LogfireCLI:
         self, command: list[str], *, cwd: Path, check: bool, timeout: int
     ) -> subprocess.CompletedProcess[bytes]:
         assert command[:4] == [sys.executable, '-I', '-m', 'logfire']
-        assert cwd.is_dir() and cwd.stat().st_mode & 0o077 == 0
+        assert cwd.is_dir()
+        if sys.platform != 'win32':
+            assert cwd.stat().st_mode & 0o077 == 0
         assert check and timeout == 300
         self.commands.append(command[4:])
         self.directories.append(cwd)
@@ -210,6 +214,27 @@ def test_failed_or_cancelled_login_preserves_choices_and_cleans_up(
     assert 'do-not-print' not in output
 
 
+@pytest.mark.parametrize('action', ['decline', 'login'])
+def test_locked_database_restores_screen_and_preserves_preferences(
+    tmp_path: Path,
+    terminal: Callable[[str], None],
+    logfire_cli: LogfireCLI,
+    capsys: pytest.CaptureFixture[str],
+    action: str,
+) -> None:
+    store = SettingsStore(tmp_path / 'config.db')
+    before = PluginSettings(id='logfire', factory='pydantic_clai2.logfire', enabled=False)
+    store.save_plugin(before)
+    terminal(f'{action}\nuse\n')
+    with closing(sqlite3.connect(store.path)) as connection:
+        connection.execute('BEGIN IMMEDIATE')
+        onboard_logfire(store=store, force=True)
+    assert store.plugins() == [before]
+    output = capsys.readouterr().out
+    assert 'did not complete' in output.split('\x1b[?1049l')[1]
+    assert all(not directory.exists() for directory in logfire_cli.directories)
+
+
 @pytest.mark.parametrize('enabled', [None, False, True])
 def test_initial_ctrl_c_leaves_preferences_unchanged(
     tmp_path: Path, terminal: Callable[[str], None], logfire_cli: LogfireCLI, enabled: bool | None
@@ -304,7 +329,8 @@ def test_private_file_fallback_is_reported(
     monkeypatch.setenv('LOGFIRE_TOKEN', 'environment-token')
     logfire_command(SettingsStore(tmp_path / 'config.db'), [])
     path = logfire_directory().parent / 'credentials-logfire.json'
-    assert path.stat().st_mode & 0o777 == 0o600
+    if sys.platform != 'win32':
+        assert path.stat().st_mode & 0o777 == 0o600
     output = ' '.join(Text.from_ansi(capsys.readouterr().out).plain.split())
     assert 'private plaintext file' in output
     assert 'LOGFIRE_TOKEN is set and takes precedence' in output

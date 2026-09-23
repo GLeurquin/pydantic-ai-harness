@@ -1,6 +1,7 @@
 """Interactive opt-in before the editor or any telemetry exporter starts."""
 
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -108,7 +109,7 @@ def onboard_logfire(
         console.print(result, markup=False, highlight=False)
     except (EOFError, KeyboardInterrupt):
         console.print('\nLogfire setup cancelled. Run clai2 logfire to try again.')
-    except (OSError, subprocess.SubprocessError, KeyringError, ValidationError, UserError):
+    except (OSError, subprocess.SubprocessError, sqlite3.DatabaseError, KeyringError, ValidationError, UserError):
         console.print('Logfire setup did not complete. Run clai2 logfire to try again.')
 
 
