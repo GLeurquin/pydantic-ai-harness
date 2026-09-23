@@ -8,7 +8,11 @@ from typing import TYPE_CHECKING
 import pytest
 
 _HAS_DAYTONA = importlib.util.find_spec('daytona') is not None
-collect_ignore = [] if _HAS_DAYTONA else ['test_backend.py', 'test_daytona_sandbox.py']
+collect_ignore = (
+    []
+    if _HAS_DAYTONA
+    else ['test_backend.py', 'test_conformance.py', 'test_daytona_live.py', 'test_daytona_sandbox.py']
+)
 
 if TYPE_CHECKING or _HAS_DAYTONA:  # pragma: no branch - installed and slim jobs take opposite branches
     import daytona
@@ -26,8 +30,11 @@ class _PoisonedDaytona(types.ModuleType):
 
 
 @pytest.fixture(autouse=True)
-def _no_real_daytona(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Poison lazy `daytona` imports unless a test explicitly installs the fake."""
+def _no_real_daytona(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Poison lazy `daytona` imports unless a test installs the fake or is in the opt-in live tier."""
+    if 'daytona_live' in request.keywords:  # pragma: no cover - live tier runs without coverage
+        yield
+        return
     monkeypatch.setattr('pydantic_ai_harness.daytona_sandbox._backend.daytona', _PoisonedDaytona('daytona'))
     yield
 
