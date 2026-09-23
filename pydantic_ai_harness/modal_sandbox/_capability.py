@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import posixpath
+import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
 
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.exceptions import UserError
-from pydantic_ai.tools import AgentDepsT, RunContext
+from pydantic_ai.tools import AgentDepsT, RunContext, ToolDefinition
 from pydantic_ai.workspaces import WorkspaceBackend, WorkspaceRef
 from typing_extensions import Never
 
@@ -54,6 +55,37 @@ _LEGACY_ARGUMENTS: Mapping[str, str] = {
         "further guidance belongs in the agent's `instructions`."
     ),
 }
+
+
+# The tools of `Shell` and `FileSystem`, which run against `ctx.workspace`. A run that has none of
+# them, and no custom tool by one of these names, gives the model no way to reach the sandbox.
+_WORKSPACE_TOOL_NAMES = frozenset(
+    {
+        'run_command',
+        'start_command',
+        'check_command',
+        'stop_command',
+        'shell',
+        'read_file',
+        'write_file',
+        'edit_file',
+        'list_directory',
+        'search_files',
+        'find_files',
+        'create_directory',
+        'file_info',
+        'list_files',
+        'grep',
+    }
+)
+
+_NO_WORKSPACE_TOOLS_MESSAGE = (
+    "`ModalSandbox` supplies the Modal sandbox as the run's `ctx.workspace` and registers no tools of its own, "
+    'and this agent has no tool that uses it. Add `Shell()` and/or `FileSystem()` alongside it, or write tools '
+    f'that use `ctx.workspace`. See {UPGRADE_DOCS_URL}'
+)
+
+_warned_no_workspace_tools = False
 
 
 def _legacy_argument_message(names: list[str]) -> str:
@@ -158,3 +190,13 @@ class ModalSandbox(AbstractCapability[AgentDepsT]):
             workdir=self.workdir,
             env=self.env,
         )
+
+    async def prepare_tools(self, ctx: RunContext[AgentDepsT], tool_defs: list[ToolDefinition]) -> list[ToolDefinition]:
+        # The previous `ModalSandbox` registered its own tools, so `ModalSandbox(image=...)` on its
+        # own still builds but now leaves the model without the sandbox. This is the earliest hook
+        # that sees the run's tools; it warns once per process and never changes the tools.
+        global _warned_no_workspace_tools
+        if not _warned_no_workspace_tools and _WORKSPACE_TOOL_NAMES.isdisjoint(tool.name for tool in tool_defs):
+            _warned_no_workspace_tools = True
+            warnings.warn(_NO_WORKSPACE_TOOLS_MESSAGE, UserWarning, stacklevel=2)
+        return tool_defs
