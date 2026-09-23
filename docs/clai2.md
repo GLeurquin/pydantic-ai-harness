@@ -136,6 +136,45 @@ Custom agents supplied to `chat` retain their model unless settings explicitly
 select an override. `/login` is async, and plugin command handlers may also return
 an awaitable string.
 
+## GitHub Copilot subscriptions
+
+From a source checkout:
+
+```bash
+export GITHUB_COPILOT_CLIENT_ID='your-oauth-application-client-id'
+uv run --project pydantic-clai2 clai2
+```
+
+Run `/login github-copilot`, then open `/add_model` and choose `github-copilot`.
+The provider menu also starts login when no credentials exist. You need your own
+[GitHub OAuth application with device flow enabled](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#device-flow).
+CLAI borrows no application identity and requests no GitHub scopes. The workspace
+pins the merged Pydantic AI device-flow implementation until its release.
+
+Login prints a code and `https://github.com/login/device`, then starts polling.
+Open the link on this or another device and approve only your own session's code.
+CLAI does not launch a browser, so a text browser cannot block login or take over
+an SSH terminal. Ctrl-C stops polling; GitHub controls expiry. There is no localhost callback.
+
+GitHub authorization does not establish Copilot access. The model menu queries
+your account's catalog and keeps only picker-enabled `/chat/completions` models.
+It includes current-model details and `Ctrl+S` settings. Subscription and
+organization policy still control inference access. A known ID also works with
+`/add_model github-copilot:claude-haiku-4.5`.
+
+The `github-copilot` keyring account is separate from Codex and named API keys.
+Without a keyring, CLAI reports the plaintext `credentials-github-copilot.json`
+fallback under the user's CLAI config directory, created with mode `0600`.
+Tokens and issuance time stay out of settings, history, and login output.
+Expiring tokens require another `/login github-copilot`; there is no automatic
+refresh. Failed or cancelled authorization preserves the previous login.
+
+Saved login takes precedence over `GITHUB_COPILOT_API_KEY`,
+`GITHUB_COPILOT_API_TOKEN`, and `COPILOT_GITHUB_TOKEN`, checked in that order when
+no login is saved. CLAI does not read `GH_TOKEN`, `GITHUB_TOKEN`, or another
+application's token files. Core owns inference and its telemetry; CLAI adds no
+login-specific spans. Bare `/login` continues to sign in to Codex.
+
 ## Settings and commands
 
 Preferences live in `$XDG_CONFIG_HOME/pydantic-clai2/config.db`, falling back to

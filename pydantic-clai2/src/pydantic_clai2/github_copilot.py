@@ -2,7 +2,6 @@
 
 import os
 import time
-import webbrowser
 
 import httpx2
 from anyio import to_thread
@@ -33,7 +32,6 @@ async def login(*, console: Console) -> str:
     console.print(f'Open {authorization.verification_uri}', markup=False, highlight=False)
     console.print(f'Enter code: {authorization.user_code}', markup=False, highlight=False)
     console.print('Approve only the code shown here. Ctrl-C cancels. You can open the link on another device.')
-    await to_thread.run_sync(webbrowser.open, authorization.verification_uri)
     credentials = await flow.wait_for_authorization()
     connection = Connection(credentials=credentials, issued_at=time.time())
     await to_thread.run_sync(

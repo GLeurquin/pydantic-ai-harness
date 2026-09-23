@@ -111,9 +111,10 @@ The provider menu also starts login when no credentials exist. You need your own
 CLAI borrows no application identity and requests no GitHub scopes. The workspace
 pins the merged Pydantic AI device-flow implementation until its release.
 
-Login prints a code and opens `https://github.com/login/device`. You can use the
-printed link on another device. Approve only the code from your own CLAI session.
-Ctrl-C stops polling; GitHub controls expiry. There is no localhost callback.
+Login prints a code and `https://github.com/login/device`, then starts polling.
+Open the link on this or another device and approve only your own session's code.
+CLAI does not launch a browser, so a text browser cannot block login or take over
+an SSH terminal. Ctrl-C stops polling; GitHub controls expiry. There is no localhost callback.
 GitHub authorization does not establish Copilot access: the menu queries your
 account's catalog and keeps only picker-enabled `/chat/completions` models.
 The shared model menu includes details and `Ctrl+S` settings. Subscription and

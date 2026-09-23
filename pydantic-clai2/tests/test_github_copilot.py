@@ -63,13 +63,8 @@ def device_flow(monkeypatch: pytest.MonkeyPatch) -> None:
     async def authorize(self: GitHubCopilotOAuthFlow) -> GitHubCopilotCredentials:
         return CREDENTIALS
 
-    def browser(url: str) -> bool:
-        assert url == 'https://github.com/login/device'
-        return False
-
     monkeypatch.setattr(GitHubCopilotOAuthFlow, 'start', start)
     monkeypatch.setattr(GitHubCopilotOAuthFlow, 'wait_for_authorization', authorize)
-    monkeypatch.setattr('webbrowser.open', browser)
 
 
 @pytest.mark.parametrize('fallback', [False, True])
