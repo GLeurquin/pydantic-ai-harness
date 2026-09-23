@@ -84,7 +84,7 @@ async def resume(ref: WorkspaceRef) -> str:
 
 Retain a `DaytonaSandboxBackend` and call `await backend.get_client()` to obtain the typed `daytona.AsyncSandbox`. The first call creates or attaches to the environment; later calls return the same object. An existing native handle can be supplied with `DaytonaSandboxBackend(workspace=native)`. Supply either a native handle or `ref=`, not both; the caller retains ownership of an injected handle and its SDK client.
 
-Without `client=`, the backend creates its own `AsyncDaytona` API client from the environment on first acquisition and keeps it for its lifetime. To control when local HTTP connections close, construct the client yourself and pass `client=`. This example owns the client and deletes the remote workspace through the native SDK after the run:
+A backend given `client=` leaves closing it to the caller. Without `client=`, the backend creates its own `AsyncDaytona` API client from the environment on first acquisition and closes it only if creating or attaching fails; otherwise it stays open for the process. To control when local HTTP connections close, construct the client yourself and pass `client=`. This example owns the client and deletes the remote workspace through the native SDK after the run:
 
 ```python
 from daytona import AsyncDaytona
