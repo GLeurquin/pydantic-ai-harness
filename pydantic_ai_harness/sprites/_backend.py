@@ -268,7 +268,6 @@ class SpriteWorkspaceBackend(WorkspaceBackend, SupportsCommands):
         control = f'/tmp/pydantic-ai-{uuid.uuid4().hex}'
         stdout = b''
         stderr = b''
-        connection: ControlConnection | None = None
         operation = None
         command_error: BaseException | None = None
         close_error: Exception | None = None
@@ -276,10 +275,10 @@ class SpriteWorkspaceBackend(WorkspaceBackend, SupportsCommands):
         # Acquired outside the command deadline: `timeout` bounds the command, and acquisition
         # has its own bound that reports a stalled control plane as `WorkspaceError`.
         sprite = await self.get_client()
+        connection = ControlConnection(sprite)
         try:
             with anyio.fail_after(timeout):
                 options = json.dumps({'args': args, 'cwd': directory, 'env': dict(env or {})})
-                connection = ControlConnection(sprite)
                 await connection.connect()
                 operation = await connection.start_op(
                     'exec', cmd=['python3', '-I', '-c', RUN, control, options], stdin=False
@@ -302,8 +301,7 @@ class SpriteWorkspaceBackend(WorkspaceBackend, SupportsCommands):
             if cleanup_error is not None:
                 logger.warning('Could not confirm remote Sprite command termination: %s', cleanup_error)
         finally:
-            if connection is not None:
-                close_error = await cleanup_call(connection.close, timeout=_CONTROL_TIMEOUT)
+            close_error = await cleanup_call(connection.close, timeout=_CONTROL_TIMEOUT)
 
         if command_error is not None:
             if close_error is not None:
