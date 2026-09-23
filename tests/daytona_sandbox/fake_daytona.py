@@ -13,10 +13,18 @@ is the ambiguity the backend has to resolve.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+import os
+import shutil
+import signal
+import subprocess
+import tempfile
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
-from typing import Protocol
+from typing import IO, Protocol
 
+import anyio
 from daytona import DaytonaNotFoundError, DaytonaValidationError, SandboxState
 
 
@@ -181,8 +189,142 @@ class FakeFileSystem:
             raise self.owner.fs_error
 
 
+@contextmanager
+def _host_errors(path: str) -> Generator[None]:
+    """Raise the SDK errors the toolbox's status codes turn into for these host errors."""
+    try:
+        yield
+    except FileNotFoundError as error:
+        raise DaytonaNotFoundError(f'path not found: {path}', status_code=404) from error
+    except IsADirectoryError as error:
+        raise DaytonaValidationError(f'path is a directory: {path}', status_code=400) from error
+
+
+class _HostProcess(FakeProcess):
+    """Mirrors `sandbox.process` by running commands on the host under `host_root`.
+
+    Session commands write to anonymous temporary files that the log stream tails, so output
+    printed before a deadline kill is delivered, and deleting the session kills the process group.
+    """
+
+    def __init__(self, owner: FakeSandbox, host_root: Path) -> None:
+        super().__init__(owner)
+        self.host_root = host_root
+        self.commands: dict[str, tuple[subprocess.Popen[bytes], IO[bytes], IO[bytes]]] = {}
+
+    async def exec(
+        self,
+        command: str,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout: int | None = None,
+    ) -> SimpleNamespace:
+        self.owner.check_alive()
+        # `exec` reports stdout and stderr combined as `result`.
+        done = await anyio.run_process(
+            ['sh', '-c', command], cwd=cwd or self.host_root, check=False, stderr=subprocess.STDOUT
+        )
+        return SimpleNamespace(result=done.stdout.decode(), exit_code=done.returncode)
+
+    async def execute_session_command(
+        self,
+        session_id: str,
+        request: object,
+        timeout: int | None = None,
+    ) -> SimpleNamespace:
+        self.owner.check_alive()
+        out, err = tempfile.TemporaryFile(), tempfile.TemporaryFile()
+        process = subprocess.Popen(
+            ['sh', '-c', getattr(request, 'command')],
+            cwd=self.host_root,
+            stdout=out,
+            stderr=err,
+            start_new_session=True,
+        )
+        command_id = f'{session_id}-cmd'
+        self.commands[command_id] = (process, out, err)
+        return SimpleNamespace(cmd_id=command_id)
+
+    async def get_session_command_logs_async(
+        self,
+        session_id: str,
+        command_id: str,
+        on_stdout: Callable[[str], None],
+        on_stderr: Callable[[str], None],
+    ) -> None:
+        process, out, err = self.commands[command_id]
+        offsets = [0, 0]
+        while True:
+            finished = process.poll() is not None
+            for index, (stream, handler) in enumerate(((out, on_stdout), (err, on_stderr))):
+                chunk = os.pread(stream.fileno(), os.fstat(stream.fileno()).st_size - offsets[index], offsets[index])
+                offsets[index] += len(chunk)
+                if chunk:
+                    handler(chunk.decode(errors='replace'))
+            if finished:
+                return
+            await anyio.sleep(0.01)
+
+    async def get_session_command(
+        self,
+        session_id: str,
+        command_id: str,
+        request_timeout: float | None = None,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(exit_code=self.commands[command_id][0].poll())
+
+    async def delete_session(self, session_id: str, request_timeout: float | None = None) -> None:
+        process, out, err = self.commands.pop(f'{session_id}-cmd')
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+        out.close()
+        err.close()
+
+
+class _HostFileSystem(FakeFileSystem):
+    """Mirrors `sandbox.fs` on the host filesystem, so commands and file calls share one tree."""
+
+    async def get_file_info(self, path: str, request_timeout: float | None = None) -> SimpleNamespace:
+        self._raise_if_needed()
+        with _host_errors(path):
+            info = Path(path).stat()
+        return SimpleNamespace(size=info.st_size, is_dir=Path(path).is_dir())
+
+    async def download_file(self, path: str, timeout: int | None = None) -> bytes:
+        self._raise_if_needed()
+        with _host_errors(path):
+            return Path(path).read_bytes()
+
+    async def upload_file(self, data: bytes, path: str, timeout: int = 1800) -> None:
+        self._raise_if_needed()
+        Path(path).write_bytes(data)
+
+    async def list_files(
+        self, path: str, depth: int | None = None, request_timeout: float | None = None
+    ) -> list[SimpleNamespace]:
+        self._raise_if_needed()
+        with _host_errors(path):
+            children = sorted(Path(path).iterdir())
+        return [
+            SimpleNamespace(name=child.name, is_dir=child.is_dir(), size=child.stat().st_size) for child in children
+        ]
+
+    async def create_folder(self, path: str, mode: str, request_timeout: float | None = None) -> None:
+        self._raise_if_needed()
+        Path(path).mkdir(mode=int(mode, 8), parents=True, exist_ok=True)
+
+    async def delete_file(self, path: str, recursive: bool = False, request_timeout: float | None = None) -> None:
+        self._raise_if_needed()
+        with _host_errors(path):
+            if Path(path).is_dir():
+                shutil.rmtree(path)
+            else:
+                Path(path).unlink()
+
+
 class FakeSandbox:
-    def __init__(self, sandbox_id: str, name: str | None = None) -> None:
+    def __init__(self, sandbox_id: str, name: str | None = None, host_root: Path | None = None) -> None:
         self.client: FakeClient | None = None
         self.id = sandbox_id
         self.name = name or sandbox_id
@@ -219,6 +361,10 @@ class FakeSandbox:
         self.process_logs_started = asyncio.Event()
         self.process = FakeProcess(self)
         self.fs = FakeFileSystem(self)
+        if host_root is not None:
+            self.workdir = str(host_root)
+            self.process = _HostProcess(self, host_root)
+            self.fs = _HostFileSystem(self)
 
     async def start(self, timeout: float | None = 60) -> None:
         self.start_calls.append(timeout)
@@ -250,7 +396,7 @@ class FakeClient:
             await self.owner.create_gate.wait()
         if self.owner.create_error is not None:
             raise self.owner.create_error
-        sandbox = FakeSandbox(f'sb-{len(self.owner.sandboxes) + 1}', params.name)
+        sandbox = FakeSandbox(f'sb-{len(self.owner.sandboxes) + 1}', params.name, self.owner.host_root)
         sandbox.client = self
         self.owner.sandboxes.append(sandbox)
         self.owner.create_params.append(params)
@@ -281,6 +427,8 @@ class FakeDaytona:
         self.create_gate: asyncio.Event | None = None
         self.get_gate: asyncio.Event | None = None
         self.get_error: Exception | None = None
+        # When set, new sandboxes run commands and file operations on the host under this directory.
+        self.host_root: Path | None = None
 
     def client(self) -> FakeClient:
         return FakeClient(self)
