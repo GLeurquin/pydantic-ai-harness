@@ -1500,6 +1500,81 @@ class _Refusing(LocalWorkspaceBackend):
         raise RuntimeError('workspace call outside an activity')
 
 
+_KILL_SCRIPT = 'kill -s "$1" -- "$2"'
+
+
+class _RecordingKill(LocalWorkspaceBackend):
+    """A local backend that records every argv command and can answer the signal command itself."""
+
+    def __init__(self, working_dir: str, *, kill_result: CommandResult | None = None) -> None:
+        super().__init__(working_dir)
+        self.argv: list[list[str]] = []
+        self.kill_result = kill_result
+
+    async def run(
+        self,
+        command: WorkspaceCommand,
+        *,
+        shell: bool = False,
+        cwd: str | None = None,
+        env: Mapping[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> CommandResult:
+        if not isinstance(command, str):
+            self.argv.append(list(command))
+            if self.kill_result is not None and command[:3] == ['sh', '-c', _KILL_SCRIPT]:
+                return self.kill_result
+        return await super().run(command, shell=shell, cwd=cwd, env=env, timeout=timeout)
+
+
+class TestSignalling:
+    async def test_signals_go_through_the_shell_builtin(self, shell_dir: Path) -> None:
+        # Slim images ship no `kill` executable, so no argv may start with a bare `kill`.
+        backend = _RecordingKill('/')
+        ts = _shell_toolset(shell_dir)
+        ctx = _run_context(Workspace(backend))
+        command_id = _parse_command_id(await ts.start_command(ctx, 'exec sleep 300'))
+        job = ts._background[command_id].job
+        stopped = await ts.stop_command(ctx, command_id)
+        assert stopped.splitlines()[-2:] == ['[stopped]', '[exit code: 143]']
+        signals = [argv for argv in backend.argv if argv[:3] == ['sh', '-c', _KILL_SCRIPT]]
+        target = f'-{job.pgid}' if job.pgid is not None else str(job.pid)
+        assert signals == [['sh', '-c', _KILL_SCRIPT, 'kill', 'TERM', target]]
+        assert all(argv[0] != 'kill' for argv in backend.argv)
+        await _wait_for_exit(job.pid)
+
+    async def test_failed_signal_is_not_reported_as_stopped(self, shell_dir: Path) -> None:
+        backend = _RecordingKill(
+            '/', kill_result=CommandResult(exit_code=1, stdout='', stderr='kill: Operation not permitted')
+        )
+        ts = _shell_toolset(shell_dir)
+        ctx = _run_context(Workspace(backend))
+        command_id = _parse_command_id(await ts.start_command(ctx, 'exec sleep 300'))
+        job = ts._background[command_id].job
+        try:
+            tools = await ts.get_tools(ctx)
+            with pytest.raises(ToolFailed, match='Operation not permitted'):
+                await ts.call_tool('stop_command', {'command_id': command_id}, ctx, tools['stop_command'])
+            assert (await job.status())[0]
+        finally:
+            backend.kill_result = None
+            await job.kill()
+            await job.cleanup()
+
+    async def test_failed_signal_without_stderr_names_the_signal(self, shell_dir: Path) -> None:
+        backend = _RecordingKill('/', kill_result=CommandResult(exit_code=2, stdout='', stderr=''))
+        ts = _shell_toolset(shell_dir)
+        command_id = _parse_command_id(await ts.start_command(_run_context(Workspace(backend)), 'exec sleep 300'))
+        job = ts._background[command_id].job
+        try:
+            with pytest.raises(WorkspaceError, match=f'Unable to send SIGTERM to job {job.pid}'):
+                await job.kill()
+        finally:
+            backend.kill_result = None
+            await job.kill()
+            await job.cleanup()
+
+
 class _FailingKill(LocalWorkspaceBackend):
     """A local backend whose `kill` commands fail as a broken workspace would."""
 
@@ -1512,7 +1587,7 @@ class _FailingKill(LocalWorkspaceBackend):
         env: Mapping[str, str] | None = None,
         timeout: float | None = None,
     ) -> CommandResult:
-        if not isinstance(command, str) and command[0] == 'kill':
+        if not isinstance(command, str) and command[:3] == ['sh', '-c', _KILL_SCRIPT]:
             raise WorkspaceError('kill failed')
         return await super().run(command, shell=shell, cwd=cwd, env=env, timeout=timeout)
 

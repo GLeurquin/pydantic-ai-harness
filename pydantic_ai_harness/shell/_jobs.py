@@ -229,10 +229,21 @@ class Job:
         await self._signal('KILL')
 
     async def _signal(self, name: str) -> bool:
-        """Whether the signal reached a process; a job that already exited is not an error."""
+        """Whether the signal reached a process; a job that already exited is not an error.
+
+        The shell's `kill` builtin sends it, so no `kill` executable is needed: slim images
+        such as Debian's ship none. A failure other than "no such process" raises, rather than
+        reporting a job stopped that may still be running.
+        """
         target = f'-{self.pgid}' if self.pgid is not None else str(self.pid)
-        result = await self.workspace.run(['kill', f'-{name}', target], timeout=CONTROL_TIMEOUT)
-        return result.exit_code == 0
+        result = await self.workspace.run(
+            ['sh', '-c', 'kill -s "$1" -- "$2"', 'kill', name, target], timeout=CONTROL_TIMEOUT
+        )
+        if result.exit_code == 0:
+            return True
+        if 'no such process' in result.stderr.lower():
+            return False
+        raise WorkspaceError(result.stderr.strip() or f'Unable to send SIG{name} to job {self.pid}.')
 
     async def cleanup(self) -> None:
         """Remove the job's directory from the workspace."""
