@@ -12,14 +12,8 @@ from pydantic_ai.exceptions import UserError
 from pydantic_ai.models.github_copilot import GitHubCopilotModel
 from pydantic_ai.providers.github_copilot import GitHubCopilotCredentials, GitHubCopilotOAuthFlow, GitHubCopilotProvider
 from rich.console import Console
-from termflow.tui import MenuBuilder, MenuItem  # pyright: ignore[reportMissingTypeStubs]
-from termflow.tui.menu import Menu  # pyright: ignore[reportMissingTypeStubs]
 
-from ._rendering import markdown_style
-from .command_context import CommandContext
 from .credential_store import credentials_path, load_codex_credentials, save_codex_credentials
-from .field_menu import TERMINAL, Runners
-from .menu_worker import menu_key, run_worker
 
 
 class Connection(BaseModel):
@@ -82,6 +76,7 @@ class ServedModel(BaseModel):
 
     id: str = Field(min_length=1)
     supported_endpoints: list[str] = Field(default_factory=list)
+    model_picker_enabled: bool = False
 
 
 class ModelList(BaseModel):
@@ -105,36 +100,21 @@ async def discover(*, transport: httpx2.AsyncBaseTransport | None = None) -> lis
             models = ModelList.model_validate_json(response.content)
         except ValidationError:
             raise UserError('Copilot returned an invalid model list.') from None
-    names = sorted({model.id for model in models.data if '/chat/completions' in model.supported_endpoints})
+    names = sorted(
+        {
+            model.id
+            for model in models.data
+            if model.model_picker_enabled and '/chat/completions' in model.supported_endpoints
+        }
+    )
     if not names:
         raise UserError('Copilot returned no Chat Completions models for this account.')
     return names
 
 
-def model_menu(names: list[str]) -> Menu:
-    """Offer only models returned by the authenticated Copilot catalog."""
-    return (
-        MenuBuilder('GitHub Copilot models')
-        .style(markdown_style())
-        .items([MenuItem(name, value=name) for name in names])
-        .searchable()
-        .footer_hint('type to filter - Enter add and use model - Esc close')
-        .key_source(menu_key)
-        .build()
-    )
-
-
-async def connect(context: CommandContext, args: list[str], *, runners: Runners = TERMINAL) -> str:
-    """Sign in when needed, then select a model from the account's live catalog."""
-    if args:
-        raise ValueError('Use /add_model > github-copilot to connect.')
+async def ensure_login(*, console: Console) -> None:
+    """Request device authorization when saved or environment credentials cannot be used."""
     try:
         await to_thread.run_sync(token)
     except UserError:
-        console = Console()
         console.print(await login(console=console), markup=False)
-    names = await discover()
-    selected = await run_worker(lambda: runners.run_list(model_menu(names)))
-    if selected.cancelled or selected.item is None or not isinstance(selected.item.value, str):
-        return 'Connection cancelled.'
-    return context.set_setting(['model', f'github-copilot:{selected.item.value}'])

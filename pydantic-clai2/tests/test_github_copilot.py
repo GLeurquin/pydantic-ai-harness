@@ -11,7 +11,7 @@ import keyring
 import pytest
 from cassetter import use_cassette
 from keyring.errors import NoKeyringError
-from menu_script import Script, make_context, pick
+from menu_script import Script, make_context, pick, typed
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import UserError
 from pydantic_ai.models.test import TestModel
@@ -21,12 +21,14 @@ from pydantic_ai.providers.github_copilot import (
     GitHubCopilotOAuthFlow,
 )
 from rich.console import Console
+from termflow.tui import MenuItem  # pyright: ignore[reportMissingTypeStubs]
 from termflow.tui.menu import MenuResult  # pyright: ignore[reportMissingTypeStubs]
 from test_app_edges import inputs
 
 from pydantic_clai2 import chat, github_copilot
 from pydantic_clai2.credential_store import credentials_path, load_codex_credentials, save_codex_credentials
-from pydantic_clai2.model_menu import open_add_model_menu
+from pydantic_clai2.model_catalog import github_copilot_models
+from pydantic_clai2.model_menu import ModelMenu, open_add_model_menu
 from pydantic_clai2.settings_store import SettingsStore
 
 CREDENTIALS = GitHubCopilotCredentials(access_token='fake-access', token_type='bearer', scope='')
@@ -175,7 +177,9 @@ def test_saved_credentials(stored: str) -> None:
             github_copilot.token()
 
 
-@pytest.mark.parametrize('selected', [pick('claude-haiku-4.5'), MenuResult(cancelled=True), MenuResult(), pick(1)])
+@pytest.mark.parametrize(
+    'selected', [pick('github-copilot:claude-haiku-4.5'), MenuResult(cancelled=True), MenuResult(), pick(1)]
+)
 async def test_connect(
     device_flow: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selected: MenuResult
 ) -> None:
@@ -186,29 +190,48 @@ async def test_connect(
     monkeypatch.setattr(github_copilot, 'discover', discover)
     context, _ = make_context(tmp_path)
     previous = context.settings.model
-    script = Script(lists=[selected, selected], choices=[], texts=[])
     for _ in range(2):
-        result = await github_copilot.connect(context, [], runners=script.runners)
-        if selected.item and selected.item.value == 'claude-haiku-4.5':
+        script = Script(lists=[pick('github-copilot'), selected, MenuResult(cancelled=True)], choices=[], texts=[])
+        result = await open_add_model_menu(context, runners=script.runners)
+        if selected.item and selected.item.value == 'github-copilot:claude-haiku-4.5':
             assert context.settings.model == 'github-copilot:claude-haiku-4.5'
             assert result == 'Saved model. Applied.'
         else:
             assert context.settings.model == previous
-            assert result == 'Connection cancelled.'
-    with pytest.raises(ValueError, match='/add_model'):
-        await github_copilot.connect(context, ['secret'])
+            assert result == 'No changes.'
 
 
 async def test_provider_menu(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     context, _ = make_context(tmp_path)
-    keys = iter([*'github-copilot', 'enter'])
-    monkeypatch.setattr('pydantic_clai2.model_menu.menu_key', lambda: next(keys))
+    monkeypatch.setenv('GITHUB_COPILOT_API_KEY', 'test-token')
 
-    async def connect(context: object, args: list[str]) -> str:
-        return 'Copilot selection reached'
+    async def discover() -> list[str]:
+        return ['claude-haiku-4.5']
 
-    monkeypatch.setattr(github_copilot, 'connect', connect)
-    assert await open_add_model_menu(context) == 'Copilot selection reached'
+    monkeypatch.setattr(github_copilot, 'discover', discover)
+    name = 'github-copilot:claude-haiku-4.5'
+    discovered = await github_copilot_models()
+    context.set_setting(['model', name])
+    menu = ModelMenu(context, discovered=discovered).for_provider('github-copilot')
+    assert [item.value for item in menu.items()] == [name]
+    assert menu.items()[0].label.endswith('(current)')
+    assert 'provider  github-copilot' in menu.details(menu.items()[0])
+    script = Script(
+        lists=[
+            pick('github-copilot'),
+            menu.settings_marker(object(), MenuItem(name, value=name)),
+            pick('max_tokens'),
+            MenuResult(cancelled=True),
+            pick(name),
+        ],
+        choices=[],
+        texts=[typed('42')],
+    )
+    result = await open_add_model_menu(context, runners=script.runners)
+    assert f'Saved max_tokens for {name}' in result
+    assert 'Saved model. Applied.' in result
+    assert context.settings.model == name
+    assert context.store.model_settings(name) == {'max_tokens': 42}
 
 
 async def test_login_command(device_flow: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -228,6 +251,7 @@ async def test_recorded_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
     assert names == sorted(set(names))
     assert {'claude-haiku-4.5', 'gpt-5.4', 'gemini-3.8-flash'} <= set(names)
     assert not any(name.startswith('grok-') for name in names)
+    assert 'trajectory-compaction' not in names
 
 
 @pytest.mark.parametrize('status', [401, 403, 302, 500])

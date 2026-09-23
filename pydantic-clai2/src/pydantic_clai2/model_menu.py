@@ -1,10 +1,11 @@
 """The `/add_model` menu: pick the model for the next prompt, or edit one model's settings."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from typing import Literal, get_args, get_origin
 
 from pydantic import JsonValue, TypeAdapter, ValidationError
+from rich.console import Console
 from termflow.tui import MenuBuilder, MenuItem  # pyright: ignore[reportMissingTypeStubs]
 from termflow.tui.menu import Menu, MenuResult  # pyright: ignore[reportMissingTypeStubs]
 
@@ -14,7 +15,7 @@ from .command_context import CommandContext
 from .custom_params import CustomParamsMenu
 from .field_menu import TERMINAL, FieldMenu, FieldRow, Runners, first_error, run_flow, shown
 from .menu_worker import menu_key, run_worker
-from .model_catalog import CatalogModel, catalog
+from .model_catalog import CatalogModel, catalog, github_copilot_models
 from .model_options import model_options, validate_model_options
 from .model_settings import ModelSettingsForm, model_defaults
 from .settings_store import SettingsStore
@@ -161,12 +162,15 @@ def _choices(annotation: object) -> tuple[str, ...]:
 class ModelMenu:
     """The model list with a details pane; Enter picks, `Ctrl+S` opens that model's settings."""
 
-    def __init__(self, context: CommandContext, *, provider: str | None = None) -> None:
-        """The current model is always listed, even when no source knows it."""
+    def __init__(
+        self, context: CommandContext, *, provider: str | None = None, discovered: Iterable[CatalogModel] = ()
+    ) -> None:
+        """Keep the current model unless authenticated discovery excludes it."""
         self._context = context
+        self._discovered = tuple(discovered)
         self.models = [
             model
-            for model in catalog(include=[context.settings.model or ''])
+            for model in catalog(include=[context.settings.model or ''], discovered=self._discovered)
             if provider is None or model.name.partition(':')[0] == provider
         ]
 
@@ -255,7 +259,7 @@ class ModelMenu:
 
     def for_provider(self, provider: str) -> 'ModelMenu':
         """Browse one provider without changing the active model."""
-        return ModelMenu(self._context, provider=provider)
+        return ModelMenu(self._context, provider=provider, discovered=self._discovered)
 
     def edit_settings(self, *, name: str, runners: Runners) -> list[str]:
         """Run the same settings flow as the direct slash command."""
@@ -310,11 +314,14 @@ async def open_add_model_menu(
             messages = await run_worker(lambda: (run or flow)(ModelMenu(context)))
         except _ConnectProvider as request:
             accumulated.extend(request.messages)
-            connector = {
-                'github-copilot': github_copilot.connect,
-                'openrouter': openrouter.connect,
-                'vllm': vllm.connect,
-            }[request.provider]
+            if request.provider == 'github-copilot':
+                await github_copilot.ensure_login(console=Console())
+                models = await github_copilot_models()
+                provider_menu = ModelMenu(context, provider='github-copilot', discovered=models)
+                if await run_worker(lambda: _run_provider(provider_menu, runners, accumulated)):
+                    return '\n'.join(accumulated) or 'No changes.'
+                continue
+            connector = openrouter.connect if request.provider == 'openrouter' else vllm.connect
             result = await connector(context, [])
             if result == 'Connection cancelled.':
                 continue

@@ -115,7 +115,8 @@ Login prints a code and opens `https://github.com/login/device`. You can use the
 printed link on another device. Approve only the code from your own CLAI session.
 Ctrl-C stops polling; GitHub controls expiry. There is no localhost callback.
 GitHub authorization does not establish Copilot access: the menu queries your
-account's catalog and keeps only `/chat/completions` models. Subscription and
+account's catalog and keeps only picker-enabled `/chat/completions` models.
+The shared model menu includes details and `Ctrl+S` settings. Subscription and
 organization policy still control inference access. A known ID also works with
 `/add_model github-copilot:claude-haiku-4.5`.
 

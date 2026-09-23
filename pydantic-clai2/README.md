@@ -350,8 +350,9 @@ shown by your own CLAI session. Ctrl-C stops polling; GitHub controls the code's
 expiry. No localhost callback or pasted token is needed.
 
 GitHub authorization alone does not establish Copilot access. The model menu
-queries your account's catalog and lists only models with `/chat/completions`
-support. Your subscription and organization policy still control inference access.
+queries your account's catalog and lists only picker-enabled models with
+`/chat/completions` support. The shared model menu includes details and `Ctrl+S`
+settings. Your subscription and organization policy still control inference access.
 You can also select a known ID with `/add_model github-copilot:claude-haiku-4.5`.
 
 Credentials use the existing keyring backend under the `github-copilot` account,
