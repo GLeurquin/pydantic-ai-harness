@@ -1,7 +1,7 @@
 """Offline model metadata and live provider names for the `/add_model` menu."""
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from genai_prices.data_snapshot import get_snapshot
 from pydantic_ai.models import known_model_names
@@ -76,5 +76,10 @@ def catalog(*, include: Iterable[str] = ()) -> list[CatalogModel]:
     ):
         if name and name not in models:
             provider, _, label = name.partition(':')
-            models[name] = CatalogModel(name=name, provider=provider, label=label)
+            original = models.get(f'openai:{label}') if provider in ('openai-chat', 'openai-responses') else None
+            models[name] = (
+                replace(original, name=name, provider=provider)
+                if original is not None
+                else CatalogModel(name=name, provider=provider, label=label)
+            )
     return [models[name] for name in sorted(models)]

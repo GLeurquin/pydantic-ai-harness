@@ -18,7 +18,7 @@ from termflow.tui.menu import MenuResult  # pyright: ignore[reportMissingTypeStu
 from typing_extensions import TypedDict
 
 from pydantic_clai2.auth import CodexCredentials
-from pydantic_clai2.model_catalog import provider_catalog
+from pydantic_clai2.model_catalog import genai_prices_models, provider_catalog
 from pydantic_clai2.model_discovery import CodexModels, discover_models
 from pydantic_clai2.model_menu import ModelMenu, open_add_model_menu
 
@@ -108,6 +108,27 @@ async def test_missing_credentials_keep_catalog(provider: str, monkeypatch: pyte
     assert notice and 'Using the built-in catalog' in notice
     if provider == 'openai-codex':
         assert '/login openai-codex' in notice
+
+
+@pytest.mark.parametrize('alias', ['openai-chat', 'openai-responses'])
+async def test_openai_aliases_retain_metadata(alias: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    original = next(model for model in genai_prices_models() if model.provider == 'openai' and model.context_window)
+    name = f'{alias}:{original.name.partition(":")[2]}'
+
+    async def discover(*, provider: str) -> tuple[list[str], None]:
+        assert provider == alias
+        return [name, f'{alias}:unknown-model'], None
+
+    monkeypatch.setattr('pydantic_clai2.model_discovery.discover_models', discover)
+    models, notice = await provider_catalog(provider=alias)
+    assert notice is None
+    found = next(model for model in models if model.name == name)
+    assert found.provider == alias
+    assert found.label == original.label
+    assert found.context_window == original.context_window
+    assert found.prices == original.prices
+    unknown = next(model for model in models if model.name == f'{alias}:unknown-model')
+    assert unknown.context_window is None and unknown.prices is None
 
 
 async def test_empty_discovery_keeps_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
