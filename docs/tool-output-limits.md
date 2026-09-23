@@ -161,7 +161,10 @@ Keep Shell's native `max_output_chars` above the `ToolOutputLimits` thresholds. 
 `tail` truncation for moderate command output and `Spill` for large output:
 
 ```python
+from pathlib import Path
+
 from pydantic_ai import Agent
+from pydantic_ai.capabilities import LocalWorkspace
 
 from pydantic_ai_harness.shell import Shell
 from pydantic_ai_harness.tool_output_limits import (
@@ -186,6 +189,7 @@ agent = Agent(
                 ],
             },
         ),
+        LocalWorkspace(working_dir=Path.cwd()),
     ],
 )
 ```
