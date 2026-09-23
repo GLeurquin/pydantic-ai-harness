@@ -13,7 +13,7 @@ from pydantic_ai_harness.compaction import ClearToolResults, WarnNearLimits
 from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.repair_tool_arguments import RepairToolArguments
 from pydantic_ai_harness.repo_context import RepoContext
-from pydantic_ai_harness.shell import LLM_API_KEY_ENV_PATTERNS, MAX_FOREGROUND_WAIT, Shell
+from pydantic_ai_harness.shell import MAX_FOREGROUND_WAIT, Shell
 from pydantic_ai_harness.tool_output_limits import Band, ToolOutputLimits, Truncate
 
 FILE_TOOL_NAMES: tuple[str, ...] = ('read_file', 'write_file', 'edit_file', 'list_files', 'grep')
@@ -74,7 +74,7 @@ class Coder(CombinedCapability[AgentDepsT]):
                 denied_commands=[],
                 default_timeout=MAX_FOREGROUND_WAIT,
                 allow_interactive=True,
-                denied_env_patterns=LLM_API_KEY_ENV_PATTERNS,
+                # No env patterns: the workspace, not the host process, supplies the command environment.
                 tools=['shell'],
             ),
         ]

@@ -13,7 +13,7 @@ import pydantic_ai_harness.coder
 from pydantic_ai_harness.coder import FILE_TOOL_NAMES, Coder, coder_agent
 from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.repo_context import RepoContext
-from pydantic_ai_harness.shell import LLM_API_KEY_ENV_PATTERNS, Shell
+from pydantic_ai_harness.shell import Shell
 
 pytestmark = pytest.mark.anyio
 
@@ -100,7 +100,7 @@ def test_coder_members_and_parameters(tmp_path: Path) -> None:
     assert (files.root_dir, files.cwd, files.content_hashes, files.tools) == (tmp_path, None, False, FILE_TOOL_NAMES)
     shell = next(item for item in coder.capabilities if isinstance(item, Shell))
     assert (shell.cwd, shell.tools, shell.denied_commands, shell.allow_interactive) == (tmp_path, ['shell'], [], True)
-    assert shell.denied_env_patterns == LLM_API_KEY_ENV_PATTERNS
+    assert (shell.env, shell.denied_env_patterns) == (None, [])
     context = next(item for item in coder.capabilities if isinstance(item, RepoContext))
     assert context.workspace_dir == tmp_path
     guidance = next(item for item in coder.capabilities if isinstance(item, Capability))

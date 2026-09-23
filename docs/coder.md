@@ -70,7 +70,7 @@ The bundled `coder_agent` attaches `LocalWorkspace` from `pydantic_ai.capabiliti
 1. A `Capability` carrying the default instructions, plus any `instructions=` you pass.
 2. [`FileSystem`](filesystem.md)`(root_dir=workspace, content_hashes=False, max_read_chars=60000, tools=FILE_TOOL_NAMES)`, where
    `FILE_TOOL_NAMES` is `read_file`, `write_file`, `edit_file`, `list_files`, and `grep`.
-3. [`Shell`](shell.md)`(cwd=workspace, denied_commands=[], allow_interactive=True, default_timeout=270, denied_env_patterns=LLM_API_KEY_ENV_PATTERNS, tools=['shell'])`.
+3. [`Shell`](shell.md)`(cwd=workspace, denied_commands=[], allow_interactive=True, default_timeout=270, tools=['shell'])`.
 4. [`RepoContext`](repo-context.md)`(workspace_dir=workspace, expose_inventory_tool=False)` for repository instructions and structure.
    Pass `repo_context=False` to leave it out when the agent already binds its own `RepoContext`, so the
    instruction files are not loaded twice.
@@ -126,9 +126,9 @@ events a UI can subscribe to.
 The default instructions tell the agent to finish required work before giving a final response: do other
 useful work, then poll status and output until completion or a genuine blocker.
 Servers may remain running after startup and readiness are verified. Commands get the workspace's
-environment: `LocalWorkspace` passes only `PATH`, `HOME`, `LANG`, and `TMPDIR` from the host, and Coder's
-`denied_env_patterns` drop common LLM API-key names from any `env` you add. Host files remain accessible
-to commands in a local workspace.
+environment, not the agent process's: `LocalWorkspace` passes only `PATH`, `HOME`, `LANG`, and `TMPDIR`
+from the host, so provider API keys in the agent's environment do not reach commands. Host files remain
+accessible to commands in a local workspace.
 
 ## Instructions
 
