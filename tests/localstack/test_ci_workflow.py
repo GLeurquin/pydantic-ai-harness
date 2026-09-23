@@ -222,3 +222,51 @@ def test_e2b_live_runs_the_live_tier_with_a_step_scoped_secret() -> None:
     step_block = lines[run_index : run_index + 4]
     assert '          E2B_API_KEY: ${{ secrets.E2B_API_KEY }} # zizmor: ignore[secrets-outside-env]' in step_block
     assert '      - run: uv sync --locked --group dev --extra e2b' in lines[lines.index('  e2b-live:') : run_index]
+
+
+def test_daytona_live_is_scoped_to_daytona_changes() -> None:
+    lines = _workflow_lines()
+    changes_block = lines[lines.index('  changes:') : lines.index('  clai-test:')]
+    detect_block = changes_block[changes_block.index('      - id: detect-daytona') :]
+
+    assert '      daytona: ${{ steps.detect-daytona.outputs.daytona }}' in changes_block
+    assert detect_block[5:11] == [
+        '          if git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- \\',
+        '            pydantic_ai_harness/daytona_sandbox \\',
+        '            tests/daytona_sandbox \\',
+        '            pyproject.toml \\',
+        '            uv.lock \\',
+        '            .github/workflows/main.yml',
+    ]
+    assert "github.ref_type == 'tag' || needs.changes.outputs.daytona == 'true'" in _job_condition('daytona-live')
+
+
+def test_daytona_live_skips_pull_requests_without_secrets() -> None:
+    # DAYTONA_API_KEY is a repository secret: the same fork and Dependabot guard as
+    # `localstack-integration`, so those runs skip instead of failing.
+    daytona = _job_condition('daytona-live').replace('outputs.daytona ', 'outputs.localstack ')
+    assert daytona == _job_condition('localstack-integration')
+
+
+def test_daytona_live_gates_the_aggregate_check_and_may_be_skipped() -> None:
+    lines = _workflow_lines()
+
+    needs = next(line for line in lines if line.strip().startswith('needs: [') and 'coverage' in line)
+    assert 'daytona-live' in needs
+    allowed = next(line for line in lines if 'allowed-skips:' in line)
+    assert 'daytona-live' in allowed.split(':', 1)[1].replace(',', ' ').split()
+
+
+def test_daytona_live_runs_the_live_tier_with_a_step_scoped_secret() -> None:
+    lines = _workflow_lines()
+
+    run_index = lines.index(
+        '      - run: PYDANTIC_AI_HARNESS_DAYTONA_LIVE=1 uv run --no-sync pytest -m daytona_live tests/daytona_sandbox -q'
+    )
+    step_block = lines[run_index : run_index + 4]
+    assert (
+        '          DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }} # zizmor: ignore[secrets-outside-env]' in step_block
+    )
+    assert (
+        '      - run: uv sync --locked --group dev --extra daytona' in lines[lines.index('  daytona-live:') : run_index]
+    )
