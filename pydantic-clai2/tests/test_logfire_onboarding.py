@@ -12,6 +12,7 @@ import pytest
 from keyring.errors import NoKeyringError
 from pydantic import ValidationError
 from rich.console import Console
+from rich.text import Text
 
 from pydantic_clai2.config import PluginSettings
 from pydantic_clai2.credential_store import load_codex_credentials, save_codex_credentials
@@ -39,6 +40,16 @@ def terminal(monkeypatch: pytest.MonkeyPatch) -> Callable[[str], None]:
     def connect(answers: str) -> None:
         monkeypatch.setattr(sys.stdout, 'isatty', lambda: True)
         monkeypatch.setattr(sys, 'stdin', TerminalInput(answers))
+        moves = {
+            '': ('enter',),
+            'login': ('enter',),
+            'decline': ('down', 'enter'),
+            'use': ('enter',),
+            'new': ('down', 'enter'),
+            'escape': ('escape',),
+        }
+        keys = iter(key for answer in answers.splitlines() for key in moves[answer])
+        monkeypatch.setattr('pydantic_clai2.logfire_onboarding.menu_key', lambda: next(keys))
 
     return connect
 
@@ -73,16 +84,25 @@ def logfire_cli(monkeypatch: pytest.MonkeyPatch) -> LogfireCLI:
     return cli
 
 
+@pytest.mark.parametrize('action', ['decline', 'escape'])
 def test_decline_is_remembered_on_upgrade(
-    tmp_path: Path, terminal: Callable[[str], None], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    terminal: Callable[[str], None],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    action: str,
 ) -> None:
-    terminal('decline\n')
+    terminal(f'{action}\n')
     path = tmp_path / 'config.db'
     store = SettingsStore(path)
     store.set('model', 'test')
     store.save_plugin(PluginSettings(id='custom', factory='example'))
     onboard_logfire(store=store)
-    assert 'prompts, responses, tool arguments/results, and images' in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert 'What gets sent' in output
+    assert 'Prompts, responses, tool arguments/results, and images' in output
+    assert 'Log in to Logfire' in output and 'Continue without Logfire' in output
+    assert '\x1b[?1049h' not in output
     assert store.plugins()[1] == PluginSettings(id='logfire', factory='pydantic_clai2.logfire', enabled=False)
     monkeypatch.setattr(sys, 'stdin', TerminalInput('login\n'))
     reopened = SettingsStore(path)
@@ -102,7 +122,7 @@ def test_login_saves_only_project_credentials_and_cleans_temporary_files(
 ) -> None:
     store = SettingsStore(tmp_path / 'config.db')
     store.save_plugin(PluginSettings(id='logfire', factory='pydantic_clai2.logfire', enabled=False))
-    terminal(f'login\n{action}\n')
+    terminal(f'\n{action}\n')
     assert logfire_command(store, []) == ''
     assert logfire_cli.commands[0] == ['auth']
     assert logfire_cli.commands[1][:2] == ['projects', action]
@@ -178,6 +198,18 @@ def test_failed_or_cancelled_login_preserves_choices_and_cleans_up(
     assert 'try again' in output and 'do-not-print' not in output
 
 
+def test_project_picker_cancellation_leaves_preferences_unchanged(
+    tmp_path: Path, terminal: Callable[[str], None], logfire_cli: LogfireCLI
+) -> None:
+    terminal('login\nescape\n')
+    store = SettingsStore(tmp_path / 'config.db')
+    onboard_logfire(store=store)
+    assert logfire_cli.commands == [['auth']]
+    assert all(not directory.exists() for directory in logfire_cli.directories)
+    assert not store.plugins()
+    assert load_logfire_credentials() is None
+
+
 def test_invalid_credentials_do_not_leak_or_enable_plugin(
     tmp_path: Path,
     terminal: Callable[[str], None],
@@ -206,14 +238,27 @@ def test_headless_skips_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
         logfire_command(store, ['extra'])
 
 
-def test_explicit_setup_does_not_replace_custom_plugin(tmp_path: Path, terminal: Callable[[str], None]) -> None:
+@pytest.mark.parametrize('source', ['saved', 'file', 'package', 'project'])
+def test_explicit_setup_does_not_replace_custom_plugin(
+    tmp_path: Path, terminal: Callable[[str], None], monkeypatch: pytest.MonkeyPatch, source: str
+) -> None:
     terminal('decline\n')
+    monkeypatch.chdir(tmp_path)
     store = SettingsStore(tmp_path / 'config.db')
     before = PluginSettings(id='logfire', factory='custom.tracing')
-    store.save_plugin(before)
+    if source == 'saved':
+        store.save_plugin(before)
+    elif source == 'project':
+        project = tmp_path / '.clai/settings.json'
+        project.parent.mkdir()
+        project.write_text(json.dumps({'plugins': [before.model_dump()]}))
+    else:
+        path = store.plugins_dir / ('logfire.py' if source == 'file' else 'logfire/__init__.py')
+        path.parent.mkdir(parents=True)
+        path.write_text('')
     with pytest.raises(ValueError, match='has been replaced'):
         logfire_command(store, [])
-    assert store.plugins() == [before]
+    assert store.plugins() == ([before] if source == 'saved' else [])
 
 
 def test_private_file_fallback_is_reported(
@@ -231,7 +276,7 @@ def test_private_file_fallback_is_reported(
     connect_logfire(console=Console())
     path = logfire_directory().parent / 'credentials-logfire.json'
     assert path.stat().st_mode & 0o777 == 0o600
-    output = capsys.readouterr().out
+    output = ' '.join(Text.from_ansi(capsys.readouterr().out).plain.split())
     assert 'private plaintext file' in output
     assert 'LOGFIRE_TOKEN is set and takes precedence' in output
     assert 'test-write-token' not in output

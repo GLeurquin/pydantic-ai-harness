@@ -81,12 +81,14 @@ import sys
 
 sys.stdin.isatty = lambda: {interactive!r}
 sys.stdout.isatty = lambda: {interactive!r}
+from pydantic_clai2 import logfire_onboarding
+logfire_onboarding.menu_key = iter(['down', 'enter']).__next__
 runpy.run_module('pydantic_clai2', run_name='__main__')
 """
     path = tmp_path / 'config.db'
     result = subprocess.run(
         [sys.executable, '-c', script, '--database', str(path), 'logfire'],
-        input='decline\n',
+        input='',
         text=True,
         capture_output=True,
         check=False,

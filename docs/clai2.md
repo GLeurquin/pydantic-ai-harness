@@ -426,12 +426,18 @@ agent, model-request, and tool spans, including timing, token usage, and failure
 It adds no separate CLAI spans and does not instrument HTTP clients or unrelated
 agents globally.
 
-Your first interactive launch offers `login` or `decline`, including when you
-upgrade from a version without onboarding. Login uses the installed
+Your first interactive launch shows an inline picker, including when you upgrade
+from a version without onboarding. `Log in to Logfire` is selected by default.
+Use Up/Down to move and Enter to select. Login uses the installed
 [Logfire CLI](https://logfire.pydantic.dev/docs/reference/cli/) to authenticate
-in your browser and select (`use`) or create (`new`) a project. Decline is the
-default and disables the plugin. CLAI remembers your choice as a plugin override;
-subsequent upgrades do not reset it. Run the command above to change your choice.
+in your browser, then offers an existing or new project. Selecting login starts
+setup; it does not send conversation traces before setup completes.
+
+Choose `Continue without Logfire`, or press Esc at the initial picker, to disable
+the plugin. CLAI remembers your choice as a plugin override; subsequent upgrades
+do not reset it. Run the command above to change your choice. Esc at the project
+picker cancels setup without changing your saved choice. The setup command refuses
+to replace a custom `logfire` plugin from saved settings, a drop-in, or the project.
 Existing credentials or an explicit plugin declaration skip the startup prompt.
 Project declarations and drop-in replacements also skip it. Headless runs,
 redirected input/output, and `config`/`plugins` commands do not prompt.

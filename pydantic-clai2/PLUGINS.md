@@ -135,11 +135,15 @@ the configured telemetry destination first.
 uv run clai2 logfire
 ```
 
-The first interactive stock CLI launch offers `login` or `decline`, including
-upgrades from versions without onboarding. Decline is the default and saves a
-disabled plugin override. Login runs Logfire's browser authentication, then lets
-you select (`use`) or create (`new`) a project. Both choices persist across upgrades;
-the command above lets you choose again. Existing credentials, saved plugin
+The first interactive stock CLI launch shows an inline picker, including upgrades
+from versions without onboarding. `Log in to Logfire` is selected by default;
+Up/Down moves and Enter selects. Login runs Logfire's browser authentication, then
+lets you use an existing project or create one. Selecting login starts setup, not
+conversation export. `Continue without Logfire`, or Esc at the initial picker,
+saves a disabled plugin override. Both choices persist across upgrades; the command
+above lets you choose again. Esc at the project picker cancels without changing
+your choice. The setup command refuses to replace custom `logfire` plugins from
+saved settings, drop-ins, or the project. Existing credentials, saved plugin
 entries, project declarations, and drop-in replacements skip the startup prompt.
 Headless runs, redirected input/output, `config`/`plugins` commands, and custom
 `chat()` launchers do not run onboarding. Setup failure or cancellation leaves
