@@ -116,13 +116,54 @@ The capability emits no additional telemetry spans. Core agent and tool spans co
 
 ## Upgrading from the previous `ModalSandbox`
 
-Earlier releases shipped a `ModalSandbox` that registered its own `run_command`, `read_file`, `write_file`, and `list_directory` tools and terminated its sandbox when the run ended. The capability now only supplies the sandbox as `ctx.workspace`: it registers no tools, adds no instructions, and never terminates the sandbox. Passing one of the previous constructor arguments raises a `UserError` that repeats the guidance below.
+Earlier releases shipped a `ModalSandbox` that registered its own `run_command`, `read_file`, `write_file`, and `list_directory` tools and terminated its sandbox when the run ended. The capability now only supplies the sandbox as `ctx.workspace`: it registers no tools and adds no instructions. Passing one of the previous constructor arguments raises a `UserError`, and importing one of the removed names raises an `ImportError`; both name the replacement.
 
-- **Tools:** add `Shell()` and/or `FileSystem()` next to `ModalSandbox()`; they run their tools against `ctx.workspace`, so the model gets command and file tools in the sandbox. Their own options replace the per-tool settings the previous capability carried: `default_command_timeout` becomes `Shell(default_timeout=...)`, `max_output_bytes` / `max_output_lines` become `Shell(max_output_chars=...)` (or `ToolOutputLimits` for any tool), and `max_read_bytes` becomes `FileSystem(max_read_lines=..., max_read_chars=...)`. `max_command_timeout` is gone: the sandbox lifetime (`sandbox_timeout`) bounds every command.
-- **Instructions:** `instructions` is gone. `Shell` and `FileSystem` describe their own tools; put anything more in the agent's `instructions`.
-- **Reusing a sandbox:** `sandbox_id` moves from the capability to the run: `agent.run(..., workspace=WorkspaceRef(provider='modal', id=sandbox_id))`. Runs that continue the message history reattach on their own. `session` and `ModalSandboxSession` are gone; to share a sandbox you own, pass `ModalSandboxBackend(workspace=native)` as `workspace=`.
-- **Cleanup:** the sandbox is no longer terminated when a run ends. Terminate it yourself when you are done, as in the example above, or rely on `sandbox_timeout`.
-- **Errors:** `ModalSandboxError`, `ModalSandboxAuthError`, `ModalSandboxTerminalError`, `ModalSandboxUnavailableError`, and `ModalSandboxExecResult` are replaced by Pydantic AI's `WorkspaceError`, `WorkspaceUnavailableError`, `WorkspaceTimeoutError`, and `CommandResult`.
+`ModalSandbox(image=...)` on its own still builds, but the model then has no tool that reaches the sandbox. The first run whose tools include none of the `Shell` or `FileSystem` tool names emits a `UserWarning`, once per process. If your own tools use `ctx.workspace` under other names, silence it with ``warnings.filterwarnings('ignore', message='`ModalSandbox` supplies')``.
+
+### What changed in the lifecycle
+
+- A run no longer terminates the sandbox when it ends. The sandbox runs until you terminate it or its `sandbox_timeout` expires.
+- A run that continues a `message_history` reattaches to the sandbox the previous run used. Pass `workspace='new'` to `agent.run()` to start a fresh sandbox instead.
+- If the sandbox being reattached has expired or was terminated, the first workspace operation raises `WorkspaceUnavailableError`. No empty replacement is created.
+- To terminate the sandbox a run used, take the backend from `result.workspace` and terminate its Modal handle:
+
+```python
+from pydantic_ai import Agent
+from pydantic_ai_harness.modal_sandbox import ModalSandbox, ModalSandboxBackend
+from pydantic_ai_harness.shell import Shell
+
+agent = Agent('anthropic:claude-sonnet-4-6', capabilities=[ModalSandbox(), Shell()])
+
+async def run_once(prompt: str) -> str:
+    result = await agent.run(prompt)
+    backend = result.workspace.backend
+    # `ref` is `None` when the run never touched the sandbox; `get_client()` would create one.
+    if isinstance(backend, ModalSandboxBackend) and backend.ref is not None:
+        sandbox = await backend.get_client()
+        await sandbox.terminate.aio()
+    return result.output
+```
+
+### Migration table
+
+| Previous API | Now |
+| --- | --- |
+| `image`, `app_name`, `create_app_if_missing`, `env` | Unchanged; they configure a newly created sandbox. |
+| `sandbox_timeout` | Unchanged. It also bounds every command, since a command cannot outlive the sandbox. |
+| `workdir` | Unchanged; must be an absolute path. |
+| `sandbox_id` | Removed. Use `agent.run(..., workspace=WorkspaceRef(provider='modal', id=sandbox_id))`. |
+| `session` | Removed. Pass `ModalSandboxBackend(workspace=<modal.Sandbox>)` as `workspace=` to `agent.run()`. |
+| `default_command_timeout` | Removed. Use `Shell(default_timeout=...)`. |
+| `max_command_timeout` | Removed, no replacement. `sandbox_timeout` bounds every command. |
+| `max_output_bytes`, `max_output_lines` | Removed. Use `Shell(max_output_chars=...)`, or `ToolOutputLimits` for any tool. |
+| `max_read_bytes` | Removed. Use `FileSystem(max_read_lines=..., max_read_chars=...)`. |
+| `instructions` | Removed. Put guidance in the agent's `instructions`. |
+| `run_command` tool | Removed. Add `Shell()`. |
+| `read_file`, `write_file`, `list_directory` tools | Removed. Add `FileSystem()`. |
+| `ModalSandboxSession` | Removed. Use `ModalSandboxBackend(workspace=<modal.Sandbox>)` passed as `workspace=`. |
+| `ModalSandboxExecResult` | Removed. `backend.run(...)` returns `pydantic_ai.workspaces.CommandResult`. |
+| `ModalSandboxError` | Removed. Catch `pydantic_ai.workspaces.WorkspaceError`. |
+| `ModalSandboxTerminalError`, `ModalSandboxUnavailableError`, `ModalSandboxAuthError` | Removed. Catch `pydantic_ai.workspaces.WorkspaceUnavailableError`. |
 
 ## API reference
 
