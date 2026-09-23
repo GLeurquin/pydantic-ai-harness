@@ -324,6 +324,7 @@ class FakeSandbox:
         self.poll_result: int | None = None
         self.poll_error: Exception | None = None
         self.poll_calls = 0
+        self.shutting_down = False
         self.terminate = _AioCallable(self._terminate)
         self.workdir: str | None = None
         self._filesystem: _FakeFilesystem | _HostFilesystem = _FakeFilesystem(self)
@@ -336,8 +337,11 @@ class FakeSandbox:
         return self._filesystem
 
     def _terminate(self) -> None:
-        # A terminated sandbox still resolves by id; `poll` reporting an exit is how it shows.
-        self.poll_result = 0
+        # Like real Modal right after `terminate()`: the sandbox still resolves by id and polls
+        # as running while it shuts down, and exec is refused with a `ConflictError`. The
+        # in-memory filesystem fails generically, as Modal's does.
+        self.shutting_down = True
+        self.fs_error = FakeSandboxFilesystemError('An unexpected error occurred, please contact support@modal.com')
 
     def _host_exec(
         self,
@@ -351,6 +355,8 @@ class FakeSandbox:
         # conformance suite sees real exit codes, output, `cwd`, `env`, and deadlines.
         argv = list(args)
         self.exec_calls.append(ExecCall(argv=argv, timeout=timeout, text=text, workdir=workdir, env=env))
+        if self.shutting_down:
+            raise FakeConflictError('Modal Sandbox is shutting down.')
         assert self._control.host_root is not None
         variables = {**os.environ, **{key: value for key, value in (env or {}).items() if value is not None}}
         cwd = workdir or self.workdir or str(self._control.host_root)
@@ -373,6 +379,8 @@ class FakeSandbox:
         # so the fake must too, or a bad kwarg in the backend would only fail in production.
         argv = list(args)
         self.exec_calls.append(ExecCall(argv=argv, timeout=timeout, text=text, workdir=workdir, env=env))
+        if self.shutting_down:
+            raise FakeConflictError('Modal Sandbox is shutting down.')
         if self._control.exec_error is not None:
             raise self._control.exec_error
         stdout, stderr, code = self._control.responder(argv, timeout)

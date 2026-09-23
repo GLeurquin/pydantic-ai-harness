@@ -181,6 +181,14 @@ class TestRun:
         with pytest.raises(WorkspaceUnavailableError, match='sandbox_timeout of 300s'):
             await backend.run(['x'])
 
+    async def test_shutting_down_conflict_is_terminal(self, fake_modal: FakeModal) -> None:
+        # Right after `terminate()`, Modal still polls the sandbox as running but refuses exec
+        # with this ConflictError; the sandbox will not come back, so it is not retryable.
+        backend = await started()
+        fake_modal.exec_error = fake_modal.conflict_type('Modal Sandbox is shutting down.')
+        with pytest.raises(WorkspaceUnavailableError, match='sandbox_timeout of 300s'):
+            await backend.run(['x'])
+
     async def test_transient_conflict_stays_recoverable(self, fake_modal: FakeModal) -> None:
         backend = await started()
         fake_modal.exec_error = fake_modal.conflict_type('aborted')
@@ -362,6 +370,14 @@ class TestConnect:
             await started(ref=WorkspaceRef(provider='modal', id='sb-nope'))
         assert not fake_modal.create_kwargs
 
+    async def test_an_operation_on_a_terminated_sandbox_still_shutting_down_fails(self, fake_modal: FakeModal) -> None:
+        owner = await started()
+        assert owner.ref is not None
+        await fake_modal.sandboxes[0].terminate.aio()
+        backend = ModalSandboxBackend(ref=owner.ref)
+        with pytest.raises(WorkspaceUnavailableError, match="'sb-owned' is no longer running"):
+            await backend.run(['true'])
+
     async def test_an_operation_on_a_gone_sandbox_does_not_create_a_replacement(self, fake_modal: FakeModal) -> None:
         fake_modal.attach_error = fake_modal.unavailable_type('not found')
         backend = ModalSandboxBackend(ref=WorkspaceRef(provider='modal', id='sb-nope'))
@@ -455,6 +471,15 @@ class TestFilesystem:
         fake_modal.sandboxes[0].poll_result = 0
         with pytest.raises(WorkspaceUnavailableError):
             await backend.read_bytes('/x')
+
+    async def test_a_filesystem_error_on_a_sandbox_still_shutting_down_is_terminal(self, fake_modal: FakeModal) -> None:
+        # While a terminated sandbox shuts down it polls as running and its filesystem fails
+        # generically; the exec probe is what names the state.
+        backend = await started()
+        await fake_modal.sandboxes[0].terminate.aio()
+        with pytest.raises(WorkspaceUnavailableError, match='no longer running'):
+            await backend.read_bytes('/x')
+        assert fake_modal.sandboxes[0].exec_calls[-1].argv == ['true']
 
     async def test_a_wrapped_auth_failure_is_terminal(self, fake_modal: FakeModal) -> None:
         backend = await started()
