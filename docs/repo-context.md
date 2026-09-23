@@ -23,7 +23,7 @@ A repo accumulates CE for whatever coding assistant worked in it: instruction fi
 from pathlib import Path
 
 from pydantic_ai import Agent
-from pydantic_ai.workspaces import LocalWorkspace
+from pydantic_ai.workspaces import LocalWorkspaceBackend
 from pydantic_ai_harness import RepoContext
 
 agent = Agent(
@@ -31,11 +31,11 @@ agent = Agent(
     capabilities=[RepoContext(workspace_dir=Path.cwd(), home_dir=Path.home())],
 )
 
-result = agent.run_sync('Summarize the coding-assistant setup in this repo.', workspace=LocalWorkspace(root=Path.cwd()))
+result = agent.run_sync('Summarize the coding-assistant setup in this repo.', workspace=LocalWorkspaceBackend(working_dir=Path.cwd()))
 print(result.output)
 ```
 
-All configured paths and discovered files refer to the run workspace. Relative paths use its working directory, and `~` is not expanded -- use an absolute workspace path or one relative to the workspace working directory. The capability needs a workspace attached to the run; without one it raises an error that says how to attach one (`workspace=LocalWorkspace(root=...)` for the agent process's own filesystem).
+All configured paths and discovered files refer to the run workspace. Relative paths use its working directory, and `~` is not expanded -- use an absolute workspace path or one relative to the workspace working directory. The capability needs a workspace attached to the run; without one it raises an error that says how to attach one (`capabilities=[LocalWorkspace(...)]` from `pydantic_ai.capabilities` for the agent process's own filesystem).
 
 ### 1. Walk-up instruction autoload (on by default)
 
@@ -61,7 +61,7 @@ instead of inspecting raw tool arguments. It remains opt-in:
 from pathlib import Path
 
 from pydantic_ai import Agent
-from pydantic_ai.workspaces import LocalWorkspace
+from pydantic_ai.workspaces import LocalWorkspaceBackend
 from pydantic_ai_harness import FileSystem, RepoContext
 
 agent = Agent(
@@ -75,7 +75,7 @@ agent = Agent(
         )
     ],
 )
-result = agent.run_sync('List the source directory.', workspace=LocalWorkspace(root=Path.cwd()))
+result = agent.run_sync('List the source directory.', workspace=LocalWorkspaceBackend(working_dir=Path.cwd()))
 ```
 
 `nested_inject='pointer'` (default) enqueues a one-line note pointing at the

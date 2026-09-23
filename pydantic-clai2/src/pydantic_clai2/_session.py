@@ -2,10 +2,11 @@
 
 import logging
 import os
+import sys
 from collections.abc import AsyncIterable, Awaitable, Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import Generic, Literal, TypeVar
+from typing import Generic, Literal, NotRequired, TypedDict, TypeVar
 from uuid import uuid4
 
 from anyio import get_cancelled_exc_class, move_on_after
@@ -16,7 +17,7 @@ from pydantic_ai.messages import BinaryContent, ModelMessage, ModelRequest, Mode
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import UsageLimits
-from pydantic_ai.workspaces import LocalWorkspace
+from pydantic_ai.workspaces import LocalWorkspaceBackend
 from pydantic_ai_harness.step_persistence import SqliteStepStore, StepStore
 from pydantic_ai_harness.step_persistence.conversations import (
     ConversationSummary,
@@ -26,6 +27,14 @@ from pydantic_ai_harness.step_persistence.conversations import (
 
 DepsT = TypeVar('DepsT')
 OutputT = TypeVar('OutputT')
+
+
+class _WorkspaceRunKwargs(TypedDict):
+    workspace: NotRequired[LocalWorkspaceBackend]
+
+
+def _supports_local_workspace() -> bool:
+    return sys.platform != 'win32'
 
 
 class Session(Generic[DepsT, OutputT]):
@@ -183,6 +192,9 @@ class Session(Generic[DepsT, OutputT]):
             with capture_run_messages() as messages:
                 try:
                     model = await self.resolved_model()
+                    workspace_kwargs: _WorkspaceRunKwargs = {}
+                    if _supports_local_workspace():
+                        workspace_kwargs['workspace'] = LocalWorkspaceBackend(working_dir=self.workspace)
                     result = await self.agent.run(
                         content,
                         deps=self.deps,
@@ -195,7 +207,7 @@ class Session(Generic[DepsT, OutputT]):
                         capabilities=self.plugins,
                         usage_limits=self.usage_limits,
                         event_stream_handler=self._stream,
-                        workspace=LocalWorkspace(root=self.workspace),
+                        **workspace_kwargs,
                     )
                     self._accepting_steering = False
                     self._messages = result.all_messages()

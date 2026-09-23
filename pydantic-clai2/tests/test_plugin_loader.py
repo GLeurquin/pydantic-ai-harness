@@ -10,7 +10,7 @@ import anyio
 import pytest
 from pydantic_ai import Agent
 from pydantic_ai.models.test import TestModel
-from pydantic_ai.workspaces import LocalWorkspace
+from pydantic_ai.workspaces import LocalWorkspaceBackend
 from rich.console import Console
 
 from pydantic_clai2 import DEFAULT_PLUGINS
@@ -437,7 +437,7 @@ async def test_repo_context_builtin_loads_the_workspace_instructions(
     assert entry.builtin and entry.state == 'enabled, loaded'
     model = TestModel(call_tools=[])
     await Agent(model, deps_type=type(None), capabilities=harness.loader.capabilities()).run(
-        'hi', workspace=LocalWorkspace(root=workspace)
+        'hi', workspace=LocalWorkspaceBackend(working_dir=workspace)
     )
     assert model.last_model_request_parameters is not None
     parts = model.last_model_request_parameters.instruction_parts or []
@@ -451,7 +451,7 @@ async def test_repo_context_builtin_loads_the_workspace_instructions(
     assert await harness.loader.command(knobs) == 'Replaced built-in repo_context.'
     model = TestModel(call_tools=[])
     await Agent(model, deps_type=type(None), capabilities=harness.loader.capabilities()).run(
-        'hi', workspace=LocalWorkspace(root=workspace)
+        'hi', workspace=LocalWorkspaceBackend(working_dir=workspace)
     )
     assert model.last_model_request_parameters is not None
     assert [tool.name for tool in model.last_model_request_parameters.function_tools] == ['inventory_agent_context']

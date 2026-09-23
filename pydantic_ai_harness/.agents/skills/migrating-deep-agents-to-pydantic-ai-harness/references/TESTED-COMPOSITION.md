@@ -14,7 +14,7 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
-from pydantic_ai.workspaces import LocalWorkspace
+from pydantic_ai.workspaces import LocalWorkspaceBackend
 
 from pydantic_ai_harness.compaction import SlidingWindowCompaction
 from pydantic_ai_harness.filesystem import FileSystem
@@ -53,7 +53,7 @@ with TemporaryDirectory() as workspace:
     result = asyncio.run(
         migrated.run(
             'Describe the available workspace tools.',
-            workspace=LocalWorkspace(root=root),
+            workspace=LocalWorkspaceBackend(working_dir=root),
         )
     )
     assert isinstance(result.output, str)

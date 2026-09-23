@@ -34,14 +34,14 @@ pip install "pydantic-ai-harness[anthropic]"
 from pathlib import Path
 
 from pydantic_ai import Agent
-from pydantic_ai.workspaces import LocalWorkspace
+from pydantic_ai.workspaces import LocalWorkspaceBackend
 from pydantic_ai_harness import Coder
 
 agent = Agent('anthropic:claude-fable-5', capabilities=[Coder()])
 
 result = agent.run_sync(
     'Find out why tests/test_parser.py fails and fix the bug it caught.',
-    workspace=LocalWorkspace(root=Path.cwd()),
+    workspace=LocalWorkspaceBackend(working_dir=Path.cwd()),
 )
 print(result.output)
 #> Found it: `parse()` returned None on empty input instead of raising. Fixed in src/parser.py; tests pass now.
