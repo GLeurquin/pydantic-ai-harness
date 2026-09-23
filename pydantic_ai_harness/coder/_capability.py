@@ -21,8 +21,6 @@ FILE_TOOL_NAMES: tuple[str, ...] = ('read_file', 'write_file', 'edit_file', 'lis
 
 
 class _BoundToolOutputs(ToolOutputLimits[AgentDepsT]):
-    id: str | None = None
-
     def get_toolset(self) -> None:
         """Coder uses bounded truncation, so no spill-retrieval tool is needed."""
         return None
@@ -80,7 +78,8 @@ class Coder(CombinedCapability[AgentDepsT]):
             ClearToolResults[AgentDepsT](max_fraction=0.7),
             WarnNearLimits[AgentDepsT](max_context_fraction=0.9),
             _BoundToolOutputs[AgentDepsT](
-                id=None, bands=[Band(over=MAX_OUTPUT_CHARS, action=Truncate(max_chars=MAX_OUTPUT_CHARS))]
+                id='coder_tool_output_limits',
+                bands=[Band(over=MAX_OUTPUT_CHARS, action=Truncate(max_chars=MAX_OUTPUT_CHARS))],
             ),
             RepairToolArguments[AgentDepsT](),
         ]
