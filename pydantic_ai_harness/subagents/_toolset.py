@@ -398,7 +398,7 @@ class SubAgentToolset(FunctionToolset[AgentDepsT]):
         """Run one accepted delegation, announcing its start and how it ended."""
         # A delegation to the running agent already carries the parent's tools, so inheriting them
         # again would register every tool twice.
-        is_self = sub_agent.agent is ctx.agent
+        is_self = self._include_self and agent_name == SELF_AGENT_NAME
         inherit_tools = self._inherit_tools and not is_self
         # Announced before the child coroutine exists, so an emit that does not return
         # (a cancellation landing on the await) leaves no never-awaited coroutine behind.
@@ -427,8 +427,8 @@ class SubAgentToolset(FunctionToolset[AgentDepsT]):
 
         # A selected menu option decides the model and how it runs. Without one, a
         # sub-agent with no model of its own (e.g. one loaded from disk) inherits the
-        # parent run's model, and one that brought its own keeps it. The running agent
-        # always runs on the parent run's model, which may be a run-level override of its own.
+        # parent run's model, and one that brought its own keeps it. The running agent runs on
+        # the parent run's model, which may be a run-level override of the agent's own.
         run_model: Model | KnownModelName | str | None
         settings: ModelSettings | None
         if key is not None:

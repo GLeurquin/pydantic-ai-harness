@@ -900,6 +900,28 @@ class TestIncludeSelf:
         with pytest.raises(UserError, match='only carries what is bound to the `Agent`'):
             await agent.run('go', capabilities=[SubAgents(include_self=True, agent_folders=None)])
 
+    async def test_a_different_bound_one_does_not_stand_in(self) -> None:
+        """A run-level `SubAgents` overrides the agent's, so the agent's is not what the delegate would get."""
+        agent = Agent(TestModel(call_tools=[]), capabilities=[SubAgents(include_self=True, agent_folders=None)])
+        with pytest.raises(UserError, match='only carries what is bound to the `Agent`'):
+            await agent.run('go', capabilities=[SubAgents(include_self=True, agent_folders=None, max_depth=2)])
+
+    async def test_an_explicit_delegate_that_is_the_running_agent_keeps_its_own_model(self) -> None:
+        """Only the reserved `self` entry runs on the parent run's model; listing the agent by hand does not."""
+        runs: list[str] = []
+
+        def own_model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            runs.append(_prompt(messages))
+            return ModelResponse(parts=[TextPart('own')])
+
+        agent = Agent(FunctionModel(own_model), name='worker')
+        await agent.run(
+            'go',
+            model=_delegate_then_finish('worker'),
+            capabilities=[SubAgents(agents=[SubAgent(agent)], agent_folders=None)],
+        )
+        assert runs == ['do it']
+
     async def test_unknown_name_lists_self(self) -> None:
         worker = Agent(TestModel(custom_output_text='w'), name='worker')
         agent = Agent(

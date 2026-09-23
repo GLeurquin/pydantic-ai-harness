@@ -220,8 +220,8 @@ class SubAgents(AbstractCapability[AgentDepsT]):
     include_self: bool = False
     """If `True`, the roster also lists the running agent itself, as `self`.
 
-    A delegation to `self` starts a fresh run of `RunContext.agent` on the parent run's model,
-    so the delegate has every capability, toolset, and instruction bound to that `Agent` --
+    A delegation to `self` starts a fresh run of `RunContext.agent` on the parent run's model
+    (or the `models` option the parent picks), so the delegate has every capability, toolset, and instruction bound to that `Agent` --
     guardrails, approval gates, and audit hooks included, since they are registered again in
     the child run. What was passed to the parent's `run()` rather than bound to the `Agent`
     (run-level `capabilities`, `toolsets`, `instructions`, `model_settings`) does not carry
@@ -369,11 +369,33 @@ class SubAgents(AbstractCapability[AgentDepsT]):
     async def wrap_run(self, ctx: RunContext[AgentDepsT], *, handler: WrapRunHandler) -> AgentRunResult[Any]:
         """Run the parent agent, then drop this run's delegation counts so they don't accumulate."""
         if self.include_self:
-            _require_bound_to(ctx.agent)
+            self._require_bound_to(ctx.agent)
         try:
             return await handler()
         finally:
             self._call_counts.pop(ctx.run_id or '', None)
+
+    def _require_bound_to(self, agent: Agent[Any, Any] | None) -> None:
+        """Refuse a run where delegating to `agent` would not bring this capability along.
+
+        A delegation to the running agent runs `agent` again, which re-registers what is bound to it
+        and nothing that was passed to `run()`. If this capability was passed to `run()`, the
+        delegate would come up without it, and most likely without the capabilities passed next to
+        it, which is the difference `include_self` exists to remove. Checked by equality rather
+        than by type, so a different `SubAgents` bound to the agent -- which a run-level one of the
+        same `id` overrides -- does not stand in for this one.
+        """
+        if agent is None:  # pragma: no cover - the running agent is always set during a run
+            return
+        bound: list[AbstractCapability[Any]] = []
+        agent.root_capability.apply(bound.append)
+        if self not in bound:
+            raise UserError(
+                '`SubAgents(include_self=True)` delegates to a fresh run of the agent, which only carries what is '
+                'bound to the `Agent`, not what was passed to `run()`. Bind this capability (and whatever it '
+                'should bring along, such as `Coder`) with `Agent(capabilities=[...])`, or turn delegation to '
+                'the running agent off.'
+            )
 
     def get_instructions(self) -> AgentInstructions[AgentDepsT] | None:
         """Static, cache-stable listing of the available sub-agents and models."""
@@ -466,24 +488,3 @@ class SubAgents(AbstractCapability[AgentDepsT]):
         merged = replace_no_init(first, agents=merged_agents, models=merged_models, include_self=include_self)
         merged._build_roster(first._disk_agents())
         return merged
-
-
-def _require_bound_to(agent: Agent[Any, Any] | None) -> None:
-    """Refuse a run where delegating to `agent` would not bring this capability along.
-
-    A delegation to the running agent runs `agent` again, which re-registers what is bound to it
-    and nothing that was passed to `run()`. A `SubAgents(include_self=True)` passed to `run()` means
-    the delegate would come up without it, and most likely without the capabilities passed next to
-    it, which is the difference `include_self` exists to remove.
-    """
-    if agent is None:  # pragma: no cover - the running agent is always set during a run
-        return
-    bound: list[AbstractCapability[Any]] = []
-    agent.root_capability.apply(bound.append)
-    if not any(isinstance(capability, SubAgents) and capability.include_self for capability in bound):
-        raise UserError(
-            '`SubAgents(include_self=True)` delegates to a fresh run of the agent, which only carries what is '
-            'bound to the `Agent`, not what was passed to `run()`. Bind this capability (and whatever it should '
-            'bring along, such as `Coder`) with `Agent(capabilities=[...])`, or turn delegation to the running '
-            'agent off.'
-        )
