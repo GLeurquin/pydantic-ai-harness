@@ -122,3 +122,151 @@ def test_localstack_ci_scopes_the_auth_token_to_the_test_step() -> None:
     ) in step_block
     assert '      LOCALSTACK_AUTH_TOKEN: ${{ secrets.LOCALSTACK_AUTH_TOKEN }}' not in lines
     assert '    environment: localstack-integration' not in lines
+
+
+def _job_condition(job: str) -> str:
+    lines = _workflow_lines()
+    start = lines.index(f'  {job}:')
+    end = next(i for i in range(start + 1, len(lines)) if lines[i].startswith('    steps:'))
+    block = ' '.join(line.strip() for line in lines[start:end] if not line.strip().startswith('#'))
+    condition = block.split('if:', 1)[1].split(' runs-on:', 1)[0]
+    return ' '.join(condition.split())
+
+
+def test_modal_live_is_scoped_to_modal_changes() -> None:
+    lines = _workflow_lines()
+    changes_block = lines[lines.index('  changes:') : lines.index('  clai-test:')]
+    detect_block = changes_block[changes_block.index('      - id: detect-modal') :]
+
+    assert '      modal: ${{ steps.detect-modal.outputs.modal }}' in changes_block
+    assert detect_block[5:11] == [
+        '          if git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- \\',
+        '            pydantic_ai_harness/modal_sandbox \\',
+        '            tests/modal_sandbox \\',
+        '            pyproject.toml \\',
+        '            uv.lock \\',
+        '            .github/workflows/main.yml',
+    ]
+    assert "github.ref_type == 'tag' || needs.changes.outputs.modal == 'true'" in _job_condition('modal-live')
+
+
+def test_modal_live_skips_pull_requests_without_secrets() -> None:
+    # MODAL_TOKEN_ID and MODAL_TOKEN_SECRET are repository secrets: the same fork and
+    # Dependabot guard as `localstack-integration`, so those runs skip instead of failing.
+    modal = _job_condition('modal-live').replace('outputs.modal ', 'outputs.localstack ')
+    assert modal == _job_condition('localstack-integration')
+
+
+def test_modal_live_gates_the_aggregate_check_and_may_be_skipped() -> None:
+    lines = _workflow_lines()
+
+    needs = next(line for line in lines if line.strip().startswith('needs: [') and 'coverage' in line)
+    assert 'modal-live' in needs
+    allowed = next(line for line in lines if 'allowed-skips:' in line)
+    assert 'modal-live' in allowed.split(':', 1)[1].replace(',', ' ').split()
+
+
+def test_modal_live_runs_the_live_tier_with_step_scoped_secrets() -> None:
+    lines = _workflow_lines()
+
+    run_index = lines.index(
+        '      - run: PYDANTIC_AI_HARNESS_MODAL_LIVE=1 uv run --no-sync pytest -m modal_live tests/modal_sandbox -q'
+    )
+    step_block = lines[run_index : run_index + 5]
+    assert '          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }} # zizmor: ignore[secrets-outside-env]' in step_block
+    assert (
+        '          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }} # zizmor: ignore[secrets-outside-env]'
+    ) in step_block
+    assert '      - run: uv sync --locked --group dev --extra modal' in lines[lines.index('  modal-live:') : run_index]
+
+
+def test_e2b_live_is_scoped_to_e2b_changes() -> None:
+    lines = _workflow_lines()
+    changes_block = lines[lines.index('  changes:') : lines.index('  clai-test:')]
+    detect_block = changes_block[changes_block.index('      - id: detect-e2b') :]
+
+    assert '      e2b: ${{ steps.detect-e2b.outputs.e2b }}' in changes_block
+    assert detect_block[5:11] == [
+        '          if git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- \\',
+        '            pydantic_ai_harness/e2b_sandbox \\',
+        '            tests/e2b_sandbox \\',
+        '            pyproject.toml \\',
+        '            uv.lock \\',
+        '            .github/workflows/main.yml',
+    ]
+    assert "github.ref_type == 'tag' || needs.changes.outputs.e2b == 'true'" in _job_condition('e2b-live')
+
+
+def test_e2b_live_skips_pull_requests_without_secrets() -> None:
+    # E2B_API_KEY is a repository secret: the same fork and Dependabot guard as
+    # `localstack-integration`, so those runs skip instead of failing.
+    e2b = _job_condition('e2b-live').replace('outputs.e2b ', 'outputs.localstack ')
+    assert e2b == _job_condition('localstack-integration')
+
+
+def test_e2b_live_gates_the_aggregate_check_and_may_be_skipped() -> None:
+    lines = _workflow_lines()
+
+    needs = next(line for line in lines if line.strip().startswith('needs: [') and 'coverage' in line)
+    assert 'e2b-live' in needs
+    allowed = next(line for line in lines if 'allowed-skips:' in line)
+    assert 'e2b-live' in allowed.split(':', 1)[1].replace(',', ' ').split()
+
+
+def test_e2b_live_runs_the_live_tier_with_a_step_scoped_secret() -> None:
+    lines = _workflow_lines()
+
+    run_index = lines.index(
+        '      - run: PYDANTIC_AI_HARNESS_E2B_LIVE=1 uv run --no-sync pytest -m e2b_live tests/e2b_sandbox -q'
+    )
+    step_block = lines[run_index : run_index + 4]
+    assert '          E2B_API_KEY: ${{ secrets.E2B_API_KEY }} # zizmor: ignore[secrets-outside-env]' in step_block
+    assert '      - run: uv sync --locked --group dev --extra e2b' in lines[lines.index('  e2b-live:') : run_index]
+
+
+def test_daytona_live_is_scoped_to_daytona_changes() -> None:
+    lines = _workflow_lines()
+    changes_block = lines[lines.index('  changes:') : lines.index('  clai-test:')]
+    detect_block = changes_block[changes_block.index('      - id: detect-daytona') :]
+
+    assert '      daytona: ${{ steps.detect-daytona.outputs.daytona }}' in changes_block
+    assert detect_block[5:11] == [
+        '          if git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- \\',
+        '            pydantic_ai_harness/daytona_sandbox \\',
+        '            tests/daytona_sandbox \\',
+        '            pyproject.toml \\',
+        '            uv.lock \\',
+        '            .github/workflows/main.yml',
+    ]
+    assert "github.ref_type == 'tag' || needs.changes.outputs.daytona == 'true'" in _job_condition('daytona-live')
+
+
+def test_daytona_live_skips_pull_requests_without_secrets() -> None:
+    # DAYTONA_API_KEY is a repository secret: the same fork and Dependabot guard as
+    # `localstack-integration`, so those runs skip instead of failing.
+    daytona = _job_condition('daytona-live').replace('outputs.daytona ', 'outputs.localstack ')
+    assert daytona == _job_condition('localstack-integration')
+
+
+def test_daytona_live_gates_the_aggregate_check_and_may_be_skipped() -> None:
+    lines = _workflow_lines()
+
+    needs = next(line for line in lines if line.strip().startswith('needs: [') and 'coverage' in line)
+    assert 'daytona-live' in needs
+    allowed = next(line for line in lines if 'allowed-skips:' in line)
+    assert 'daytona-live' in allowed.split(':', 1)[1].replace(',', ' ').split()
+
+
+def test_daytona_live_runs_the_live_tier_with_a_step_scoped_secret() -> None:
+    lines = _workflow_lines()
+
+    run_index = lines.index(
+        '      - run: PYDANTIC_AI_HARNESS_DAYTONA_LIVE=1 uv run --no-sync pytest -m daytona_live tests/daytona_sandbox -q'
+    )
+    step_block = lines[run_index : run_index + 4]
+    assert (
+        '          DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }} # zizmor: ignore[secrets-outside-env]' in step_block
+    )
+    assert (
+        '      - run: uv sync --locked --group dev --extra daytona' in lines[lines.index('  daytona-live:') : run_index]
+    )

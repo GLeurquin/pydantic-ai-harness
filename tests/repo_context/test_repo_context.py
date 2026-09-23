@@ -16,7 +16,7 @@ from pydantic_ai.messages import ModelMessage, ModelRequest, ToolReturnPart, Use
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, DeltaToolCalls, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
-from pydantic_ai.workspaces import LocalWorkspace, UnavailableWorkspace, Workspace
+from pydantic_ai.workspaces import LocalWorkspaceBackend, UnavailableWorkspace, Workspace
 
 from pydantic_ai_harness import HarnessDeprecationWarning
 from pydantic_ai_harness.filesystem import FileSystem
@@ -43,7 +43,7 @@ def anyio_backend() -> str:
 
 @pytest.fixture
 def workspace(tmp_path: Path) -> Workspace:
-    return Workspace(LocalWorkspace(root=tmp_path))
+    return Workspace(LocalWorkspaceBackend(working_dir=tmp_path))
 
 
 def _run_context(workspace: Workspace) -> RunContext[object]:
@@ -270,7 +270,7 @@ class TestToolset:
             TestModel(call_tools=['inventory_agent_context']),
             capabilities=[RepoContext[object](workspace_dir=tmp_path)],
         )
-        backend = LocalWorkspace(root=tmp_path)
+        backend = LocalWorkspaceBackend(working_dir=tmp_path)
         result = await agent.run('go', workspace=backend)
         assert 'inventory_agent_context' in result.output
 
@@ -383,7 +383,7 @@ class TestNestedTraversal:
                     nested_inject=nested_inject,
                 ),
             ],
-        ).run('go', workspace=LocalWorkspace(root=tmp_path))
+        ).run('go', workspace=LocalWorkspaceBackend(working_dir=tmp_path))
 
     async def test_filesystem_rooted_below_the_workspace_resolves_against_its_own_root(self, tmp_path: Path) -> None:
         project = tmp_path / 'project'
@@ -412,7 +412,7 @@ class TestNestedTraversal:
                     nested_traversal=True,
                 ),
             ],
-        ).run('go', workspace=LocalWorkspace(root=tmp_path))
+        ).run('go', workspace=LocalWorkspaceBackend(working_dir=tmp_path))
 
     async def test_filesystem_rooted_outside_the_workspace_enqueues_nothing(self, tmp_path: Path) -> None:
         workspace = tmp_path / 'workspace'
@@ -439,7 +439,7 @@ class TestNestedTraversal:
                     nested_traversal=True,
                 ),
             ],
-        ).run('go', workspace=LocalWorkspace(root=tmp_path))
+        ).run('go', workspace=LocalWorkspaceBackend(working_dir=tmp_path))
 
     @pytest.mark.parametrize('remove_before_return', [False, True])
     async def test_customized_sniff_fallback_warns_and_supports_non_event_tool(
@@ -474,7 +474,7 @@ class TestNestedTraversal:
             )
 
         await Agent(FunctionModel(stream_function=stream), capabilities=[capability], tools=[list_dir]).run(
-            'go', workspace=LocalWorkspace(root=tmp_path)
+            'go', workspace=LocalWorkspaceBackend(working_dir=tmp_path)
         )
 
     async def test_traversal_into_a_directory_without_a_context_file_enqueues_nothing(self, tmp_path: Path) -> None:
@@ -498,7 +498,7 @@ class TestNestedTraversal:
                     nested_traversal=True,
                 ),
             ],
-        ).run('go', workspace=LocalWorkspace(root=tmp_path))
+        ).run('go', workspace=LocalWorkspaceBackend(working_dir=tmp_path))
 
     async def test_customized_sniff_ignores_a_non_string_path_and_accepts_an_absolute_one(self, tmp_path: Path) -> None:
         _write(tmp_path / 'sub' / 'AGENTS.md', 'NESTED BODY')
@@ -529,7 +529,7 @@ class TestNestedTraversal:
             )
 
         await Agent(FunctionModel(stream_function=stream), capabilities=[capability], tools=[list_dir]).run(
-            'go', workspace=LocalWorkspace(root=tmp_path)
+            'go', workspace=LocalWorkspaceBackend(working_dir=tmp_path)
         )
 
     async def test_customized_sniff_labels_a_context_file_outside_the_workspace(self, tmp_path: Path) -> None:
@@ -561,7 +561,7 @@ class TestNestedTraversal:
             )
 
         await Agent(FunctionModel(stream_function=stream), capabilities=[capability], tools=[list_dir]).run(
-            'go', workspace=LocalWorkspace(root=tmp_path)
+            'go', workspace=LocalWorkspaceBackend(working_dir=tmp_path)
         )
 
 
@@ -585,7 +585,7 @@ class TestForRunAndMisc:
 
         instructions: list[str] = []
         for root in (first_root, second_root):
-            backend = LocalWorkspace(root=root)
+            backend = LocalWorkspaceBackend(working_dir=root)
             await agent.run('go', workspace=backend)
             first_request = captured[-1][0]
             assert isinstance(first_request, ModelRequest)
@@ -598,3 +598,24 @@ class TestForRunAndMisc:
 
     def test_serialization_name(self) -> None:
         assert RepoContext.get_serialization_name() == 'RepoContext'
+
+
+@pytest.mark.anyio
+async def test_disabled_nested_traversal_ignores_filesystem_event(tmp_path: Path) -> None:
+    _write(tmp_path / 'sub' / 'AGENTS.md', 'NESTED BODY')
+    _write(tmp_path / 'sub' / 'one.py', 'one')
+
+    async def stream(messages: list[ModelMessage], info: AgentInfo) -> AsyncIterator[DeltaToolCalls | str]:
+        if _tool_returns(messages) == 0:
+            yield {0: DeltaToolCall(name='read_file', json_args='{"path":"sub/one.py"}')}
+        else:
+            assert not _repo_notes(messages)
+            yield 'done'
+
+    await Agent(
+        FunctionModel(stream_function=stream),
+        capabilities=[
+            FileSystem(root_dir=tmp_path),
+            RepoContext(workspace_dir=tmp_path, nested_traversal=False, expose_inventory_tool=False),
+        ],
+    ).run('go', workspace=LocalWorkspaceBackend(working_dir=tmp_path))

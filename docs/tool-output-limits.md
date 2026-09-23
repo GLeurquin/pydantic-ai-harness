@@ -124,6 +124,37 @@ agent = Agent(
 schemas), `tail` (keep the last characters, good for build and test output where errors land
 last), and `head_tail` (keep both ends, elide the middle -- the default).
 
+### Prefer complete tail lines
+
+Set `Truncate(keep_tail_lines=N)` to reserve the final N lines before allocating the rest of
+the character budget. The default is zero, which leaves existing truncation behavior unchanged.
+
+```python
+from pydantic_ai_harness.tool_output_limits import Band, ToolOutputLimits, Truncate, TruncationStrategy
+
+truncate = Truncate(max_chars=4_000, strategy=TruncationStrategy.head, keep_tail_lines=2)
+limits = ToolOutputLimits(bands=[], per_tool={'run_command': [Band(over=4_000, action=truncate)]})
+```
+
+With `head`, the remaining content budget keeps the beginning of the output. With
+`head_tail`, it is split 2:3 between the beginning and the text immediately before the
+reserved lines. `tail` continues to keep the end. Markers and all retained characters count
+toward `max_chars`.
+
+The cap takes priority. If the requested lines exceed it, truncation falls back to the
+usual tail strategy; if they fit but a full marker would displace them, the result is a
+bare tail slice within the cap. This does not invoke `then` or guarantee that an oversized
+control trailer remains intact.
+
+Lines are separated by LF or CRLF, and their existing endings are retained. A terminating
+newline does not add a line, but a blank final line counts. Requesting more lines than exist
+selects the whole text, subject to the same cap. Negative `keep_tail_lines` values are rejected.
+
+This applies to the text after serialization and optional ANSI stripping, independently
+for `ToolReturn.return_value` and textual `content`. Binary fallbacks are unchanged.
+Tail-line selection adds no telemetry spans: it is a slicing choice within the existing
+tool-result reduction, rather than a separate operation.
+
 ## Layering with Shell
 
 Keep Shell's native `max_output_chars` above the `ToolOutputLimits` thresholds. Use
@@ -181,6 +212,15 @@ separate, model-visible part which also persists in history. This capability mea
 reduces both with the same band logic (they spill to distinct handles). Text `content` is
 reduced in place; non-text `content` (multimodal parts) that overflows is left unreduced with
 a `warnings.warn`, since it cannot be safely truncated.
+
+### `ToolReturn.metadata` is preserved
+
+Spill keys (`overflow_handle`, `overflow_bytes`, `overflow_content_handle`) live in
+`ToolReturn.metadata` alongside whatever the tool put there. A pre-existing mapping is copied
+in with stringified keys; a pre-existing non-mapping value (a string, a dataclass, anything
+that is not a `Mapping`) is kept under `original_metadata` rather than dropped. Either way the
+caller's own metadata survives a spill and is readable from `metadata` on the resulting
+`ToolReturnPart` after `Agent.run`.
 
 ## Size unit
 
