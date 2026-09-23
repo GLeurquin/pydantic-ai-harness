@@ -51,7 +51,7 @@ class TestFakeE2BSandboxBackend(WorkspaceBackendSuite):
 
 @pytest.mark.e2b_live
 @pytest.mark.skipif(
-    not _live_enabled or os.getenv('E2B_API_KEY') is None,
+    not _live_enabled or not os.getenv('E2B_API_KEY'),
     reason='requires PYDANTIC_AI_HARNESS_E2B_LIVE=1 and E2B_API_KEY',
 )
 class TestLiveE2BSandboxBackend(WorkspaceBackendSuite):  # pragma: no cover - live tier runs without coverage

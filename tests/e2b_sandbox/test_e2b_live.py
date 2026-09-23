@@ -19,7 +19,7 @@ Portability:
 Gating:
   * `e2b_live` marker separates this tier from fake-backed tests.
   * skipped unless `PYDANTIC_AI_HARNESS_E2B_LIVE=1` opts in explicitly.
-  * also requires `E2B_API_KEY`.
+  * also requires a non-empty `E2B_API_KEY`, so a CI run without the secret skips.
   * a module-scoped `anyio_backend` fixture keeps the shared E2B handle on one asyncio loop.
 
 Run locally:
@@ -46,7 +46,7 @@ _live_enabled = os.getenv('PYDANTIC_AI_HARNESS_E2B_LIVE') == '1'
 pytestmark = [
     pytest.mark.e2b_live,
     pytest.mark.skipif(
-        not _live_enabled or os.getenv('E2B_API_KEY') is None,
+        not _live_enabled or not os.getenv('E2B_API_KEY'),
         reason='requires PYDANTIC_AI_HARNESS_E2B_LIVE=1 and E2B_API_KEY',
     ),
 ]
