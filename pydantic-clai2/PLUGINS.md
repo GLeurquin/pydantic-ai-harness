@@ -90,13 +90,48 @@ Output-validation and HTTP transport retry budgets are unchanged.
 
 ## Credentials
 
-CLAI's `/login openai-codex` and the vllm and openrouter connections store tokens
+CLAI's `/login openai-codex`, `/login github-copilot`, and the vllm and openrouter connections store tokens
 in the configured keyring backend, not plugin settings. Large token bundles use
 multiple entries to fit Windows Credential Manager's size limit. When no keyring
 backend exists, credentials go to a per-account `0600` file under the user's CLAI config
 directory instead. None of this changes plugin APIs. See
 [Codex authentication](README.md#codex-authentication) for storage and security
 details.
+
+### GitHub Copilot subscriptions
+
+```bash
+export GITHUB_COPILOT_CLIENT_ID='your-oauth-application-client-id'
+uv run clai2
+```
+
+Run `/login github-copilot`, then open `/add_model` and choose `github-copilot`.
+The provider menu also starts login when no credentials exist. You need your own
+[GitHub OAuth application with device flow enabled](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#device-flow).
+CLAI borrows no application identity and requests no GitHub scopes. The workspace
+pins the merged Pydantic AI device-flow implementation until its release.
+
+Login prints a code and opens `https://github.com/login/device`. You can use the
+printed link on another device. Approve only the code from your own CLAI session.
+Ctrl-C stops polling; GitHub controls expiry. There is no localhost callback.
+GitHub authorization does not establish Copilot access: the menu queries your
+account's catalog and keeps only `/chat/completions` models. Subscription and
+organization policy still control inference access. A known ID also works with
+`/add_model github-copilot:claude-haiku-4.5`.
+
+The `github-copilot` keyring account is separate from Codex and named API keys.
+Without a keyring, CLAI reports the plaintext `credentials-github-copilot.json`
+fallback, created with mode `0600`. Tokens and issuance time stay out of settings,
+history, and login output. Expiring tokens require another `/login github-copilot`;
+there is no automatic refresh. Failed or cancelled authorization preserves the
+previous login.
+
+Saved login takes precedence over `GITHUB_COPILOT_API_KEY`,
+`GITHUB_COPILOT_API_TOKEN`, and `COPILOT_GITHUB_TOKEN`, checked in that order when
+no login is saved. CLAI does not read `GH_TOKEN`, `GITHUB_TOKEN`, or another
+application's token files. This is shell-owned authentication, not a plugin API.
+Core owns inference and its telemetry; CLAI adds no login-specific spans.
+Bare `/login` continues to sign in to Codex.
 
 ## Desktop notifications
 

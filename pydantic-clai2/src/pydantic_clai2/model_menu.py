@@ -8,7 +8,7 @@ from pydantic import JsonValue, TypeAdapter, ValidationError
 from termflow.tui import MenuBuilder, MenuItem  # pyright: ignore[reportMissingTypeStubs]
 from termflow.tui.menu import Menu, MenuResult  # pyright: ignore[reportMissingTypeStubs]
 
-from . import openrouter, vllm
+from . import github_copilot, openrouter, vllm
 from ._rendering import markdown_style
 from .command_context import CommandContext
 from .custom_params import CustomParamsMenu
@@ -234,7 +234,9 @@ class ModelMenu:
 
     def providers(self) -> list[str]:
         """Unique provider prefixes from the merged catalog."""
-        return sorted({model.name.partition(':')[0] for model in self.models} | {'openrouter', 'vllm'})
+        return sorted(
+            {model.name.partition(':')[0] for model in self.models} | {'github-copilot', 'openrouter', 'vllm'}
+        )
 
     def build_providers(self) -> Menu:
         """Choose a provider before browsing its models."""
@@ -271,7 +273,7 @@ def run_model_flow(menu: ModelMenu, runners: Runners = TERMINAL, *, connect_prov
         selection = runners.run_list(menu.build_providers())
         if selection.cancelled or selection.item is None or not isinstance(selection.item.value, str):
             return messages
-        if selection.item.value in ('openrouter', 'vllm') and connect_provider:
+        if selection.item.value in ('github-copilot', 'openrouter', 'vllm') and connect_provider:
             raise _ConnectProvider(messages, provider=selection.item.value)
         provider_menu = menu.for_provider(selection.item.value)
         if _run_provider(provider_menu, runners, messages):
@@ -308,7 +310,11 @@ async def open_add_model_menu(
             messages = await run_worker(lambda: (run or flow)(ModelMenu(context)))
         except _ConnectProvider as request:
             accumulated.extend(request.messages)
-            connector = openrouter.connect if request.provider == 'openrouter' else vllm.connect
+            connector = {
+                'github-copilot': github_copilot.connect,
+                'openrouter': openrouter.connect,
+                'vllm': vllm.connect,
+            }[request.provider]
             result = await connector(context, [])
             if result == 'Connection cancelled.':
                 continue

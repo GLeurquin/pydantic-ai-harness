@@ -20,12 +20,12 @@ from pydantic_ai.usage import UsageLimits
 from pydantic_ai_harness.step_persistence.conversations import ConversationSummary, SqliteConversationStore
 from rich.console import Console
 
-from . import openrouter, theme, vllm
+from . import github_copilot, openrouter, theme, vllm
 from ._branding import print_banner
 from ._completion_adapter import COMPLETION_STYLE, PromptCompleter
 from ._rendering import StreamRenderer
 from ._session import Session
-from .auth import CodexAuth
+from .auth import CodexAuth, login_command
 from .capability_catalog import HARNESS_PLUGINS
 from .command_context import CommandContext, CommandProvider
 from .commands import Command, Commands, config_command, config_completions, is_command_input, set_completions
@@ -221,10 +221,9 @@ def create_shell(
     auth = CodexAuth(console)
 
     async def resolve_model(name: str) -> Model | str:
-        if name.startswith('openrouter:'):
-            return await asyncio.to_thread(openrouter.model, name)
-        if name.startswith('vllm:'):
-            return await asyncio.to_thread(vllm.model, name)
+        providers = {'openrouter': openrouter.model, 'vllm': vllm.model, 'github-copilot': github_copilot.model}
+        if factory := providers.get(name.partition(':')[0]):
+            return await asyncio.to_thread(factory, name)
         return auth.model(name) if name.startswith('openai-codex:') else name
 
     session.resolve_model = resolve_model
@@ -256,9 +255,9 @@ def create_shell(
     commands.register(
         Command(
             name='login',
-            description='Connect your ChatGPT/Codex subscription',
-            handler=auth.login,
-            complete=lambda _: ('openai-codex',),
+            description='Connect your ChatGPT/Codex or GitHub Copilot subscription',
+            handler=lambda args: login_command(args, codex=auth),
+            complete=lambda _: ('openai-codex', 'github-copilot'),
         )
     )
     commands.register(
