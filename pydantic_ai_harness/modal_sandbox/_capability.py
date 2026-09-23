@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import posixpath
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -125,6 +126,12 @@ class ModalSandbox(AbstractCapability[AgentDepsT]):
             if unknown:
                 raise TypeError(f'ModalSandbox.__init__() got an unexpected keyword argument {unknown[0]!r}')
             raise UserError(_legacy_argument_message(list(legacy)))
+        # Checked here rather than when the backend first creates a sandbox, so a bad value fails
+        # where it is written instead of at the first workspace operation of some later run.
+        if type(sandbox_timeout) is not int or sandbox_timeout <= 0:
+            raise UserError(f'sandbox_timeout must be a positive integer, got {sandbox_timeout!r}.')
+        if workdir is not None and not posixpath.isabs(workdir):
+            raise UserError(f'workdir must be an absolute POSIX path or None, got {workdir!r}.')
         self.id = id
         self.description = description
         self.defer_loading = defer_loading

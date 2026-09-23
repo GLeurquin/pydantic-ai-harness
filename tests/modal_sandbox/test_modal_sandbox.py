@@ -352,3 +352,20 @@ def test_removed_name_fails_a_from_import_with_the_guidance() -> None:
 def test_other_missing_names_are_attribute_errors() -> None:
     with pytest.raises(AttributeError, match="has no attribute 'ModalSandboxTypo'"):
         getattr(modal_sandbox_package, 'ModalSandboxTypo')
+
+
+@pytest.mark.parametrize('sandbox_timeout', [0, -5, 1.5, True])
+def test_sandbox_timeout_must_be_a_positive_integer(sandbox_timeout: Any) -> None:
+    with pytest.raises(UserError, match=rf'sandbox_timeout must be a positive integer, got {sandbox_timeout!r}\.'):
+        ModalSandbox(sandbox_timeout=sandbox_timeout)
+
+
+@pytest.mark.parametrize('workdir', ['relative/dir', '', 'C:\\work'])
+def test_workdir_must_be_an_absolute_posix_path(workdir: str) -> None:
+    with pytest.raises(UserError, match='workdir must be an absolute POSIX path or None'):
+        ModalSandbox(workdir=workdir)
+
+
+def test_valid_creation_settings_are_accepted() -> None:
+    capability = ModalSandbox(sandbox_timeout=1, workdir='/work')
+    assert (capability.sandbox_timeout, capability.workdir) == (1, '/work')
