@@ -14,11 +14,17 @@ exception. Flattering the code under test here would hide production failures.
 
 from __future__ import annotations
 
+import os
 import posixpath
+import shutil
+import subprocess
+import tempfile
 import types
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, Protocol
+from pathlib import Path
+from typing import IO, TYPE_CHECKING, Literal, Protocol
 
 import anyio
 import anyio.lowlevel
@@ -26,9 +32,11 @@ from e2b import CommandExitException, CommandResult, FileType, WriteInfo
 from e2b.exceptions import (
     AuthenticationException,
     FileNotFoundException,
+    InvalidArgumentException,
     SandboxException,
     SandboxNotFoundException,
     TimeoutException,
+    format_sandbox_timeout_exception,
 )
 
 __all__ = (
@@ -89,8 +97,18 @@ class FakeCommandHandle:
     deadline kill cancels the wait.
     """
 
-    def __init__(self, control: FakeE2B, *, pid: int, stdout: str, stderr: str, exit_code: int) -> None:
+    def __init__(
+        self,
+        control: FakeE2B,
+        sandbox: FakeSandbox,
+        *,
+        pid: int,
+        stdout: str,
+        stderr: str,
+        exit_code: int,
+    ) -> None:
         self._control = control
+        self._sandbox = sandbox
         self._pid = pid
         self._stdout = stdout
         self._stderr = stderr
@@ -112,6 +130,7 @@ class FakeCommandHandle:
         # A real wait suspends; yield so a test can cancel it and so concurrent tool calls
         # actually interleave.
         await anyio.lowlevel.checkpoint()
+        self._sandbox.check_alive()
         if self._control.wait_error is not None:
             raise self._control.wait_error
         if self._control.command_hangs:
@@ -150,12 +169,14 @@ class FakeCommands:
         # too, or a bad kwarg in the backend would only fail in production.
         del user
         await anyio.lowlevel.checkpoint()
+        self._sandbox.check_alive()
         self.calls.append(FakeCommandCall(cmd, background is True, cwd, envs, timeout))
         if self._control.run_error is not None:
             raise self._control.run_error
         stdout, stderr, exit_code = self._control.responder(cmd, timeout)
         handle = FakeCommandHandle(
             self._control,
+            self._sandbox,
             pid=self._control.next_pid + len(self.handles),
             stdout=stdout,
             stderr=stderr,
@@ -169,6 +190,7 @@ class FakeCommands:
     async def kill(self, pid: int, request_timeout: float | None = None) -> bool:
         del request_timeout
         await anyio.lowlevel.checkpoint()
+        self._sandbox.check_alive()
         self.killed_pids.append(pid)
         if self._control.kill_command_error is not None:
             raise self._control.kill_command_error
@@ -178,7 +200,8 @@ class FakeCommands:
 class FakeFilesystem:
     """Mirrors `sandbox.files`: an in-memory tree the tests can drive and inspect."""
 
-    def __init__(self, control: FakeE2B) -> None:
+    def __init__(self, sandbox: FakeSandbox, control: FakeE2B) -> None:
+        self._sandbox = sandbox
         self._control = control
         self.files: dict[str, bytes] = {}
         self.directories: set[str] = set()
@@ -197,6 +220,11 @@ class FakeFilesystem:
         await self._check(path)
         # The backend only asks for bytes; anything else would be a silent behavior change.
         assert format == 'bytes', f'unexpected read format {format!r}'
+        if self._control.read_error is not None:
+            raise self._control.read_error
+        if path in self.directories:
+            # envd answers a read of a directory with a 400, which the SDK raises like this.
+            raise InvalidArgumentException(f"path '{path}' is a directory")
         if path not in self.files:
             raise FileNotFoundException(path)
         # Real E2B hands back a `bytearray` for the `bytes` format.
@@ -257,8 +285,7 @@ class FakeFilesystem:
     async def remove(self, path: str, user: str | None = None, request_timeout: float | None = None) -> None:
         del user, request_timeout
         await self._check(path)
-        if not await self._exists(path):
-            raise FileNotFoundException(path)
+        # envd removes with `os.RemoveAll`, so a missing path is not an error.
         self.removed.append(path)
         prefix = f'{path.rstrip("/")}/'
         for target in [target for target in self.files if target == path or target.startswith(prefix)]:
@@ -288,8 +315,193 @@ class FakeFilesystem:
         # would in prod, instead of silently keying the in-memory store on a relative path.
         assert posixpath.isabs(path), f'E2B filesystem requires an absolute path, got {path!r}'
         await anyio.lowlevel.checkpoint()
+        self._sandbox.check_alive()
         if self._control.fs_error is not None:
             raise self._control.fs_error
+
+
+def _captured(stream: IO[bytes]) -> str:
+    # `pread` reads from the start without moving the offset the child is still writing at.
+    return os.pread(stream.fileno(), os.fstat(stream.fileno()).st_size, 0).decode(errors='replace')
+
+
+class _HostCommandHandle(FakeCommandHandle):
+    """A command handle over a real host process, for the conformance suite.
+
+    Output goes to anonymous temporary files, so what the process printed before a deadline
+    kill is readable afterwards, as the SDK's accumulated handle output is.
+    """
+
+    def __init__(
+        self,
+        control: FakeE2B,
+        sandbox: FakeSandbox,
+        process: subprocess.Popen[bytes],
+        out: IO[bytes],
+        err: IO[bytes],
+    ) -> None:
+        super().__init__(control, sandbox, pid=process.pid, stdout='', stderr='', exit_code=0)
+        self.process = process
+        self._out = out
+        self._err = err
+
+    @property
+    def stdout(self) -> str:
+        return _captured(self._out)
+
+    @property
+    def stderr(self) -> str:
+        return _captured(self._err)
+
+    def close(self) -> None:
+        """Stop the process if it still runs and release its output files."""
+        if self.process.poll() is None:
+            self.process.kill()
+            self.process.wait()
+        self._out.close()
+        self._err.close()
+
+    async def wait(self) -> CommandResult:
+        while (exit_code := self.process.poll()) is None:
+            self._sandbox.check_alive()
+            await anyio.sleep(0.01)
+        stdout, stderr = self.stdout, self.stderr
+        self.close()
+        if exit_code != 0:
+            raise CommandExitException(
+                stderr=stderr, stdout=stdout, exit_code=exit_code, error=f'exit status {exit_code}'
+            )
+        return CommandResult(stderr=stderr, stdout=stdout, exit_code=0, error=None)
+
+
+class _HostCommands(FakeCommands):
+    """Mirrors `sandbox.commands` by running each command on the host under `host_root`."""
+
+    async def run(
+        self,
+        cmd: str,
+        background: bool | None = None,
+        envs: dict[str, str] | None = None,
+        user: str | None = None,
+        cwd: str | None = None,
+        timeout: float | None = 60,
+    ) -> FakeCommandHandle | CommandResult:
+        del user
+        await anyio.lowlevel.checkpoint()
+        self._sandbox.check_alive()
+        self.calls.append(FakeCommandCall(cmd, background is True, cwd, envs, timeout))
+        assert background is True, 'the backend always starts commands in the background'
+        assert self._control.host_root is not None
+        # E2B runs `/bin/bash -l -c`; the host drops `-l` so the developer's login files stay out.
+        out, err = tempfile.TemporaryFile(), tempfile.TemporaryFile()
+        process = subprocess.Popen(
+            ['/bin/bash', '-c', cmd],
+            cwd=cwd or self._control.host_root,
+            env={**os.environ, **(envs or {})},
+            stdout=out,
+            stderr=err,
+        )
+        handle = _HostCommandHandle(self._control, self._sandbox, process, out, err)
+        self.handles.append(handle)
+        return handle
+
+    async def kill(self, pid: int, request_timeout: float | None = None) -> bool:
+        del request_timeout
+        await anyio.lowlevel.checkpoint()
+        self._sandbox.check_alive()
+        self.killed_pids.append(pid)
+        handle = next(handle for handle in self.handles if handle.pid == pid)
+        assert isinstance(handle, _HostCommandHandle)
+        handle.close()
+        return True
+
+
+@contextmanager
+def _host_errors(path: str) -> Generator[None]:
+    """Raise the SDK exceptions envd's status codes turn into for these host errors."""
+    try:
+        yield
+    except FileNotFoundError as e:
+        raise FileNotFoundException(f"path '{path}' does not exist") from e
+    except IsADirectoryError as e:
+        raise InvalidArgumentException(f"path '{path}' is a directory") from e
+
+
+class _HostFilesystem(FakeFilesystem):
+    """Mirrors `sandbox.files` on the host filesystem, so commands and file calls share one tree."""
+
+    async def read(
+        self,
+        path: str,
+        format: Literal['bytes'],
+        user: str | None = None,
+        request_timeout: float | None = None,
+        gzip: bool = False,
+    ) -> bytearray:
+        del user, request_timeout, gzip
+        await self._check(path)
+        assert format == 'bytes', f'unexpected read format {format!r}'
+        with _host_errors(path):
+            return bytearray(Path(path).read_bytes())
+
+    async def write(
+        self,
+        path: str,
+        data: str | bytes,
+        user: str | None = None,
+        request_timeout: float | None = None,
+    ) -> WriteInfo:
+        del user, request_timeout
+        await self._check(path)
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_bytes(data.encode() if isinstance(data, str) else data)
+        return WriteInfo(name=posixpath.basename(path), type=FileType.FILE, path=path)
+
+    async def get_info(self, path: str, user: str | None = None, request_timeout: float | None = None) -> FakeEntryInfo:
+        del user, request_timeout
+        await self._check(path)
+        with _host_errors(path):
+            return self._host_entry(path)
+
+    async def list(
+        self,
+        path: str,
+        depth: int | None = 1,
+        user: str | None = None,
+        request_timeout: float | None = None,
+    ) -> list[FakeEntryInfo]:
+        del user, request_timeout
+        await self._check(path)
+        assert depth == 1, f'unexpected list depth {depth!r}'
+        with _host_errors(path):
+            children = sorted(Path(path).iterdir())
+        return [self._host_entry(posixpath.join(path, child.name)) for child in children]
+
+    async def exists(self, path: str, user: str | None = None, request_timeout: float | None = None) -> bool:
+        del user, request_timeout
+        await self._check(path)
+        return Path(path).exists()
+
+    async def make_dir(self, path: str, user: str | None = None, request_timeout: float | None = None) -> bool:
+        del user, request_timeout
+        await self._check(path)
+        created = not Path(path).is_dir()
+        Path(path).mkdir(parents=True, exist_ok=True)
+        return created
+
+    async def remove(self, path: str, user: str | None = None, request_timeout: float | None = None) -> None:
+        del user, request_timeout
+        await self._check(path)
+        # envd's `os.RemoveAll`: recursive, and a missing path is not an error.
+        if Path(path).is_dir():
+            shutil.rmtree(path)
+        else:
+            Path(path).unlink(missing_ok=True)
+
+    def _host_entry(self, path: str) -> FakeEntryInfo:
+        info = Path(path).stat()
+        kind = FileType.DIR if Path(path).is_dir() else FileType.FILE
+        return FakeEntryInfo(name=posixpath.basename(path), path=path, type=kind, size=info.st_size)
 
 
 class FakeSandbox:
@@ -305,14 +517,35 @@ class FakeSandbox:
         self.id = id
         self.sandbox_id = id
         self.metadata = metadata or {}
-        self.files = FakeFilesystem(control)
+        self.files = FakeFilesystem(self, control)
         self.commands = FakeCommands(self, control)
+        if control.host_root is not None:
+            self.files = _HostFilesystem(self, control)
+            self.commands = _HostCommands(self, control)
         self.killed = False
 
     async def kill(self) -> bool:
+        # Real `kill` is a DELETE on the control plane that returns once E2B has removed the
+        # sandbox, and `False` when it was already gone (a 404). From then on the SDK's own
+        # docs show `is_running()` as `False`.
         await anyio.lowlevel.checkpoint()
+        if self.killed:
+            return False
         self.killed = True
+        for handle in self.commands.handles:
+            if isinstance(handle, _HostCommandHandle):
+                handle.close()
         return True
+
+    def check_alive(self) -> None:
+        """Fail an envd call the way the SDK does once the sandbox is gone.
+
+        E2B's proxy answers a request for a killed sandbox with a 502, which the SDK raises as
+        a `TimeoutException` blaming the sandbox timeout -- the same type it uses for a slow
+        request, so only the health probe tells the two apart.
+        """
+        if self.killed:
+            raise format_sandbox_timeout_exception('The sandbox was not found')
 
     async def is_running(self, request_timeout: float | None = None) -> bool:
         del request_timeout
@@ -353,6 +586,9 @@ class FakeAsyncSandboxFactory:
         if self._control.connect_error is not None:
             raise self._control.connect_error
         existing = next((sandbox for sandbox in self._control.sandboxes if sandbox.id == id), None)
+        if existing is not None and existing.killed:
+            # The connect endpoint 404s for a killed sandbox, which the SDK raises like this.
+            raise SandboxNotFoundException(f'Paused sandbox {id} not found')
         if existing is not None:
             return existing
         return self._control.new_sandbox(id)
@@ -374,9 +610,12 @@ class FakeE2B:
     command_hangs: bool = False
     kill_command_error: Exception | None = None
     fs_error: Exception | None = None
+    read_error: Exception | None = None
     is_running_error: Exception | None = None
     sandbox_is_running: bool = True
     next_pid: int = 4242
+    # When set, sandboxes run commands and file operations on the host under this directory.
+    host_root: Path | None = None
 
     def __post_init__(self) -> None:
         self.module = self._build_module()
@@ -401,6 +640,11 @@ class FakeE2B:
         return TimeoutException
 
     @property
+    def invalid_argument_type(self) -> type[Exception]:
+        """E2B `InvalidArgumentException`: envd's 400, which includes reading a directory."""
+        return InvalidArgumentException
+
+    @property
     def error_type(self) -> type[Exception]:
         return SandboxException
 
@@ -414,6 +658,7 @@ class FakeE2B:
         module.CommandResult = CommandResult  # type: ignore[attr-defined]
         module.FileNotFoundException = FileNotFoundException  # type: ignore[attr-defined]
         module.FileType = FileType  # type: ignore[attr-defined]
+        module.InvalidArgumentException = InvalidArgumentException  # type: ignore[attr-defined]
         module.SandboxException = SandboxException  # type: ignore[attr-defined]
         module.SandboxNotFoundException = SandboxNotFoundException  # type: ignore[attr-defined]
         module.TimeoutException = TimeoutException  # type: ignore[attr-defined]
@@ -463,6 +708,6 @@ if TYPE_CHECKING:
     _fake_entry_conforms: _EntryInfoSurface = FakeEntryInfo(name='n', path='/n', type=FileType.FILE, size=0)
     _real_entry_conforms: _EntryInfoSurface = e2b.EntryInfo.__new__(e2b.EntryInfo)
     _fake_handle_conforms: _CommandHandleSurface = FakeCommandHandle(
-        FakeE2B(), pid=1, stdout='', stderr='', exit_code=0
+        FakeE2B(), FakeSandbox(FakeE2B(), 'sbx'), pid=1, stdout='', stderr='', exit_code=0
     )
     _real_handle_conforms: _CommandHandleSurface = e2b.AsyncCommandHandle.__new__(e2b.AsyncCommandHandle)

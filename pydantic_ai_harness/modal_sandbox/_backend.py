@@ -83,6 +83,18 @@ def _unavailable_workspace_exc_types() -> tuple[type[BaseException], ...]:
     )
 
 
+def _is_shutting_down(e: BaseException) -> bool:
+    """Whether Modal refused an exec because the sandbox has been terminated.
+
+    For up to about 30 seconds after `terminate()`, Modal still reports the sandbox as running
+    from `poll()` while refusing exec with this `ConflictError`. Only the message separates it
+    from a transient conflict.
+    """
+    import modal
+
+    return isinstance(e, modal.exception.ConflictError) and 'shutting down' in str(e).lower()
+
+
 def _command_argv(command: WorkspaceCommand, shell: bool) -> Sequence[str]:
     if shell:
         if not isinstance(command, str):
@@ -433,7 +445,9 @@ class ModalSandboxBackend(WorkspaceBackend, SupportsCommands, SupportsFilesystem
         A terminated or missing workspace and rejected credentials are terminal. Modal reports
         two failures ambiguously -- a first exec on a dead workspace raises `ConflictError`
         (also used for transient aborts), and the filesystem layer wraps everything including
-        auth failures -- so those are classified by polling the workspace. Everything else stays
+        auth failures -- so those are classified by polling the workspace, and a filesystem
+        failure on a workspace that still polls as running by a trivial exec, which is the only
+        call that reports a terminated workspace still shutting down. Everything else stays
         a recoverable `WorkspaceError` carrying `context`, which distinguishes "the command
         never started" from "the result could not be read".
         """
@@ -441,7 +455,7 @@ class ModalSandboxBackend(WorkspaceBackend, SupportsCommands, SupportsFilesystem
 
         if isinstance(e, modal.exception.AuthError):
             return WorkspaceUnavailableError(_AUTH_MESSAGE)
-        if isinstance(e, _unavailable_workspace_exc_types()):
+        if isinstance(e, _unavailable_workspace_exc_types()) or _is_shutting_down(e):
             return WorkspaceUnavailableError(self._unavailable_message())
         if isinstance(e, (modal.exception.ConflictError, modal.exception.SandboxFilesystemError)):
             return await self._poll_ambiguous(e)
@@ -456,12 +470,19 @@ class ModalSandboxBackend(WorkspaceBackend, SupportsCommands, SupportsFilesystem
         try:
             workspace = await self.get_client()
             finished = await workspace.poll.aio()
+            if finished is None and isinstance(e, modal.exception.SandboxFilesystemError):
+                # A terminated sandbox that is still shutting down polls as running and fails
+                # filesystem calls with a generic error; only exec names the state.
+                with anyio.fail_after(_INTERNAL_EXEC_TIMEOUT):
+                    await workspace.exec.aio('true', timeout=_INTERNAL_EXEC_TIMEOUT)
         except modal.exception.AuthError:
             return WorkspaceUnavailableError(_AUTH_MESSAGE)
         except _unavailable_workspace_exc_types():
             return WorkspaceUnavailableError(self._unavailable_message())
-        except Exception:
-            # The classifying poll can itself fail, including with a raw transport error;
+        except Exception as probe_error:
+            if _is_shutting_down(probe_error):
+                return WorkspaceUnavailableError(self._unavailable_message())
+            # The classifying probe can itself fail, including with a raw transport error;
             # fall back to the original error rather than letting the probe abort the run.
             return WorkspaceError(str(e))
         if finished is not None:

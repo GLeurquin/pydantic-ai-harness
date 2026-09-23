@@ -5,7 +5,7 @@ from pathlib import Path
 
 from pydantic_ai import Agent
 from pydantic_ai.models import Model
-from pydantic_ai.workspaces import LocalWorkspace
+from pydantic_ai.workspaces import LocalWorkspaceBackend
 
 from pydantic_ai_harness.coder import Coder
 
@@ -20,7 +20,7 @@ def build_agent(model: Model | str = DEFAULT_MODEL, workspace: Path | None = Non
 def main() -> None:
     """Run the coding agent interactively in the current repository."""
     workspace = Path.cwd()
-    build_agent(workspace=workspace).to_cli_sync(workspace=LocalWorkspace(root=workspace))
+    build_agent(workspace=workspace).to_cli_sync(workspace=LocalWorkspaceBackend(working_dir=workspace))
 
 
 if __name__ == '__main__':

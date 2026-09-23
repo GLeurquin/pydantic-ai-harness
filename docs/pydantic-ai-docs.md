@@ -29,7 +29,7 @@ Construct an `Agent` with `PydanticAIDocs()` in its `capabilities`. Point `local
 from pathlib import Path
 
 from pydantic_ai import Agent
-from pydantic_ai.workspaces import LocalWorkspace
+from pydantic_ai.workspaces import LocalWorkspaceBackend
 from pydantic_ai_harness import PydanticAIDocs
 
 agent = Agent(
@@ -37,11 +37,11 @@ agent = Agent(
     capabilities=[PydanticAIDocs(local_docs_path=Path('docs'))],
 )
 
-result = agent.run_sync('Read the toolsets docs, then explain how to build a FunctionToolset.', workspace=LocalWorkspace(root=Path.cwd()))
+result = agent.run_sync('Read the toolsets docs, then explain how to build a FunctionToolset.', workspace=LocalWorkspaceBackend(working_dir=Path.cwd()))
 print(result.output)
 ```
 
-Reading a local checkout needs a workspace attached to the run; without one, the tool raises an error that says how to attach one (`workspace=LocalWorkspace(root=...)` for the agent process's own filesystem). With no local path configured, every call goes to the remote source and no workspace is needed.
+Reading a local checkout needs a workspace attached to the run; without one, the tool raises an error that says how to attach one (`capabilities=[LocalWorkspace(...)]` from `pydantic_ai.capabilities` for the agent process's own filesystem). With no local path configured, every call goes to the remote source and no workspace is needed.
 
 The capability also adds a short static instruction telling the model that the `read_pyai_docs` tool exists and to read the relevant topic before authoring or modifying a Pydantic AI capability, hook, tool, or toolset, rather than relying on memory. The instruction is cache-stable, so it does not invalidate the prompt-cache prefix between turns.
 

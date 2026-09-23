@@ -19,7 +19,7 @@ Portability:
 Gating:
   * `e2b_live` marker separates this tier from fake-backed tests.
   * skipped unless `PYDANTIC_AI_HARNESS_E2B_LIVE=1` opts in explicitly.
-  * also requires `E2B_API_KEY`.
+  * also requires a non-empty `E2B_API_KEY`, so a CI run without the secret skips.
   * a module-scoped `anyio_backend` fixture keeps the shared E2B handle on one asyncio loop.
 
 Run locally:
@@ -35,7 +35,7 @@ from contextlib import asynccontextmanager
 
 import anyio
 import pytest
-from pydantic_ai.workspaces import Workspace, WorkspaceTimeoutError
+from pydantic_ai.workspaces import Workspace, WorkspaceTimeoutError, WorkspaceUnavailableError
 
 from pydantic_ai_harness.e2b_sandbox import (
     E2BSandboxBackend,
@@ -46,7 +46,7 @@ _live_enabled = os.getenv('PYDANTIC_AI_HARNESS_E2B_LIVE') == '1'
 pytestmark = [
     pytest.mark.e2b_live,
     pytest.mark.skipif(
-        not _live_enabled or os.getenv('E2B_API_KEY') is None,
+        not _live_enabled or not os.getenv('E2B_API_KEY'),
         reason='requires PYDANTIC_AI_HARNESS_E2B_LIVE=1 and E2B_API_KEY',
     ),
 ]
@@ -212,7 +212,7 @@ class TestCreateConfiguration:
 
         E2B has no create-time workdir, so the backend supplies it on every command instead.
         """
-        async with _owned(sandbox_timeout=120, working_dir='/tmp') as backend:
+        async with _owned(sandbox_timeout=120, workdir='/tmp') as backend:
             result = await backend.run(['pwd'], timeout=30)
 
         assert result.stdout.strip() == '/tmp'
@@ -318,11 +318,31 @@ class TestRealLifecycle:
 
             assert (await owner.run(['cat', marker], timeout=30)).stdout == 'shared'
 
+    async def test_a_killed_sandbox_is_unavailable_at_once(self) -> None:
+        """Validates the fake-encoded assumption that a killed sandbox is gone as soon as `kill()` returns.
+
+        The fake 404s a later connect and fails envd calls on a held handle with the SDK's 502
+        `TimeoutException`, both right after the kill. If E2B tears the sandbox down eventually
+        instead, an operation in that window succeeds and this test fails.
+        """
+        path = f'/tmp/{_unique("killed")}.txt'
+        async with _owned(sandbox_timeout=120) as owner:
+            await owner.write_bytes(path, b'before-kill')
+            assert owner.ref is not None
+            assert await (await owner.get_client()).kill() is True
+
+            with pytest.raises(WorkspaceUnavailableError):
+                await E2BSandboxBackend(ref=owner.ref).working_dir()
+            with pytest.raises(WorkspaceUnavailableError):
+                await owner.run(['true'], timeout=30)
+            with pytest.raises(WorkspaceUnavailableError):
+                await owner.read_bytes(path)
+
     async def test_connect_resumes_a_paused_sandbox(self) -> None:
         """Pins the documented behavior that attaching to a paused sandbox restarts it.
 
         This is the E2B-specific half of attach mode: a paused sandbox is not gone, and the
-        backend's awaited `sandbox` property brings it back rather than failing.
+        backend's first `get_client()` brings it back rather than failing.
         """
         marker = f'/tmp/{_unique("paused")}.txt'
         async with _owned(sandbox_timeout=120) as owner:
