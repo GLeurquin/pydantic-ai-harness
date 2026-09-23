@@ -42,11 +42,11 @@ agent = Agent(
 ```python
 from pathlib import Path
 
-from pydantic_ai.workspaces import LocalWorkspace
+from pydantic_ai.workspaces import LocalWorkspaceBackend
 
 result = agent.run_sync(
     'Investigate the failing parser test, fix the cause, and run focused checks.',
-    workspace=LocalWorkspace(root=Path.cwd()),
+    workspace=LocalWorkspaceBackend(working_dir=Path.cwd()),
 )
 print(result.output)
 ```

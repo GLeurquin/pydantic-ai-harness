@@ -10,7 +10,7 @@ from pydantic_ai.capabilities import AgentCapability
 from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
-from pydantic_ai.workspaces import LocalWorkspace
+from pydantic_ai.workspaces import LocalWorkspaceBackend
 from pydantic_ai_harness.ask_user import AskUser, AskUserRequest, AskUserResponse
 from pydantic_ai_harness.coder import Coder
 from pydantic_ai_harness.repo_context import RepoContext
@@ -34,7 +34,7 @@ async def test_workspace_defaults_follow_platform_support(supported: bool, monke
     assert call is not None
     assert ('workspace' in call.kwargs) is supported
     if supported:
-        assert isinstance(call.kwargs['workspace'], LocalWorkspace)
+        assert isinstance(call.kwargs['workspace'], LocalWorkspaceBackend)
 
     host = PluginHost[None](name='repo_context', console=Console(), settings={})
     activate_repo_context(host)
@@ -90,7 +90,7 @@ async def test_instruction_order_puts_the_hint_between_guidance_and_repository(t
         RepoContext(workspace_dir=tmp_path, expose_inventory_tool=False),
     ]
     with agent.override(model=model):
-        await agent.run('hello', capabilities=capabilities, workspace=LocalWorkspace(root=tmp_path))
+        await agent.run('hello', capabilities=capabilities, workspace=LocalWorkspaceBackend(working_dir=tmp_path))
     params = model.last_model_request_parameters
     assert params is not None
     parts = [part.content for part in params.instruction_parts or []]
@@ -112,7 +112,7 @@ async def test_hint_still_follows_the_coding_guidance_without_ask_user(tmp_path:
         RepoContext(workspace_dir=tmp_path, expose_inventory_tool=False),
     ]
     with agent.override(model=model):
-        await agent.run('hello', capabilities=capabilities, workspace=LocalWorkspace(root=tmp_path))
+        await agent.run('hello', capabilities=capabilities, workspace=LocalWorkspaceBackend(working_dir=tmp_path))
     params = model.last_model_request_parameters
     assert params is not None
     parts = [part.content for part in params.instruction_parts or []]

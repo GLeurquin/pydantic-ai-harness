@@ -49,7 +49,7 @@ from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.toolsets import CombinedToolset, FunctionToolset
 from pydantic_ai.usage import UsageLimits
-from pydantic_ai.workspaces import LocalWorkspace
+from pydantic_ai.workspaces import LocalWorkspaceBackend
 
 from pydantic_ai_harness import FileSystem, Shell
 from pydantic_ai_harness.experimental import HarnessExperimentalWarning
@@ -505,7 +505,7 @@ class TestSessionConfig:
             return await ctx.workspace.working_dir()
 
         client = FakeClient()
-        backend = LocalWorkspace(root=tmp_path)
+        backend = LocalWorkspaceBackend(working_dir=tmp_path)
         adapter = PydanticAIACPAgent(
             agent, session_config=lambda _session: AcpSessionConfig(deps=None, workspace=backend)
         )

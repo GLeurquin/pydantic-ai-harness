@@ -7,7 +7,7 @@ import pytest
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.models.test import TestModel
-from pydantic_ai.workspaces import LocalWorkspace
+from pydantic_ai.workspaces import LocalWorkspaceBackend
 
 from pydantic_ai_harness.coder import Coder
 from pydantic_ai_harness.tool_output_limits import ToolOutputLimits
@@ -27,7 +27,9 @@ async def call(
     unrestricted_filesystem: bool = False,
 ) -> str:
     coder = Coder[None](tmp_path, unrestricted_filesystem=unrestricted_filesystem)
-    return await call_tool([coder, *capabilities], name, arguments, workspace=LocalWorkspace(root=tmp_path))
+    return await call_tool(
+        [coder, *capabilities], name, arguments, workspace=LocalWorkspaceBackend(working_dir=tmp_path)
+    )
 
 
 class TestCoder:
@@ -56,7 +58,9 @@ class TestCoder:
 
     async def test_schema(self, tmp_path: Path) -> None:
         model = TestModel(call_tools=[])
-        await Agent(model, capabilities=[Coder(tmp_path)]).run('Inspect tools', workspace=LocalWorkspace(root=tmp_path))
+        await Agent(model, capabilities=[Coder(tmp_path)]).run(
+            'Inspect tools', workspace=LocalWorkspaceBackend(working_dir=tmp_path)
+        )
         assert model.last_model_request_parameters is not None
         tools = {tool.name: tool for tool in model.last_model_request_parameters.function_tools}
         assert list(tools) == ['read_file', 'write_file', 'edit_file', 'list_files', 'grep', 'shell']
@@ -84,7 +88,7 @@ class TestCoder:
         (tmp_path / 'AGENTS.md').write_text('Always answer in haiku.\n')
         model = TestModel(call_tools=[])
         await Agent(model, capabilities=[Coder(tmp_path, repo_context=repo_context)]).run(
-            'Inspect instructions', workspace=LocalWorkspace(root=tmp_path)
+            'Inspect instructions', workspace=LocalWorkspaceBackend(working_dir=tmp_path)
         )
         assert model.last_model_request_parameters is not None
         instructions = model.last_model_request_parameters.instruction_parts or []

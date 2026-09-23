@@ -6,7 +6,7 @@ import pytest
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import Capability
 from pydantic_ai.models.test import TestModel
-from pydantic_ai.workspaces import LocalWorkspace, ReadOnlyWorkspace, Workspace
+from pydantic_ai.workspaces import LocalWorkspaceBackend, ReadOnlyWorkspace, Workspace
 
 import pydantic_ai_harness.coder
 from pydantic_ai_harness.coder import FILE_TOOL_NAMES, Coder, coder_agent
@@ -38,7 +38,7 @@ async def test_bundled_coder_agent_supplies_current_workspace(monkeypatch: pytes
 
 
 async def test_bundled_coder_agent_preserves_explicit_workspace_identity(tmp_path: Path) -> None:
-    backend = LocalWorkspace(root=tmp_path)
+    backend = LocalWorkspaceBackend(working_dir=tmp_path)
     workspace = ReadOnlyWorkspace(Workspace(backend))
     result = await coder_agent.run('go', model=TestModel(call_tools=[], custom_output_text='done'), workspace=workspace)
 

@@ -17,7 +17,7 @@ from pydantic_ai.messages import BinaryContent, ModelMessage, ModelRequest, Mode
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.usage import UsageLimits
-from pydantic_ai.workspaces import LocalWorkspace
+from pydantic_ai.workspaces import LocalWorkspaceBackend
 from pydantic_ai_harness.step_persistence import SqliteStepStore, StepStore
 from pydantic_ai_harness.step_persistence.conversations import (
     ConversationSummary,
@@ -30,7 +30,7 @@ OutputT = TypeVar('OutputT')
 
 
 class _WorkspaceRunKwargs(TypedDict):
-    workspace: NotRequired[LocalWorkspace]
+    workspace: NotRequired[LocalWorkspaceBackend]
 
 
 def _supports_local_workspace() -> bool:
@@ -194,7 +194,7 @@ class Session(Generic[DepsT, OutputT]):
                     model = await self.resolved_model()
                     workspace_kwargs: _WorkspaceRunKwargs = {}
                     if _supports_local_workspace():
-                        workspace_kwargs['workspace'] = LocalWorkspace(root=self.workspace)
+                        workspace_kwargs['workspace'] = LocalWorkspaceBackend(working_dir=self.workspace)
                     result = await self.agent.run(
                         content,
                         deps=self.deps,

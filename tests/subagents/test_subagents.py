@@ -26,7 +26,7 @@ from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import AgentDepsT, RunContext
 from pydantic_ai.toolsets import FunctionToolset
 from pydantic_ai.usage import UsageLimits
-from pydantic_ai.workspaces import LocalWorkspace, ReadOnlyWorkspace, UnavailableWorkspace, Workspace
+from pydantic_ai.workspaces import LocalWorkspaceBackend, ReadOnlyWorkspace, UnavailableWorkspace, Workspace
 
 from pydantic_ai_harness.subagents import ModelOption, SubAgent, SubAgents, SubAgentToolset
 
@@ -247,7 +247,7 @@ class TestDelegation:
         assert returns == ['WORKER RESULT']
 
     async def test_delegate_inherits_parent_workspace(self, tmp_path: Path) -> None:
-        facade = ReadOnlyWorkspace(Workspace(LocalWorkspace(root=tmp_path)))
+        facade = ReadOnlyWorkspace(Workspace(LocalWorkspaceBackend(working_dir=tmp_path)))
         worker: Agent[object, str] = Agent(TestModel(call_tools=['workspace_details']), name='worker')
 
         @worker.tool
