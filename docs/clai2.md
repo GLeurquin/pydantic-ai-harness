@@ -435,8 +435,8 @@ setup; it does not send conversation traces before setup completes.
 
 Choose `Continue without Logfire`, or press Esc at the initial picker, to disable
 the plugin. CLAI remembers your choice as a plugin override; subsequent upgrades
-do not reset it. Run the command above to change your choice. Esc at the project
-picker cancels setup without changing your saved choice. The setup command refuses
+do not reset it. Run the command above to change your choice. Ctrl-C, or Esc at
+the project picker, cancels setup without changing your saved choice. The setup command refuses
 to replace a custom `logfire` plugin from saved settings, a drop-in, or the project.
 Existing credentials or an explicit plugin declaration skip the startup prompt.
 Project declarations and drop-in replacements also skip it. Headless runs,

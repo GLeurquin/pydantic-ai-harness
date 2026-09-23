@@ -133,8 +133,8 @@ including upgrades from versions without onboarding. Log in to Logfire is select
 by default; Up/Down moves and Enter selects. Login starts browser authentication,
 then an existing/new project picker. Conversation export starts after setup.
 Continue without Logfire, or Esc at the initial picker, disables the plugin;
-both choices persist across upgrades. Esc at the project picker cancels without
-changing preferences. Setup refuses to replace a custom logfire plugin from saved
+both choices persist across upgrades. Ctrl-C, or Esc at the project picker,
+cancels without changing preferences. Setup refuses to replace a custom logfire plugin from saved
 settings, a drop-in, or the project. Existing credentials or plugin declarations
 skip the prompt. Headless and custom chat() launchers do not prompt. Run
 clai2 logfire to change the choice. It exports to Logfire only when credentials

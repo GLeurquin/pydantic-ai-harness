@@ -47,6 +47,7 @@ def terminal(monkeypatch: pytest.MonkeyPatch) -> Callable[[str], None]:
             'use': ('enter',),
             'new': ('down', 'enter'),
             'escape': ('escape',),
+            'cancel': ('ctrl-c',),
         }
         keys = iter(key for answer in answers.splitlines() for key in moves[answer])
         monkeypatch.setattr('pydantic_clai2.logfire_onboarding.menu_key', lambda: next(keys))
@@ -196,6 +197,22 @@ def test_failed_or_cancelled_login_preserves_choices_and_cleans_up(
     assert all(not directory.exists() for directory in logfire_cli.directories)
     output = capsys.readouterr().out
     assert 'try again' in output and 'do-not-print' not in output
+
+
+@pytest.mark.parametrize('enabled', [None, False, True])
+def test_initial_ctrl_c_leaves_preferences_unchanged(
+    tmp_path: Path, terminal: Callable[[str], None], logfire_cli: LogfireCLI, enabled: bool | None
+) -> None:
+    terminal('cancel\n')
+    store = SettingsStore(tmp_path / 'config.db')
+    before = (
+        [] if enabled is None else [PluginSettings(id='logfire', factory='pydantic_clai2.logfire', enabled=enabled)]
+    )
+    for plugin in before:
+        store.save_plugin(plugin)
+    onboard_logfire(store=store, force=True)
+    assert store.plugins() == before
+    assert not logfire_cli.commands
 
 
 def test_project_picker_cancellation_leaves_preferences_unchanged(

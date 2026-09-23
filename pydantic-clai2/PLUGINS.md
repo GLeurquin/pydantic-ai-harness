@@ -141,8 +141,8 @@ Up/Down moves and Enter selects. Login runs Logfire's browser authentication, th
 lets you use an existing project or create one. Selecting login starts setup, not
 conversation export. `Continue without Logfire`, or Esc at the initial picker,
 saves a disabled plugin override. Both choices persist across upgrades; the command
-above lets you choose again. Esc at the project picker cancels without changing
-your choice. The setup command refuses to replace custom `logfire` plugins from
+above lets you choose again. Ctrl-C, or Esc at the project picker, cancels without
+changing your choice. The setup command refuses to replace custom `logfire` plugins from
 saved settings, drop-ins, or the project. Existing credentials, saved plugin
 entries, project declarations, and drop-in replacements skip the startup prompt.
 Headless runs, redirected input/output, `config`/`plugins` commands, and custom
