@@ -5,13 +5,12 @@ from __future__ import annotations
 import anyio
 import pytest
 from pydantic_ai import Agent
-from pydantic_ai.exceptions import UserError
 from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import RunContext
 from pydantic_ai.usage import RunUsage
-from pydantic_ai.workspaces import ReadOnlyWorkspace, Workspace, WorkspaceRef
+from pydantic_ai.workspaces import ReadOnlyWorkspace, Workspace, WorkspaceReadOnlyError, WorkspaceRef
 
 from pydantic_ai_harness.daytona_sandbox import DaytonaSandbox, DaytonaSandboxBackend
 
@@ -114,7 +113,7 @@ async def test_read_only_facade_identity_and_denied_command(fake_daytona: FakeDa
     @agent.tool
     async def check(ctx: RunContext[object]) -> str:
         assert ctx.workspace is facade
-        with pytest.raises(UserError, match='read-only'):
+        with pytest.raises(WorkspaceReadOnlyError, match='read-only'):
             await ctx.workspace.run(['echo', 'blocked'])
         return 'ok'
 
