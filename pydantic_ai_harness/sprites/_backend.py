@@ -56,6 +56,8 @@ except ImportError as exc:  # pragma: no cover - exercised by the isolated missi
 
 logger = logging.getLogger(__name__)
 _CONTROL_TIMEOUT = 6.0
+# Above the SDK's fixed 120-second creation request timeout, so the SDK's own error wins when it fires.
+_ACQUIRE_TIMEOUT = 150.0
 _AUTH_MESSAGE = 'Sprites rejected the credentials. Set SPRITE_TOKEN or pass token= and try again.'
 
 
@@ -177,18 +179,27 @@ class SpriteWorkspaceBackend(WorkspaceBackend, SupportsCommands):
                 client = AsyncSpritesClient(token=token, base_url=self._base_url, timeout=self._api_timeout)
                 self._client = client
 
+            ref = self._ref
             try:
-                ref = self._ref
-                if ref is not None:
-                    workspace = await client.get_sprite(ref.id)
-                else:
-                    workspace = await client.create_sprite(self._name, runtime=self._runtime)
-            except SpriteError as error:
+                with anyio.fail_after(_ACQUIRE_TIMEOUT):
+                    if ref is not None:
+                        workspace = await client.get_sprite(ref.id)
+                    else:
+                        workspace = await client.create_sprite(self._name, runtime=self._runtime)
+            except (SpriteError, TimeoutError) as error:
                 if self._owns_client:
                     self._client = None
                     close_error = await cleanup_call(client.aclose, timeout=_CONTROL_TIMEOUT)
                     if close_error is not None:
                         logger.warning('Could not close Sprites SDK client: %s', close_error)
+                if isinstance(error, TimeoutError):
+                    # `WorkspaceTimeoutError` is reserved for command deadlines; a stalled control
+                    # plane is a provider failure the caller may retry.
+                    action = 'creation' if ref is None else 'connection'
+                    raise WorkspaceError(
+                        f'Sprite {action} did not complete within {_ACQUIRE_TIMEOUT:g}s; '
+                        'the Sprites control plane may be unreachable.'
+                    ) from error
                 raise _operation_error(error, 'Could not acquire Sprite') from error
 
             self._workspace = workspace
@@ -257,15 +268,16 @@ class SpriteWorkspaceBackend(WorkspaceBackend, SupportsCommands):
         control = f'/tmp/pydantic-ai-{uuid.uuid4().hex}'
         stdout = b''
         stderr = b''
-        sprite: AsyncSprite | None = None
         connection: ControlConnection | None = None
         operation = None
         command_error: BaseException | None = None
         close_error: Exception | None = None
         code = 0
+        # Acquired outside the command deadline: `timeout` bounds the command, and acquisition
+        # has its own bound that reports a stalled control plane as `WorkspaceError`.
+        sprite = await self.get_client()
         try:
             with anyio.fail_after(timeout):
-                sprite = await self.get_client()
                 options = json.dumps({'args': args, 'cwd': directory, 'env': dict(env or {})})
                 connection = ControlConnection(sprite)
                 await connection.connect()
@@ -286,10 +298,9 @@ class SpriteWorkspaceBackend(WorkspaceBackend, SupportsCommands):
             if operation is not None:
                 stdout = operation.get_stdout()
                 stderr = operation.get_stderr()
-            if sprite is not None:
-                cleanup_error = await self._cancel_remote(sprite, control)
-                if cleanup_error is not None:
-                    logger.warning('Could not confirm remote Sprite command termination: %s', cleanup_error)
+            cleanup_error = await self._cancel_remote(sprite, control)
+            if cleanup_error is not None:
+                logger.warning('Could not confirm remote Sprite command termination: %s', cleanup_error)
         finally:
             if connection is not None:
                 close_error = await cleanup_call(connection.close, timeout=_CONTROL_TIMEOUT)

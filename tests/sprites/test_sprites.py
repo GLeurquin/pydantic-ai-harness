@@ -90,6 +90,26 @@ class TestSpriteWorkspace:
         assert await result.workspace.read_bytes('result.bin') == b'\x00\xff\n'
         assert len(transport.names) == 1
 
+    @pytest.mark.parametrize('attach', [False, True], ids=['create', 'attach'])
+    async def test_stalled_acquisition_is_a_provider_error_not_a_command_timeout(
+        self, transport: SpriteTransport, monkeypatch: pytest.MonkeyPatch, attach: bool
+    ) -> None:
+        monkeypatch.setattr('pydantic_ai_harness.sprites._backend._ACQUIRE_TIMEOUT', 0.05)
+        transport.names.add('remote')
+        transport.release_create = asyncio.Event()
+        transport.release_get = asyncio.Event()
+        ref = WorkspaceRef(provider='sprites', id='remote') if attach else None
+        backend = SpriteWorkspaceBackend(ref=ref)
+
+        with pytest.raises(WorkspaceError, match='control plane may be unreachable') as caught:
+            await backend.run(['true'], timeout=30)
+
+        assert not isinstance(caught.value, WorkspaceTimeoutError)
+        assert isinstance(caught.value.__cause__, TimeoutError)
+        assert ('connection' if attach else 'creation') in str(caught.value)
+        assert transport.close_calls == 1
+        assert transport.commands == []
+
     async def test_missing_reference_does_not_recreate(self, transport: SpriteTransport) -> None:
         backend = SpriteWorkspaceBackend(ref=WorkspaceRef(provider='sprites', id='missing'))
         with pytest.raises(WorkspaceUnavailableError):

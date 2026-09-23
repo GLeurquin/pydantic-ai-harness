@@ -117,6 +117,7 @@ class SpriteTransport:
         self.created: list[str] = []
         self.create_started = asyncio.Event()
         self.release_create: asyncio.Event | None = None
+        self.release_get: asyncio.Event | None = None
         self.clients: list[AsyncSpritesClient] = []
         self.controls: set[str] = set()
         self.commands: list[list[str]] = []
@@ -141,6 +142,8 @@ class SpriteTransport:
     async def get(self, client: AsyncSpritesClient, name: str) -> AsyncSprite:
         if self.get_error is not None:
             raise self.get_error
+        if self.release_get is not None:
+            await self.release_get.wait()
         if name not in self.names:
             raise NotFoundError(name)
         return AsyncSprite(name, client)
