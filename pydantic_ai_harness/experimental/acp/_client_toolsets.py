@@ -33,15 +33,30 @@ import anyio
 from acp import Client, schema
 from pydantic_ai.tools import AgentDepsT
 from pydantic_ai.toolsets import FunctionToolset
+from pydantic_ai.workspaces import LocalWorkspaceBackend
 
 from pydantic_ai_harness.experimental.acp._session import AcpSession
 from pydantic_ai_harness.filesystem import FileSystem, FileSystemToolset
 
 
 class _LocalFileWriter(Protocol):
-    """Something that can write a file on the local disk -- structurally satisfied by `FileSystemToolset`."""
+    """Something that can write a file on the local disk -- structurally satisfied by `_LocalDiskWriter`."""
 
     def write_file(self, path: str, content: str) -> Awaitable[str]: ...  # pragma: no cover - structural protocol
+
+
+class _LocalDiskWriter:
+    """Writes with the `FileSystem` toolset into a local workspace rooted at the session's `cwd`."""
+
+    def __init__(self, cwd: str) -> None:
+        self._cwd = cwd
+        toolset = FileSystem[None](root_dir=cwd).get_toolset()
+        assert isinstance(toolset, FileSystemToolset)
+        self._toolset = toolset
+
+    async def write_file(self, path: str, content: str) -> str:
+        # Built per write: `LocalWorkspaceBackend` refuses non-POSIX platforms, and only this path needs it.
+        return await self._toolset.write_file(path, content, workspace=LocalWorkspaceBackend(self._cwd))
 
 
 class AcpFileSystemToolset(FunctionToolset[AgentDepsT]):
@@ -120,7 +135,11 @@ def acp_filesystem(session: AcpSession) -> AcpFileSystemToolset[None] | None:
         fs = acp_filesystem(session)
         if fs is None:
             # No client filesystem: register the capability, so its tools keep their owner.
-            return AcpSessionConfig(deps=None, capabilities=[FileSystem(root_dir=session.cwd)])
+            return AcpSessionConfig(
+                deps=None,
+                capabilities=[FileSystem(root_dir=session.cwd)],
+                workspace=LocalWorkspaceBackend(session.cwd),
+            )
         return AcpSessionConfig(deps=None, toolsets=[fs])
     ```
 
@@ -131,8 +150,7 @@ def acp_filesystem(session: AcpSession) -> AcpFileSystemToolset[None] | None:
     fs = capabilities.fs if capabilities is not None else None
     if fs is None or not fs.read_text_file:
         return None
-    local_writer = None if fs.write_text_file else FileSystem(root_dir=session.cwd).get_toolset()
-    assert local_writer is None or isinstance(local_writer, FileSystemToolset)
+    local_writer = None if fs.write_text_file else _LocalDiskWriter(session.cwd)
     return AcpFileSystemToolset[None](
         client=session.client, session_id=session.session_id, cwd=session.cwd, local_writer=local_writer
     )
@@ -229,7 +247,7 @@ def acp_terminal(session: AcpSession) -> AcpTerminalToolset[None] | None:
     ```python
     def session_config(session: AcpSession) -> AcpSessionConfig[None]:
         shell = acp_terminal(session) or Shell(cwd=session.cwd).get_toolset()
-        return AcpSessionConfig(deps=None, toolsets=[shell])
+        return AcpSessionConfig(deps=None, toolsets=[shell], workspace=LocalWorkspaceBackend(session.cwd))
     ```
 
     For an agent with non-`None` deps, construct `AcpTerminalToolset[YourDeps](...)` directly (the

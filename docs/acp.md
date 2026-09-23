@@ -94,6 +94,7 @@ A coding agent should read and write files in the workspace the editor opened, n
 
 ```python
 from pydantic_ai import Agent
+from pydantic_ai.workspaces import LocalWorkspaceBackend
 from pydantic_ai_harness import FileSystem, Shell
 from pydantic_ai_harness.experimental.acp import AcpSession, AcpSessionConfig, run_acp_stdio_sync
 
@@ -108,6 +109,7 @@ def session_config(session: AcpSession) -> AcpSessionConfig[None]:
             FileSystem[None](root_dir=session.cwd),
             Shell[None](cwd=session.cwd),
         ],
+        workspace=LocalWorkspaceBackend(session.cwd),
     )
 
 
@@ -119,11 +121,12 @@ The factory runs once per session with the client's `AcpSession` setup (its `cwd
 
 ## Editor-native filesystem and shell (optional)
 
-The local [`FileSystem`](filesystem.md) and [`Shell`](shell.md) above operate on the agent process's own disk and subprocesses. An editor's source of truth is different: unsaved buffers, its own idea of the workspace layout, and -- for a remote or containerized editor -- the machine the code actually lives on. When the client advertises support, `acp_filesystem` and `acp_terminal` give the agent `read_file`/`write_file`/`run_command` tools that route through the client, so it acts where the user is:
+The local [`FileSystem`](filesystem.md) and [`Shell`](shell.md) above operate on the session's workspace -- with `LocalWorkspaceBackend`, the agent machine's own disk and subprocesses. An editor's source of truth is different: unsaved buffers, its own idea of the workspace layout, and -- for a remote or containerized editor -- the machine the code actually lives on. When the client advertises support, `acp_filesystem` and `acp_terminal` give the agent `read_file`/`write_file`/`run_command` tools that route through the client, so it acts where the user is:
 
 ```python
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.toolsets import AbstractToolset
+from pydantic_ai.workspaces import LocalWorkspaceBackend
 from pydantic_ai_harness import FileSystem, Shell
 from pydantic_ai_harness.experimental.acp import AcpSession, AcpSessionConfig, acp_filesystem, acp_terminal
 
@@ -141,7 +144,9 @@ def session_config(session: AcpSession) -> AcpSessionConfig[None]:
         capabilities.append(Shell(cwd=session.cwd))
     else:
         toolsets.append(shell)
-    return AcpSessionConfig(deps=None, capabilities=capabilities, toolsets=toolsets)
+    return AcpSessionConfig(
+        deps=None, capabilities=capabilities, toolsets=toolsets, workspace=LocalWorkspaceBackend(session.cwd)
+    )
 ```
 
 Each helper returns `None` when the client did not advertise support. Add local fallbacks as capabilities so their hooks and events remain attached; add editor-native helpers as toolsets. The tool names match the local `FileSystem`/`Shell`, so rich rendering stays identical.
