@@ -279,7 +279,7 @@ anyio_mode = 'auto'
 [tool.coverage.run]
 branch = true
 source = ['pydantic_ai_harness', 'tests']
-omit = ['tests/**/test_modal_live.py', 'tests/**/test_e2b_live.py', 'tests/**/test_daytona_live.py']
+omit = ['tests/**/test_modal_live.py', 'tests/**/test_e2b_live.py', 'tests/**/test_daytona_live.py', 'tests/**/test_sprites_live.py']
 
 [tool.coverage.paths]
 source = ['.', '/home/runner/work/pydantic-ai-harness/pydantic-ai-harness']
