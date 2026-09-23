@@ -32,6 +32,8 @@ from pydantic_ai.workspaces import (
     Workspace,
     WorkspaceCommand,
     WorkspaceError,
+    WorkspaceTimeoutError,
+    WorkspaceUnavailableError,
 )
 
 from pydantic_ai_harness._workspace import READ_ONLY_FAILURE
@@ -1533,6 +1535,10 @@ class TestCleanupBgFilesEdgeCases:
         ts = _shell_toolset(shell_dir)
         command_id = _parse_command_id(await ts.start_command(_ctx(), 'true'))
         job = ts._background[command_id].job
+        with anyio.fail_after(10):
+            # Removing the directory while the wrapper still publishes its status races the wrapper.
+            while (await job.status())[0]:
+                await anyio.sleep(0.01)  # pragma: lax no cover
         await job.cleanup()
         await job.cleanup()
         assert not Path(job.directory).exists()
@@ -1789,3 +1795,51 @@ class TestDetachedJobRoundTrip:
             with suppress(ProcessLookupError):
                 os.kill(pid, signal.SIGKILL)
             shutil.rmtree(status.parent, ignore_errors=True)
+
+
+class _RaisingWorkspace(LocalWorkspaceBackend):
+    """A local backend whose every command raises the configured workspace error."""
+
+    def __init__(self, working_dir: str, error: WorkspaceError) -> None:
+        super().__init__(working_dir)
+        self.error = error
+
+    async def run(
+        self,
+        command: WorkspaceCommand,
+        *,
+        shell: bool = False,
+        cwd: str | None = None,
+        env: Mapping[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> CommandResult:
+        raise self.error
+
+
+class TestWorkspaceFailures:
+    """Deliberate workspace failures reach the model as failed calls; a vanished workspace ends the run."""
+
+    @pytest.mark.parametrize(
+        ('error', 'message'),
+        [
+            (WorkspaceTimeoutError('slow', timeout=30), 'The workspace operation timed out after 30s.'),
+            (WorkspaceTimeoutError('slow'), 'The workspace operation timed out.'),
+            (WorkspaceError('backend refused'), 'backend refused'),
+            (WorkspaceError(), 'The workspace operation failed (WorkspaceError).'),
+        ],
+    )
+    async def test_failed_call(self, shell_dir: Path, error: WorkspaceError, message: str) -> None:
+        ts = _shell_toolset(shell_dir)
+        ctx = _run_context(Workspace(_RaisingWorkspace('/', error)))
+        tools = await ts.get_tools(ctx)
+        with pytest.raises(ToolFailed) as failed:
+            await ts.call_tool('start_command', {'command': 'true'}, ctx, tools['start_command'])
+        assert failed.value.message == message
+        assert not ts._background
+
+    async def test_unavailable_workspace_ends_the_run(self, shell_dir: Path) -> None:
+        ts = _shell_toolset(shell_dir)
+        ctx = _run_context(Workspace(_RaisingWorkspace('/', WorkspaceUnavailableError('sandbox expired'))))
+        tools = await ts.get_tools(ctx)
+        with pytest.raises(WorkspaceUnavailableError, match='sandbox expired'):
+            await ts.call_tool('run_command', {'command': 'true'}, ctx, tools['run_command'])
