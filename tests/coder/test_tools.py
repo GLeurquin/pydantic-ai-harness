@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 from pydantic_ai import Agent
-from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.capabilities import AbstractCapability, LocalWorkspace
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.workspaces import LocalWorkspaceBackend
 
@@ -36,13 +36,18 @@ class TestCoder:
     @pytest.mark.parametrize('extra_limits', [False, True])
     async def test_durable_binding(self, tmp_path: Path, extra_limits: bool) -> None:
         durability = RecordingDurability()
-        capabilities: list[AbstractCapability[object]] = [Coder(tmp_path), durability]
+        capabilities: list[AbstractCapability[object]] = [Coder(tmp_path), LocalWorkspace(tmp_path), durability]
         if extra_limits:
             capabilities.append(ToolOutputLimits())
         agent = Agent(TestModel(call_tools=[], custom_output_text='done'), name='coder', capabilities=capabilities)
         result = await agent.run('Inspect tools')
         assert result.output == 'done'
-        assert [name for name, _ in durability.calls] == ['coder__model.request_stream']
+        assert [name for name, _ in durability.calls] == [
+            'coder__workspace__ensure',
+            'coder__workspace__stat',
+            'coder__workspace__stat',
+            'coder__model.request_stream',
+        ]
 
     @pytest.mark.parametrize('unrestricted_filesystem', [False, True])
     async def test_discovered_paths_can_be_read_and_edited(self, tmp_path: Path, unrestricted_filesystem: bool) -> None:
