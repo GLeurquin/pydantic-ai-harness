@@ -175,14 +175,22 @@ class E2BSandboxBackend(WorkspaceBackend, SupportsCommands, SupportsFilesystem):
             yield
         except e2b.FileNotFoundException as e:
             raise FileNotFoundError(f'No such file or directory in the E2B sandbox: {path!r}') from e
-        except WorkspaceError:
+        except (WorkspaceError, IsADirectoryError):
             raise
         except Exception as e:
             raise await self._operation_error(e, f'Could not access {path!r} in the sandbox') from e
 
     async def read_bytes(self, path: str) -> bytes:
         async with self._translated_filesystem_error(path):
-            return bytes(await (await self.get_client()).files.read(path, 'bytes'))
+            sandbox = await self.get_client()
+            try:
+                return bytes(await sandbox.files.read(path, 'bytes'))
+            except e2b.InvalidArgumentException as e:
+                # envd answers a read of a directory with a 400, which the SDK raises as a
+                # generic invalid argument; the entry type tells it apart from other 400s.
+                if (await sandbox.files.get_info(path)).type is e2b.FileType.DIR:
+                    raise IsADirectoryError(f'Is a directory in the E2B sandbox: {path!r}') from e
+                raise
 
     async def write_bytes(self, path: str, data: bytes) -> None:
         async with self._translated_filesystem_error(path):
@@ -203,7 +211,12 @@ class E2BSandboxBackend(WorkspaceBackend, SupportsCommands, SupportsFilesystem):
 
     async def remove(self, path: str) -> None:
         async with self._translated_filesystem_error(path):
-            await (await self.get_client()).files.remove(path)
+            sandbox = await self.get_client()
+            # envd removes with `os.RemoveAll`, which succeeds on a missing path; the protocol
+            # reports that as `FileNotFoundError`.
+            if not await sandbox.files.exists(path):
+                raise e2b.FileNotFoundException(path)
+            await sandbox.files.remove(path)
 
     async def exists(self, path: str) -> bool:
         async with self._translated_filesystem_error(path):

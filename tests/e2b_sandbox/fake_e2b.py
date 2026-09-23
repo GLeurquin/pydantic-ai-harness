@@ -26,6 +26,7 @@ from e2b import CommandExitException, CommandResult, FileType, WriteInfo
 from e2b.exceptions import (
     AuthenticationException,
     FileNotFoundException,
+    InvalidArgumentException,
     SandboxException,
     SandboxNotFoundException,
     TimeoutException,
@@ -197,6 +198,11 @@ class FakeFilesystem:
         await self._check(path)
         # The backend only asks for bytes; anything else would be a silent behavior change.
         assert format == 'bytes', f'unexpected read format {format!r}'
+        if self._control.read_error is not None:
+            raise self._control.read_error
+        if path in self.directories:
+            # envd answers a read of a directory with a 400, which the SDK raises like this.
+            raise InvalidArgumentException(f"path '{path}' is a directory")
         if path not in self.files:
             raise FileNotFoundException(path)
         # Real E2B hands back a `bytearray` for the `bytes` format.
@@ -257,8 +263,7 @@ class FakeFilesystem:
     async def remove(self, path: str, user: str | None = None, request_timeout: float | None = None) -> None:
         del user, request_timeout
         await self._check(path)
-        if not await self._exists(path):
-            raise FileNotFoundException(path)
+        # envd removes with `os.RemoveAll`, so a missing path is not an error.
         self.removed.append(path)
         prefix = f'{path.rstrip("/")}/'
         for target in [target for target in self.files if target == path or target.startswith(prefix)]:
@@ -374,6 +379,7 @@ class FakeE2B:
     command_hangs: bool = False
     kill_command_error: Exception | None = None
     fs_error: Exception | None = None
+    read_error: Exception | None = None
     is_running_error: Exception | None = None
     sandbox_is_running: bool = True
     next_pid: int = 4242
@@ -401,6 +407,11 @@ class FakeE2B:
         return TimeoutException
 
     @property
+    def invalid_argument_type(self) -> type[Exception]:
+        """E2B `InvalidArgumentException`: envd's 400, which includes reading a directory."""
+        return InvalidArgumentException
+
+    @property
     def error_type(self) -> type[Exception]:
         return SandboxException
 
@@ -414,6 +425,7 @@ class FakeE2B:
         module.CommandResult = CommandResult  # type: ignore[attr-defined]
         module.FileNotFoundException = FileNotFoundException  # type: ignore[attr-defined]
         module.FileType = FileType  # type: ignore[attr-defined]
+        module.InvalidArgumentException = InvalidArgumentException  # type: ignore[attr-defined]
         module.SandboxException = SandboxException  # type: ignore[attr-defined]
         module.SandboxNotFoundException = SandboxNotFoundException  # type: ignore[attr-defined]
         module.TimeoutException = TimeoutException  # type: ignore[attr-defined]

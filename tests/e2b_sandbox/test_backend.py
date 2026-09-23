@@ -442,6 +442,28 @@ class TestFilesystem:
         with pytest.raises(FileNotFoundError, match="'/tmp/missing.txt'"):
             await getattr(backend, operation)('/tmp/missing.txt')
 
+    async def test_reading_a_directory_raises_the_builtin_error(self, fake_e2b: FakeE2B) -> None:
+        # envd answers a read of a directory with a generic 400; the entry type is what makes
+        # it the protocol's `IsADirectoryError`.
+        backend = await started()
+        await backend.make_dir('/tmp/pkg')
+        with pytest.raises(IsADirectoryError, match="'/tmp/pkg'"):
+            await backend.read_bytes('/tmp/pkg')
+
+    async def test_another_invalid_read_stays_a_workspace_error(self, fake_e2b: FakeE2B) -> None:
+        backend = await started()
+        await backend.write_bytes('/tmp/a.txt', b'body')
+        fake_e2b.read_error = fake_e2b.invalid_argument_type('bad request')
+        with pytest.raises(WorkspaceError, match='bad request'):
+            await backend.read_bytes('/tmp/a.txt')
+
+    async def test_removing_a_missing_path_does_not_reach_e2b(self, fake_e2b: FakeE2B) -> None:
+        # envd's remove succeeds on a missing path, so the backend checks first to report it.
+        backend = await started()
+        with pytest.raises(FileNotFoundError):
+            await backend.remove('/tmp/missing')
+        assert fake_e2b.sandboxes[0].files.removed == []
+
     async def test_a_filesystem_error_is_recoverable_while_the_sandbox_runs(self, fake_e2b: FakeE2B) -> None:
         backend = await started()
         fake_e2b.fs_error = fake_e2b.error_type('Permission denied')
