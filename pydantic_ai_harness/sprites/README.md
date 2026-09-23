@@ -74,15 +74,17 @@ async def resume(ref: WorkspaceRef) -> str:
     return result.output
 ```
 
-Retain a `SpriteWorkspaceBackend` and await its `workspace` property to obtain the typed `sprites.AsyncSprite`. An existing native handle can be supplied with `SpriteWorkspaceBackend(workspace=native)`. Supply either a native handle or `ref=`, not both; the caller retains ownership of an injected handle and its SDK client. Use and close an injected async client on one event loop.
+Retain a `SpriteWorkspaceBackend` and call `await backend.get_client()` to obtain the typed `sprites.AsyncSprite`. The first call creates or attaches to the Sprite; later calls return the same object. An existing native handle can be supplied with `SpriteWorkspaceBackend(workspace=native)`. Supply either a native handle or `ref=`, not both; the caller retains ownership of an injected handle and its SDK client. Use and close an injected async client on one event loop.
 
-Without `client=`, the backend creates and owns its local `AsyncSpritesClient` on first acquisition from `token=` (or `SPRITE_TOKEN`). Retain that backend and call `disconnect()` in `finally`. This example also deletes the remote Sprite using the native SDK:
+A backend given `client=` leaves closing it to the caller. Without `client=`, the backend creates its own `AsyncSpritesClient` from `token=` (or `SPRITE_TOKEN`) on first acquisition and closes it only if creating or attaching fails; otherwise it stays open for the process. To control when local HTTP connections close, construct the client yourself and pass `client=`. This example owns the client and deletes the remote Sprite through the native SDK after the run:
 
 ```python
 import asyncio
+import os
 
 from pydantic_ai import Agent, RunContext
 from pydantic_ai_harness.sprites import SpriteWorkspaceBackend
+from sprites import AsyncSpritesClient
 
 agent = Agent('anthropic:claude-sonnet-4-6')
 
@@ -93,23 +95,21 @@ async def working_directory(ctx: RunContext[None]) -> str:
 
 
 async def run_with_cleanup() -> str:
-    backend = SpriteWorkspaceBackend()
-    try:
-        native = await backend.workspace
+    async with AsyncSpritesClient(token=os.environ['SPRITE_TOKEN']) as client:
+        backend = SpriteWorkspaceBackend(client=client)
+        native = await backend.get_client()
         try:
             result = await agent.run('What is the working directory?', workspace=backend)
             return result.output
         finally:
             await native.delete()
-    finally:
-        await backend.disconnect()
 
 
 if __name__ == '__main__':
     print(asyncio.run(run_with_cleanup()))
 ```
 
-To keep the remote Sprite, omit `await native.delete()` and retain the outer `finally` that disconnects the backend. `disconnect()` closes only a backend-owned SDK client; it does not delete a Sprite or close a caller-supplied client. Finish in-flight commands before disconnecting.
+To keep the remote Sprite, omit `await native.delete()`. The backend does not delete a Sprite on its own, and it does not close a caller-supplied client. Finish in-flight commands before leaving the SDK client context.
 
 ## Lifetimes and durable execution
 

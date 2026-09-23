@@ -29,9 +29,9 @@ class SpriteWorkspace(AbstractCapability[AgentDepsT]):
     """
 
     client: AsyncSpritesClient | None = None
-    """A caller-owned `sprites.AsyncSpritesClient`. When omitted, the backend creates one on first use
-    from `token` (or `SPRITE_TOKEN`) and closes it again on `disconnect`; supply one to own its
-    lifecycle on one event loop, and the backend never closes it."""
+    """A caller-owned `sprites.AsyncSpritesClient`, which the backend never closes. When omitted, the
+    backend creates one on first use from `token` (or `SPRITE_TOKEN`) and closes it only if creating
+    or attaching fails; supply one to control when its connections close, on one event loop."""
 
     token: str | None = None
     """API token for a backend-owned client; defaults to `SPRITE_TOKEN` on first use."""

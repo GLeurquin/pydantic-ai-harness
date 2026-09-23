@@ -1,13 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import shutil
-import subprocess
-import sys
 import threading
-from collections.abc import AsyncIterator
-from pathlib import Path
-from typing import BinaryIO
 
 import anyio
 import anyio.to_thread
@@ -22,182 +16,17 @@ from pydantic_ai.workspaces import (
     WorkspaceTimeoutError,
     WorkspaceUnavailableError,
 )
-from sprites import AsyncSprite, AsyncSpritesClient
-from sprites.exceptions import AuthenticationError, NotFoundError, SpriteError
+from sprites import AsyncSprite
+from sprites.exceptions import AuthenticationError, SpriteError
 from websockets.datastructures import Headers
 from websockets.exceptions import InvalidStatus
 from websockets.http11 import Response
 
 from pydantic_ai_harness.sprites import SpriteWorkspace, SpriteWorkspaceBackend
 
+from .fake_sprites import SpriteTransport
+
 pytestmark = pytest.mark.anyio
-
-
-@pytest.fixture
-def anyio_backend() -> str:
-    return 'asyncio'
-
-
-class FakeOperation:
-    def __init__(self, transport: SpriteTransport, args: list[str]) -> None:
-        self.transport = transport
-        self.args = args
-        self.stdout = b''
-        self.stderr = b''
-        self.exit_override = transport.run_exit_override if len(args) == 6 else transport.cancel_exit_override
-        self._task = asyncio.create_task(asyncio.to_thread(self._execute))
-
-    def _execute(self) -> int:
-        self.transport.commands.append(self.args)
-        if len(self.args) == 6:
-            self.transport.controls.add(self.args[4])
-            self.transport.started.set()
-            if self.transport.release_start is not None:
-                assert self.transport.release_start.wait(5)
-        process = subprocess.Popen(
-            [sys.executable, *self.args[1:]], cwd=self.transport.root, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
-        assert process.stdout is not None and process.stderr is not None
-        stdout = bytearray()
-        stderr = bytearray()
-
-        def read_stream(source: BinaryIO, target: bytearray, output: str) -> None:
-            while chunk := source.read(1):
-                target.extend(chunk)
-                setattr(self, output, bytes(target))
-            source.close()
-
-        readers = [
-            threading.Thread(target=read_stream, args=(process.stdout, stdout, 'stdout')),
-            threading.Thread(target=read_stream, args=(process.stderr, stderr, 'stderr')),
-        ]
-        for reader in readers:
-            reader.start()
-        code = process.wait(timeout=10)
-        for reader in readers:
-            reader.join()
-        self.stdout, self.stderr = bytes(stdout), bytes(stderr)
-        return code
-
-    async def wait(self) -> int:
-        result = await asyncio.shield(self._task)
-        if len(self.args) == 6 and self.transport.run_stderr:
-            self.stderr = self.transport.run_stderr
-        return self.exit_override if self.exit_override is not None else result
-
-    def get_stdout(self) -> bytes:
-        return self.stdout
-
-    def get_stderr(self) -> bytes:
-        return self.stderr
-
-
-class FakeControlConnection:
-    transport: SpriteTransport
-
-    def __init__(self, sprite: AsyncSprite) -> None:
-        self.sprite = sprite
-        self.close_error = self.transport.control_close_error
-        self.closed = False
-
-    async def connect(self) -> None:
-        if self.transport.connect_error is not None:
-            raise self.transport.connect_error
-
-    async def start_op(self, op: str, *, cmd: list[str], stdin: bool) -> FakeOperation:
-        assert op == 'exec'
-        assert stdin is False
-        return FakeOperation(self.transport, cmd)
-
-    async def close(self) -> None:
-        if self.transport.control_close_hang:
-            await anyio.sleep(1)
-        if self.transport.control_close_error is not None:
-            raise self.transport.control_close_error
-        self.closed = True
-
-
-class SpriteTransport:
-    """SDK acquisition fake; public control payloads execute in local subprocesses."""
-
-    def __init__(self, root: Path) -> None:
-        self.root = root
-        self.names: set[str] = set()
-        self.created: list[str] = []
-        self.create_started = asyncio.Event()
-        self.release_create: asyncio.Event | None = None
-        self.clients: list[AsyncSpritesClient] = []
-        self.controls: set[str] = set()
-        self.commands: list[list[str]] = []
-        self.creation_error: SpriteError | None = None
-        self.get_error: SpriteError | None = None
-        self.close_error: Exception | None = None
-        self.close_calls = 0
-        self.connect_error: Exception | None = None
-        self.control_close_error: Exception | None = None
-        self.control_close_hang = False
-        self.run_exit_override: int | None = None
-        self.cancel_exit_override: int | None = None
-        self.run_stderr = b''
-        self.started = threading.Event()
-        self.release_start: threading.Event | None = None
-
-    def client(self, token: str, base_url: str, timeout: float) -> AsyncSpritesClient:
-        client = AsyncSpritesClient(token=token, base_url=base_url, timeout=timeout)
-        self.clients.append(client)
-        return client
-
-    async def get(self, client: AsyncSpritesClient, name: str) -> AsyncSprite:
-        if self.get_error is not None:
-            raise self.get_error
-        if name not in self.names:
-            raise NotFoundError(name)
-        return AsyncSprite(name, client)
-
-    async def create(self, client: AsyncSpritesClient, name: str, *, runtime: str | None) -> AsyncSprite:
-        if self.creation_error is not None:
-            raise self.creation_error
-        self.names.add(name)
-        self.created.append(name)
-        self.create_started.set()
-        if self.release_create is not None:
-            await self.release_create.wait()
-        return AsyncSprite(name, client)
-
-    async def close(self, client: AsyncSpritesClient) -> None:
-        self.close_calls += 1
-        if self.close_error is not None:
-            error = self.close_error
-            self.close_error = None
-            raise error
-
-
-@pytest.fixture
-async def transport(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> AsyncIterator[SpriteTransport]:
-    transport = SpriteTransport(tmp_path)
-    monkeypatch.setenv('SPRITE_TOKEN', 'test-token')
-    monkeypatch.setattr('pydantic_ai_harness.sprites._backend.AsyncSpritesClient', transport.client)
-    FakeControlConnection.transport = transport
-    monkeypatch.setattr('pydantic_ai_harness.sprites._backend.ControlConnection', FakeControlConnection)
-
-    async def get(client: AsyncSpritesClient, name: str) -> AsyncSprite:
-        return await transport.get(client, name)
-
-    async def create(client: AsyncSpritesClient, name: str, *, runtime: str | None) -> AsyncSprite:
-        return await transport.create(client, name, runtime=runtime)
-
-    monkeypatch.setattr(AsyncSpritesClient, 'get_sprite', get)
-    monkeypatch.setattr(AsyncSpritesClient, 'create_sprite', create)
-
-    async def close(client: AsyncSpritesClient) -> None:
-        await transport.close(client)
-
-    monkeypatch.setattr(AsyncSpritesClient, 'aclose', close)
-    yield transport
-    for client in transport.clients:
-        await client.aclose()
-    for control in transport.controls:
-        shutil.rmtree(control, ignore_errors=True)
 
 
 def context(conversation: str = 'chat') -> RunContext[None]:
@@ -209,7 +38,7 @@ class TestSpriteWorkspace:
         backend = SpriteWorkspace[None]().get_workspace(context(), ref=None)
         assert isinstance(backend, SpriteWorkspaceBackend)
         assert transport.clients == []
-        first, second = await asyncio.gather(backend.workspace, backend.workspace)
+        first, second = await asyncio.gather(backend.get_client(), backend.get_client())
         assert first is second
         assert transport.created == [first.name]
         assert backend.ref == WorkspaceRef(provider='sprites', id=first.name)
@@ -219,7 +48,7 @@ class TestSpriteWorkspace:
         transport.release_create = asyncio.Event()
 
         async def acquire() -> AsyncSprite:
-            return await backend.workspace
+            return await backend.get_client()
 
         task = asyncio.create_task(acquire())
         await transport.create_started.wait()
@@ -236,9 +65,9 @@ class TestSpriteWorkspace:
 
     async def test_native_handle_conflict_and_identity(self, transport: SpriteTransport) -> None:
         seed = SpriteWorkspaceBackend()
-        native = await seed.workspace
+        native = await seed.get_client()
         backend = SpriteWorkspaceBackend(workspace=native)
-        assert await backend.workspace is native
+        assert await backend.get_client() is native
         assert backend.ref == WorkspaceRef(provider='sprites', id=native.name)
         with pytest.raises(ValueError, match='either `workspace` or `ref`'):
             SpriteWorkspaceBackend(workspace=native, ref=backend.ref)
@@ -264,7 +93,7 @@ class TestSpriteWorkspace:
     async def test_missing_reference_does_not_recreate(self, transport: SpriteTransport) -> None:
         backend = SpriteWorkspaceBackend(ref=WorkspaceRef(provider='sprites', id='missing'))
         with pytest.raises(WorkspaceUnavailableError):
-            await backend.workspace
+            await backend.get_client()
         assert transport.created == []
 
     @pytest.mark.parametrize('error_type', [AuthenticationError, SpriteError])
@@ -274,49 +103,43 @@ class TestSpriteWorkspace:
         error = error_type('failed')
         transport.creation_error = error
         with pytest.raises(WorkspaceError) as caught:
-            await SpriteWorkspaceBackend().workspace
+            await SpriteWorkspaceBackend().get_client()
         assert caught.value.__cause__ is error
 
     async def test_missing_token(self, transport: SpriteTransport, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv('SPRITE_TOKEN')
         with pytest.raises(WorkspaceUnavailableError, match='SPRITE_TOKEN'):
-            await SpriteWorkspaceBackend().workspace
+            await SpriteWorkspaceBackend().get_client()
 
-    async def test_connection_settings_and_disconnect(self, transport: SpriteTransport) -> None:
+    async def test_connection_settings_reach_the_owned_client(self, transport: SpriteTransport) -> None:
         backend = SpriteWorkspaceBackend(token='sentinel', base_url='https://example.invalid', api_timeout=7)
-        native = await backend.workspace
+        native = await backend.get_client()
         assert native.client.token == 'sentinel'
         assert native.client.base_url == 'https://example.invalid'
-        await backend.disconnect()
-        await backend.disconnect()
-        assert native.name in transport.names
         assert (await backend.run(['true'])).exit_code == 0
+        assert transport.close_calls == 0
 
-    async def test_disconnect_before_use_does_not_create(self, transport: SpriteTransport) -> None:
-        backend = SpriteWorkspaceBackend()
-        await backend.disconnect()
-        assert transport.clients == []
-
-    async def test_disconnect_retries_owned_client_and_preserves_remote(self, transport: SpriteTransport) -> None:
+    async def test_failed_acquisition_closes_owned_client_and_retries_cleanly(
+        self, transport: SpriteTransport, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        transport.get_error = SpriteError('lookup failed')
+        transport.close_error = RuntimeError('close failed')
         transport.names.add('remote')
         backend = SpriteWorkspaceBackend(ref=WorkspaceRef(provider='sprites', id='remote'))
-        await backend.workspace
-        transport.close_error = RuntimeError('temporary')
         with pytest.raises(WorkspaceError):
-            await backend.disconnect()
-        assert backend.ref == WorkspaceRef(provider='sprites', id='remote')
-        await backend.disconnect()
-        assert 'remote' in transport.names
-        assert (await backend.workspace).name == 'remote'
+            await backend.get_client()
+        assert transport.close_calls == 1
+        assert 'Could not close Sprites SDK client' in caplog.text
+        transport.get_error = None
+        assert (await backend.get_client()).name == 'remote'
+        assert len(transport.clients) == 2
 
     async def test_injected_client_is_never_closed(self, transport: SpriteTransport) -> None:
-        transport.names.add('owned-by-caller')
         client = transport.client('test-token', 'https://api.sprites.dev', 30)
-        backend = SpriteWorkspaceBackend(client=client, ref=WorkspaceRef(provider='sprites', id='owned-by-caller'))
-        await backend.workspace
-        await backend.disconnect()
+        backend = SpriteWorkspaceBackend(client=client, ref=WorkspaceRef(provider='sprites', id='missing'))
+        with pytest.raises(WorkspaceUnavailableError):
+            await backend.get_client()
         assert transport.close_calls == 0
-        assert (await backend.workspace).name == 'owned-by-caller'
 
     @pytest.mark.parametrize(
         'status_code,expected_type',
@@ -330,7 +153,7 @@ class TestSpriteWorkspace:
         self, transport: SpriteTransport, status_code: int, expected_type: type[WorkspaceError]
     ) -> None:
         backend = SpriteWorkspaceBackend()
-        await backend.workspace
+        await backend.get_client()
         error = InvalidStatus(Response(status_code, 'status', Headers()))
         transport.connect_error = error
         with pytest.raises(expected_type) as caught:
@@ -343,7 +166,7 @@ class TestSpriteWorkspace:
 
     async def test_control_close_failure_after_exit_preserves_cause(self, transport: SpriteTransport) -> None:
         backend = SpriteWorkspaceBackend()
-        await backend.workspace
+        await backend.get_client()
         error = RuntimeError('close failed')
         transport.control_close_error = error
         with pytest.raises(WorkspaceError) as caught:
@@ -355,7 +178,7 @@ class TestSpriteWorkspace:
         self, transport: SpriteTransport, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         backend = SpriteWorkspaceBackend()
-        await backend.workspace
+        await backend.get_client()
         transport.control_close_hang = True
         monkeypatch.setattr('pydantic_ai_harness.sprites._backend._CONTROL_TIMEOUT', 0.01)
         with pytest.raises(WorkspaceError) as caught:
@@ -368,7 +191,7 @@ class TestSpriteWorkspace:
         self, transport: SpriteTransport, run_stderr: bytes
     ) -> None:
         backend = SpriteWorkspaceBackend()
-        await backend.workspace
+        await backend.get_client()
         error = RuntimeError('control connection lost')
         transport.run_exit_override = -1
         transport.run_stderr = run_stderr
@@ -400,7 +223,7 @@ class TestSpriteWorkspace:
 
     async def test_timeout_cancels_before_original_close_finishes(self, transport: SpriteTransport) -> None:
         backend = SpriteWorkspaceBackend()
-        await backend.workspace
+        await backend.get_client()
         transport.control_close_hang = True
         with pytest.raises(WorkspaceTimeoutError):
             await backend.run('sleep .5; touch escaped', shell=True, timeout=0.01)
@@ -410,7 +233,7 @@ class TestSpriteWorkspace:
         self, transport: SpriteTransport, caplog: pytest.LogCaptureFixture
     ) -> None:
         backend = SpriteWorkspaceBackend()
-        await backend.workspace
+        await backend.get_client()
         transport.cancel_exit_override = 1
         transport.control_close_error = RuntimeError('close failed')
         with pytest.raises(WorkspaceTimeoutError):
@@ -452,7 +275,7 @@ class TestSpriteWorkspace:
 
     async def test_deadline_kills_child_and_preserves_partial_output(self, transport: SpriteTransport) -> None:
         backend = SpriteWorkspaceBackend()
-        await backend.workspace
+        await backend.get_client()
         with pytest.raises(WorkspaceTimeoutError) as caught:
             await backend.run('printf ready; sleep 1; touch escaped', shell=True, timeout=0.3)
         await anyio.sleep(1)
@@ -461,7 +284,7 @@ class TestSpriteWorkspace:
 
     async def test_cancellation_before_remote_start_prevents_command(self, transport: SpriteTransport) -> None:
         backend = SpriteWorkspaceBackend()
-        await backend.workspace
+        await backend.get_client()
         transport.release_start = threading.Event()
         task = asyncio.create_task(backend.run(['touch', 'escaped']))
         try:
