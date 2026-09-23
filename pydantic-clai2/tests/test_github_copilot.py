@@ -50,8 +50,6 @@ def isolate_copilot(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def device_flow(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv('GITHUB_COPILOT_CLIENT_ID', 'test-client')
-
     async def start(self: GitHubCopilotOAuthFlow) -> GitHubCopilotDeviceAuthorization:
         return GitHubCopilotDeviceAuthorization(
             device_code='private-device-code',
@@ -99,9 +97,43 @@ async def test_login_and_model(device_flow: None, monkeypatch: pytest.MonkeyPatc
         assert load_codex_credentials() == 'existing-codex-login'
 
 
-async def test_client_id_required() -> None:
-    with pytest.raises(UserError, match='GITHUB_COPILOT_CLIENT_ID'):
-        await github_copilot.login(console=Console(file=io.StringIO()))
+@pytest.mark.parametrize('client_id', [None, '', '   ', ' custom-client '])
+async def test_client_id_default_and_override(
+    device_flow: None, monkeypatch: pytest.MonkeyPatch, client_id: str | None
+) -> None:
+    if client_id is not None:
+        monkeypatch.setenv('GITHUB_COPILOT_CLIENT_ID', client_id)
+    configured: list[tuple[str, str]] = []
+
+    def flow(*, client_id: str, scope: str) -> GitHubCopilotOAuthFlow:
+        configured.append((client_id, scope))
+        return GitHubCopilotOAuthFlow(client_id=client_id, scope=scope)
+
+    monkeypatch.setattr(github_copilot, 'GitHubCopilotOAuthFlow', flow)
+    assert 'GitHub login saved' in await github_copilot.login(console=Console(file=io.StringIO()))
+    assert configured == [('custom-client' if client_id == ' custom-client ' else 'Iv1.b507a08c87ecfe98', 'read:user')]
+
+
+@pytest.mark.vcr
+async def test_default_client_starts_device_flow(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def stop_before_approval(self: GitHubCopilotOAuthFlow) -> GitHubCopilotCredentials:
+        raise UserError('Stop before approving the device.')
+
+    monkeypatch.setattr(GitHubCopilotOAuthFlow, 'wait_for_authorization', stop_before_approval)
+    output = io.StringIO()
+    with (
+        use_cassette(
+            Path(__file__).parent / 'cassettes/github_copilot_device_start.yaml',
+            record_mode='none',
+            match_on=['method', 'uri', 'body'],
+            body_scrub_patterns=['device_code', 'user_code'],
+        ),
+        pytest.raises(UserError, match='Stop before approving the device'),
+    ):
+        await github_copilot.login(console=Console(file=output))
+    assert 'https://github.com/login/device' in output.getvalue()
+    assert 'Enter code: [FILTERED]' in output.getvalue()
+    assert load_codex_credentials(account='github-copilot') is None
 
 
 async def test_failed_login_preserves_credentials(device_flow: None, monkeypatch: pytest.MonkeyPatch) -> None:

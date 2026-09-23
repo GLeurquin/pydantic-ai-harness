@@ -24,10 +24,8 @@ class Connection(BaseModel):
 
 async def login(*, console: Console) -> str:
     """Display core's device challenge and save only a completed authorization."""
-    client_id = os.getenv('GITHUB_COPILOT_CLIENT_ID', '').strip()
-    if not client_id:
-        raise UserError('Set GITHUB_COPILOT_CLIENT_ID to your OAuth application client ID with device flow enabled.')
-    flow = GitHubCopilotOAuthFlow(client_id=client_id)
+    client_id = os.getenv('GITHUB_COPILOT_CLIENT_ID', '').strip() or 'Iv1.b507a08c87ecfe98'
+    flow = GitHubCopilotOAuthFlow(client_id=client_id, scope='read:user')
     authorization = await flow.start()
     console.print(f'Open {authorization.verification_uri}', markup=False, highlight=False)
     console.print(f'Enter code: {authorization.user_code}', markup=False, highlight=False)

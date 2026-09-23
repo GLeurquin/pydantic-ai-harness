@@ -338,14 +338,17 @@ an awaitable string.
 ## GitHub Copilot subscriptions
 
 ```bash
-export GITHUB_COPILOT_CLIENT_ID='your-oauth-application-client-id'
 uv run clai2
 ```
 
 In CLAI, run `/login github-copilot`, then open `/add_model` and choose
 `github-copilot`. The provider menu also starts login when no credentials exist.
-Register your own [GitHub OAuth application with device flow enabled](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#device-flow).
-CLAI does not borrow another application's client ID or request GitHub scopes.
+You do not need to register an OAuth application or configure a client ID.
+CLAI supplies the same [public Copilot OAuth client ID as Pi](https://github.com/earendil-works/pi/blob/fde38ed7c2f64434beffc6c0ec3b9994cb89ae23/packages/ai/src/auth/oauth/github-copilot.ts#L10-L11)
+and requests `read:user` access to your GitHub profile. This identifies the existing
+Copilot OAuth application, not a separately registered CLAI application.
+`GITHUB_COPILOT_CLIENT_ID` remains an optional override for your own device-enabled
+OAuth application; unset or blank uses the bundled default.
 The workspace temporarily pins the merged Pydantic AI device-flow implementation
 until it is released.
 
