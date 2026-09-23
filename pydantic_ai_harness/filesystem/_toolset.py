@@ -69,6 +69,22 @@ READ_ONLY_TOOL_NAMES: frozenset[str] = frozenset(
 _READLINK_TIMEOUT = 10.0
 """Deadline for the `readlink` probe `file_info` runs to report a symlink target."""
 
+_MAX_WALK_DIRECTORIES = 10_000
+"""Directories one `search_files` or `find_files` walk lists before it stops.
+
+The workspace filesystem API follows symlinked directories and cannot say an entry is a
+symlink, so a link back to an ancestor is walked again under a longer path; two such links
+grow the walk exponentially. The walk has no identity to detect a revisit with, so these
+caps are the guard.
+"""
+
+_MAX_WALK_ENTRIES = 100_000
+"""Entries one walk collects before it stops, for the same reason as `_MAX_WALK_DIRECTORIES`."""
+
+_WALK_CUT_NOTICE = (
+    f'[... walk cut short after {_MAX_WALK_DIRECTORIES} directories or {_MAX_WALK_ENTRIES} entries; narrow the path]'
+)
+
 
 @dataclass
 class Replacement:
@@ -353,6 +369,13 @@ def _glob_match(pattern: Sequence[str], path: Sequence[str]) -> bool:
     return bool(path) and fnmatch.fnmatchcase(path[0], head) and _glob_match(rest, path[1:])
 
 
+def _with_walk_notice(lines: list[str], walk_cut: bool) -> str:
+    """A walker's result, ending with the cut-short notice when the walk hit its caps."""
+    if walk_cut:
+        return '\n'.join([*(lines or ['No matches found.']), _WALK_CUT_NOTICE])
+    return '\n'.join(lines) if lines else 'No matches found.'
+
+
 def _as_workspace(workspace: WorkspaceBackend) -> Workspace:
     return workspace if isinstance(workspace, Workspace) else Workspace(workspace)
 
@@ -554,17 +577,25 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
         except (FileNotFoundError, NotADirectoryError):
             return None
 
-    async def _walk(self, scope: _Scope, directory: str, *, max_depth: int | None = None) -> list[WorkspaceFileEntry]:
-        """Every entry below `directory`, walked iteratively with `list_dir`.
+    async def _walk(
+        self, scope: _Scope, directory: str, *, max_depth: int | None = None
+    ) -> tuple[list[WorkspaceFileEntry], bool]:
+        """Entries below `directory`, walked iteratively with `list_dir`, and whether the walk was cut short.
 
         Hidden directories are not descended into, since everything under them
         is hidden, and a subdirectory that cannot be listed (removed mid-walk,
-        unreadable, a symlink loop) is skipped. `max_depth` bounds how many
-        levels below `directory` are listed.
+        unreadable, a symlink loop the backend reports) is skipped. `max_depth`
+        bounds how many levels below `directory` are listed. The walk stops at
+        `_MAX_WALK_DIRECTORIES` listings or `_MAX_WALK_ENTRIES` entries, the only
+        guard against symlink loops the workspace API does not reveal.
         """
         entries: list[WorkspaceFileEntry] = []
         pending: list[tuple[str, int]] = [(directory, 1)]
+        listed = 0
         while pending:
+            if listed >= _MAX_WALK_DIRECTORIES or len(entries) >= _MAX_WALK_ENTRIES:
+                return entries[:_MAX_WALK_ENTRIES], True
+            listed += 1
             current, depth = pending.pop()
             try:
                 children = await scope.workspace.list_dir(current)
@@ -579,7 +610,7 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
                 pending.extend(
                     (child.path, depth + 1) for child in children if child.is_dir and not child.name.startswith('.')
                 )
-        return entries
+        return entries, False
 
     async def read_file(
         self, path: str, *, offset: int = 0, limit: int | None = None, workspace: WorkspaceBackend
@@ -1024,12 +1055,14 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
             raise ValueError(f'Invalid regex pattern: {e}') from e
 
         entry = await self._stat(scope, resolved)
+        walk_cut = False
         if entry is None:
             files: list[str] = []
         elif not entry.is_dir:
             files = [resolved]
         else:
-            files = [child.path for child in await self._walk(scope, resolved) if not child.is_dir]
+            walked, walk_cut = await self._walk(scope, resolved)
+            files = [child.path for child in walked if not child.is_dir]
 
         results: list[str] = []
         capped = False
@@ -1058,11 +1091,13 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
 
         if ctx is not None:
             await ctx.emit(
-                self._searched(scope, resolved, pattern, search='grep', match_count=len(results), truncated=capped)
+                self._searched(
+                    scope, resolved, pattern, search='grep', match_count=len(results), truncated=capped or walk_cut
+                )
             )
         if capped:
             results.append(f'[... truncated at {self._max_search_results} matches]')
-        return '\n'.join(results) if results else 'No matches found.'
+        return _with_walk_notice(results, walk_cut)
 
     def _searched(
         self, scope: _Scope, resolved: str, pattern: str, *, search: SearchKind, match_count: int, truncated: bool
@@ -1110,9 +1145,10 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
 
         # Without `**`, nothing deeper than the pattern's own components can match.
         max_depth = None if '**' in parts else len(parts)
+        walked, walk_cut = await self._walk(scope, resolved, max_depth=max_depth)
         found = [
             child
-            for child in await self._walk(scope, resolved, max_depth=max_depth)
+            for child in walked
             if (child.is_dir or not directories_only)
             and _glob_match(parts, posixpath.relpath(child.path, resolved).split('/'))
         ]
@@ -1134,11 +1170,13 @@ class FileSystemToolset(FunctionToolset[AgentDepsT]):
 
         if ctx is not None:
             await ctx.emit(
-                self._searched(scope, resolved, pattern, search='find', match_count=len(matches), truncated=capped)
+                self._searched(
+                    scope, resolved, pattern, search='find', match_count=len(matches), truncated=capped or walk_cut
+                )
             )
         if capped:
             matches.append(f'[... truncated at {self._max_find_results} matches]')
-        return '\n'.join(matches) if matches else 'No matches found.'
+        return _with_walk_notice(matches, walk_cut)
 
     async def list_files(self, path: str = '.', *, glob: str | None = None, workspace: WorkspaceBackend) -> str:
         """List files with ripgrep in `workspace` directly, outside an agent run."""

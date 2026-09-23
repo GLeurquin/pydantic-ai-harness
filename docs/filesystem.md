@@ -267,6 +267,11 @@ applies the same rule to absolute symlink targets.
   `denied_patterns` remain the guard for what the agent may write or see. The
   workspace is the isolation boundary: use a sandboxed workspace when the tree
   itself is untrusted.
+- **Bounded walks.** The workspace follows symlinked directories and cannot say
+  an entry is a symlink, so a link back to an ancestor is walked again under a
+  longer path. `search_files` and `find_files` stop after listing 10,000
+  directories or collecting 100,000 entries and end their result with a
+  `[... walk cut short ...]` line.
 - **Binary detection.** `read_file` returns a placeholder instead of dumping
   binary bytes into the model context.
 - **Optimistic concurrency.** `write_file`/`edit_file` accept an

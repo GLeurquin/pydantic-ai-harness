@@ -9,9 +9,10 @@ from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
+import anyio
 import pytest
 from pydantic_ai import Agent
-from pydantic_ai.capabilities import AbstractCapability, LocalWorkspace
+from pydantic_ai.capabilities import AbstractCapability, LocalWorkspace, on_event
 from pydantic_ai.exceptions import ModelRetry, ToolFailed, UserError
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import RunContext
@@ -31,6 +32,7 @@ from pydantic_ai_harness.filesystem import (
     FILE_SYSTEM_TOOL_NAMES,
     READ_ONLY_TOOL_NAMES,
     RIPGREP_TOOL_NAMES,
+    FilesSearchedEvent,
     FileSystem,
 )
 from pydantic_ai_harness.filesystem._toolset import (
@@ -1865,3 +1867,65 @@ class TestWorkspaceBackends:
             pytest.skip('Agent.run requires asyncio event loop')
         result = await call_tool([FileSystem[None](root_dir=fs_root)], 'file_info', {'path': 'hello.txt'}, workspace=WS)
         assert 'size: 14 bytes' in result
+
+
+class TestWalkBounds:
+    """Symlinked directories are followed, so two links back to the root would grow a walk exponentially."""
+
+    @pytest.fixture
+    def loop_root(self, tmp_path: Path) -> Path:
+        (tmp_path / 'a.txt').write_text('needle\n')
+        (tmp_path / 'loop1').symlink_to(tmp_path)
+        (tmp_path / 'loop2').symlink_to(tmp_path)
+        return tmp_path
+
+    @pytest.mark.parametrize('cap', ['_MAX_WALK_DIRECTORIES', '_MAX_WALK_ENTRIES'])
+    async def test_symlink_loop_walk_is_cut_short(
+        self, loop_root: Path, monkeypatch: pytest.MonkeyPatch, cap: str
+    ) -> None:
+        monkeypatch.setattr(f'pydantic_ai_harness.filesystem._toolset.{cap}', 20)
+        toolset = FileSystem[None](root_dir=loop_root).get_toolset()
+        assert isinstance(toolset, FileSystemToolset)
+        found = await toolset.find_files('**/*.txt', workspace=WS)
+        assert found.splitlines()[0] == 'a.txt'
+        assert found.splitlines()[-1].startswith('[... walk cut short after ')
+        searched = await toolset.search_files('needle', workspace=WS)
+        assert searched.splitlines()[0] == 'a.txt:1:needle'
+        assert searched.splitlines()[-1].startswith('[... walk cut short after ')
+
+    async def test_default_caps_finish_a_symlink_loop(self, loop_root: Path) -> None:
+        toolset = FileSystem[None](root_dir=loop_root).get_toolset()
+        assert isinstance(toolset, FileSystemToolset)
+        with anyio.fail_after(30):
+            found = await toolset.find_files('**/*.txt', workspace=WS)
+        assert 'walk cut short' in found.splitlines()[-1]
+
+    async def test_cut_walk_with_no_matches_still_says_so(
+        self, loop_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr('pydantic_ai_harness.filesystem._toolset._MAX_WALK_DIRECTORIES', 5)
+        toolset = FileSystem[None](root_dir=loop_root).get_toolset()
+        assert isinstance(toolset, FileSystemToolset)
+        result = await toolset.find_files('**/*.missing', workspace=WS)
+        assert result.splitlines()[0] == 'No matches found.'
+        assert result.splitlines()[1].startswith('[... walk cut short after ')
+
+    async def test_cut_walk_marks_the_event_truncated(self, loop_root: Path, anyio_backend: object) -> None:
+        if str(anyio_backend) != 'asyncio':
+            pytest.skip('Agent.run requires asyncio event loop')
+        seen: list[FilesSearchedEvent] = []
+
+        class Recorder(AbstractCapability[None]):
+            @on_event(FilesSearchedEvent)
+            async def searched(self, ctx: RunContext[None], event: FilesSearchedEvent) -> None:
+                seen.append(event)
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr('pydantic_ai_harness.filesystem._toolset._MAX_WALK_DIRECTORIES', 5)
+            await call_tool(
+                [FileSystem[None](root_dir=loop_root), Recorder()],
+                'search_files',
+                {'pattern': 'needle'},
+                workspace=WS,
+            )
+        assert [event.truncated for event in seen] == [True]
