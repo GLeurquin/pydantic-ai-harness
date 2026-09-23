@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import logging
 import os
 import posixpath
 import shlex
@@ -16,7 +17,7 @@ from pydantic_ai import RunContext
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.tools import AgentDepsT
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset, ToolsetTool
-from pydantic_ai.workspaces import WorkspaceError, WorkspaceTimeoutError
+from pydantic_ai.workspaces import WorkspaceTimeoutError
 
 from pydantic_ai_harness._output import truncate_tail
 from pydantic_ai_harness._workspace import workspace_path
@@ -24,6 +25,8 @@ from pydantic_ai_harness.shell._jobs import CONTROL_TIMEOUT, Job, jobs_dir
 from pydantic_ai_harness.shell._limits import file_limit_status, limited_script, validate_file_limit
 from pydantic_ai_harness.shell._persistent import MAX_FOREGROUND_WAIT, CommandMode, run_persistent_command
 from pydantic_ai_harness.shell._policy import is_interactive_command, recoverable
+
+_logger = logging.getLogger(__name__)
 
 RUN_SCOPED_TOOL_NAMES: tuple[str, ...] = ('run_command', 'start_command', 'check_command', 'stop_command')
 """The default tools. Their commands are killed when the agent run ends."""
@@ -217,6 +220,8 @@ class ShellToolset(FunctionToolset[AgentDepsT]):
 
         Cleanup is best-effort and shielded: the run may be ending because it was cancelled or
         because the workspace became unusable, and neither should leave the exit stack half-run.
+        Any error cleaning up one job is logged at debug level and the next job is tried; a durable
+        workspace may refuse calls outside an activity with errors that are not `WorkspaceError`.
         """
         with anyio.move_on_after(CONTROL_TIMEOUT * 2, shield=True):
             for bg in self._background.values():
@@ -225,8 +230,8 @@ class ShellToolset(FunctionToolset[AgentDepsT]):
                     if not bg.finished:
                         await bg.job.kill()
                     await bg.job.cleanup()
-                except (WorkspaceError, OSError):
-                    continue
+                except Exception:
+                    _logger.debug('Could not clean up background job %s', bg.job.directory, exc_info=True)
         self._background.clear()
 
     def _first_denied_operator(self, command: str) -> str | None:

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import errno
 import json
+import logging
 import os
 import shlex
 import shutil
 import signal
 import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from contextlib import suppress
+from contextlib import AsyncExitStack, suppress
 from pathlib import Path
 from typing import Any, NoReturn
 from unittest.mock import patch
@@ -1222,6 +1223,30 @@ class TestBackgroundCommands:
         assert not job_dir.exists()
         await _wait_for_exit(pid)
 
+    async def test_aexit_survives_any_workspace_exception(
+        self, shell_dir: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # A durable workspace may refuse calls outside an activity with an arbitrary error.
+        ts = _shell_toolset(shell_dir)
+        ids = [_parse_command_id(await ts.start_command(_ctx(), 'exec sleep 300')) for _ in range(2)]
+        jobs = [ts._background[command_id].job for command_id in ids]
+        for job in jobs:
+            job.workspace = Workspace(_Refusing('/'))
+        try:
+            with caplog.at_level(logging.DEBUG, logger='pydantic_ai_harness.shell._toolset'):
+                async with AsyncExitStack() as stack:
+                    await stack.enter_async_context(ts)
+            assert not ts._background
+            assert [record.message for record in caplog.records].count(
+                f'Could not clean up background job {jobs[0].directory}'
+            ) == 1
+            assert len(caplog.records) == 2
+        finally:
+            for job in jobs:
+                job.workspace = _ctx().workspace
+                await job.kill()
+                await job.cleanup()
+
     async def test_aexit_tolerates_a_workspace_error(self, shell_dir: Path) -> None:
         # Cleanup is best-effort: a job whose directory is already gone does not stop the others.
         ts = _shell_toolset(shell_dir)
@@ -1452,6 +1477,27 @@ class TestStopEscalation:
         bg.job.pgid = None
         bg.job.pid = 2**22 + 12345  # beyond any live PID, so `kill` finds no process
         await bg.job.kill()
+
+
+class _Refusing(LocalWorkspaceBackend):
+    """A local backend whose every operation raises an error that is not a `WorkspaceError`."""
+
+    async def run(
+        self,
+        command: WorkspaceCommand,
+        *,
+        shell: bool = False,
+        cwd: str | None = None,
+        env: Mapping[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> CommandResult:
+        raise RuntimeError('workspace call outside an activity')
+
+    async def read_bytes(self, path: str) -> bytes:
+        raise RuntimeError('workspace call outside an activity')
+
+    async def remove(self, path: str) -> None:
+        raise RuntimeError('workspace call outside an activity')
 
 
 class _FailingKill(LocalWorkspaceBackend):
