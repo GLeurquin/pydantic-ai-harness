@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import warnings
 from typing import Any
 
 import anyio
@@ -22,6 +23,8 @@ from pydantic_ai.workspaces import (
     WorkspaceUnavailableError,
 )
 
+import pydantic_ai_harness.modal_sandbox as modal_sandbox_package
+from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.modal_sandbox import ModalSandbox, ModalSandboxBackend
 
 from .fake_modal import FakeModal
@@ -204,7 +207,8 @@ async def test_backend_rejects_foreign_ref(fake_modal: FakeModal) -> None:
 
 async def test_agent_without_workspace_tool_does_not_create(fake_modal: FakeModal) -> None:
     agent = Agent(TestModel(), capabilities=[ModalSandbox()])
-    result = await agent.run('go')
+    with pytest.warns(UserWarning, match='registers no tools'):
+        result = await agent.run('go')
     assert result.output
     assert not fake_modal.sandboxes
 
@@ -320,3 +324,86 @@ async def test_agent_uses_modal_sandbox(fake_modal: FakeModal) -> None:
     result = await agent.run('go')
     assert 'run_command' in result.output
     assert fake_modal.sandboxes[0].exec_calls[0].argv == ['printf', 'hello']
+
+
+@pytest.mark.parametrize(
+    ('name', 'replacement'),
+    [
+        ('ModalSandboxSession', 'ModalSandboxBackend(workspace=<modal.Sandbox>)'),
+        ('ModalSandboxExecResult', 'pydantic_ai.workspaces.CommandResult'),
+        ('ModalSandboxError', 'pydantic_ai.workspaces.WorkspaceError'),
+        ('ModalSandboxTerminalError', 'pydantic_ai.workspaces.WorkspaceUnavailableError'),
+        ('ModalSandboxUnavailableError', 'pydantic_ai.workspaces.WorkspaceUnavailableError'),
+        ('ModalSandboxAuthError', 'pydantic_ai.workspaces.WorkspaceUnavailableError'),
+    ],
+)
+def test_removed_names_raise_import_error_naming_the_replacement(name: str, replacement: str) -> None:
+    with pytest.raises(ImportError) as exc_info:
+        getattr(modal_sandbox_package, name)
+    message = str(exc_info.value)
+    assert message.startswith(f'`{name}` was removed from `pydantic_ai_harness.modal_sandbox`.')
+    assert replacement in message
+    assert message.endswith('#upgrading-from-the-previous-modalsandbox')
+    assert exc_info.value.name == name
+
+
+def test_removed_name_fails_a_from_import_with_the_guidance() -> None:
+    with pytest.raises(ImportError, match='ModalSandboxBackend'):
+        from pydantic_ai_harness.modal_sandbox import ModalSandboxSession  # noqa: F401, I001, PLC0415  # pyright: ignore[reportUnusedImport]
+
+
+def test_other_missing_names_are_attribute_errors() -> None:
+    with pytest.raises(AttributeError, match="has no attribute 'ModalSandboxTypo'"):
+        getattr(modal_sandbox_package, 'ModalSandboxTypo')
+
+
+@pytest.mark.parametrize('sandbox_timeout', [0, -5, 1.5, True])
+def test_sandbox_timeout_must_be_a_positive_integer(sandbox_timeout: Any) -> None:
+    with pytest.raises(UserError, match=rf'sandbox_timeout must be a positive integer, got {sandbox_timeout!r}\.'):
+        ModalSandbox(sandbox_timeout=sandbox_timeout)
+
+
+@pytest.mark.parametrize('workdir', ['relative/dir', '', 'C:\\work'])
+def test_workdir_must_be_an_absolute_posix_path(workdir: str) -> None:
+    with pytest.raises(UserError, match='workdir must be an absolute POSIX path or None'):
+        ModalSandbox(workdir=workdir)
+
+
+def test_valid_creation_settings_are_accepted() -> None:
+    capability = ModalSandbox(sandbox_timeout=1, workdir='/work')
+    assert (capability.sandbox_timeout, capability.workdir) == (1, '/work')
+
+
+async def test_agent_without_workspace_tools_warns_once_per_process(fake_modal: FakeModal) -> None:
+    # `ModalSandbox(image=...)` alone was the documented usage when the capability had its own
+    # tools; it still builds, so the warning is what tells the user the model lost the sandbox.
+    agent = Agent(TestModel(), capabilities=[ModalSandbox(image='python:3.13-slim')])
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always')
+        await agent.run('go')
+        await agent.run('go again')
+    messages = [str(warning.message) for warning in caught if issubclass(warning.category, UserWarning)]
+    assert len(messages) == 1
+    assert messages[0].startswith("`ModalSandbox` supplies the Modal sandbox as the run's `ctx.workspace`")
+    assert 'Add `Shell()` and/or `FileSystem()`' in messages[0]
+    assert messages[0].endswith('#upgrading-from-the-previous-modalsandbox')
+    assert not fake_modal.sandboxes
+
+
+async def test_agent_with_filesystem_does_not_warn(fake_modal: FakeModal) -> None:
+    agent = Agent(TestModel(call_tools=[]), capabilities=[ModalSandbox(), FileSystem()])
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        await agent.run('go')
+
+
+async def test_agent_with_custom_workspace_tool_does_not_warn(fake_modal: FakeModal) -> None:
+    agent = Agent(TestModel(call_tools=[]), capabilities=[ModalSandbox()])
+
+    @agent.tool
+    async def grep(ctx: RunContext[object], pattern: str) -> str:
+        return (await ctx.workspace.run(['grep', '-r', pattern, '.'])).stdout  # pragma: no cover - not called
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('error')
+        await agent.run('go')

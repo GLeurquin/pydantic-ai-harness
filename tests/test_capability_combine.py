@@ -254,9 +254,6 @@ COMBINE_POLICY: dict[str, Policy] = {
     'RepairToolArguments': Anonymous('repairing valid arguments again is a no-op'),
     '_BoundToolOutputs': Anonymous('Coder-local truncation composes with standalone output policies'),
     'Coder': Anonymous('a packaged harness; composing two is composing their members'),
-    '_CoderWorkspace': Rejected(
-        'the bundled agent supplies one workspace; multiple suppliers require explicit selection'
-    ),
     'ModalSandbox': Rejected('multiple Modal workspace suppliers require explicit selection'),
     'E2BSandbox': Rejected('multiple E2B workspace suppliers require explicit selection'),
     'Researcher': Anonymous('a packaged harness; composing two is composing their members'),

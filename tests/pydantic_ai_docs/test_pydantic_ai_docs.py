@@ -14,7 +14,7 @@ from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCall
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
-from pydantic_ai.workspaces import LocalWorkspace, Workspace
+from pydantic_ai.workspaces import LocalWorkspaceBackend, Workspace
 
 from pydantic_ai_harness.pydantic_ai_docs import PydanticAIDocs, PydanticAIDocsToolset, PydanticAIDocsTopic
 
@@ -48,7 +48,7 @@ def anyio_backend() -> str:
 
 @pytest.fixture
 def workspace(tmp_path: Path) -> Workspace:
-    return Workspace(LocalWorkspace(root=tmp_path))
+    return Workspace(LocalWorkspaceBackend(working_dir=tmp_path))
 
 
 class _FakeClient:
@@ -229,7 +229,7 @@ class TestThroughAgent:
             return ModelResponse(parts=[TextPart('done')])
 
         agent = Agent(FunctionModel(call_then_finish), capabilities=[PydanticAIDocs(local_docs_path=tmp_path)])
-        backend = LocalWorkspace(root=tmp_path)
+        backend = LocalWorkspaceBackend(working_dir=tmp_path)
         result = await agent.run('go', workspace=backend)
 
         assert result.output == 'done'
@@ -269,7 +269,7 @@ class TestThroughAgent:
 
         returned: list[str] = []
         for root in (first_root, second_root):
-            backend = LocalWorkspace(root=root)
+            backend = LocalWorkspaceBackend(working_dir=root)
             result = await agent.run('go', workspace=backend)
             returned.extend(
                 part.content

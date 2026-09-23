@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai_harness.repo_context import RepoContext
 
+from ._session import _supports_local_workspace  # pyright: ignore[reportPrivateUsage]
 from .plugins import DepsT, PluginHost
 
 
@@ -29,6 +30,8 @@ class RepoContextSettings(BaseModel):
 
 def activate(host: PluginHost[DepsT]) -> None:
     """Bind `RepoContext` to the launch directory, the same workspace the `coder` plugin uses."""
+    if not _supports_local_workspace():
+        return
     settings = host.settings(RepoContextSettings)
     host.add(
         RepoContext[DepsT](

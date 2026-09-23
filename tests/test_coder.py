@@ -5,8 +5,9 @@ from pathlib import Path
 import pytest
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import Capability
+from pydantic_ai.exceptions import UserError
 from pydantic_ai.models.test import TestModel
-from pydantic_ai.workspaces import LocalWorkspace, ReadOnlyWorkspace, Workspace
+from pydantic_ai.workspaces import LocalWorkspaceBackend, ReadOnlyWorkspace, Workspace, WorkspaceRef
 
 import pydantic_ai_harness.coder
 from pydantic_ai_harness.coder import FILE_TOOL_NAMES, Coder, coder_agent
@@ -28,17 +29,35 @@ def test_coder_agent_is_model_less_and_composed() -> None:
     assert coder_agent.name == 'coder'
 
 
-async def test_bundled_coder_agent_supplies_current_workspace(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.chdir(tmp_path)
-
+async def test_bundled_coder_agent_supplies_import_time_working_directory() -> None:
     result = await coder_agent.run('go', model=TestModel(call_tools=[], custom_output_text='done'))
 
     assert result.output == 'done'
-    assert await result.workspace.working_dir() == tmp_path.as_posix()
+    assert await result.workspace.working_dir() == Path.cwd().resolve().as_posix()
+
+
+async def test_bundled_coder_agent_continues_its_local_ref_from_history() -> None:
+    first = await coder_agent.run('go', model=TestModel(call_tools=[], custom_output_text='done'))
+    assert first.workspace.ref == WorkspaceRef(provider='local', id=str(Path.cwd()))
+
+    second = await coder_agent.run(
+        'again', model=TestModel(call_tools=[], custom_output_text='done'), message_history=first.all_messages()
+    )
+
+    assert second.workspace.ref == first.workspace.ref
+
+
+async def test_bundled_coder_agent_declines_a_local_ref_for_another_directory(tmp_path: Path) -> None:
+    with pytest.raises(UserError, match='No capability can supply workspace'):
+        await coder_agent.run(
+            'go',
+            model=TestModel(call_tools=[], custom_output_text='done'),
+            workspace=WorkspaceRef(provider='local', id=str(tmp_path)),
+        )
 
 
 async def test_bundled_coder_agent_preserves_explicit_workspace_identity(tmp_path: Path) -> None:
-    backend = LocalWorkspace(root=tmp_path)
+    backend = LocalWorkspaceBackend(working_dir=tmp_path)
     workspace = ReadOnlyWorkspace(Workspace(backend))
     result = await coder_agent.run('go', model=TestModel(call_tools=[], custom_output_text='done'), workspace=workspace)
 
@@ -89,5 +108,5 @@ def test_coder_members_and_parameters(tmp_path: Path) -> None:
     for text in ('Custom instructions', 'DRY', 'YAGNI', 'SOLID', 'Zen of Python'):
         assert text in instructions
     limits = next(item for item in coder.capabilities if type(item).__name__ == '_BoundToolOutputs')
-    assert limits.id is None
+    assert limits.id == 'coder_tool_output_limits'
     assert isinstance(coder.for_agent(Agent(TestModel())), Coder)
