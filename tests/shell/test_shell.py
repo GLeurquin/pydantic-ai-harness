@@ -1206,16 +1206,16 @@ class TestBackgroundCommands:
 
     async def test_aexit_terminates_background_processes(self, shell_dir: Path) -> None:
         ts = _shell_toolset(shell_dir)
-        pid_file = shell_dir / 'pid'
-        result = await ts.start_command(_ctx(), f'echo $$ > {pid_file}; exec sleep 300')
+        pid_pipe = shell_dir / 'pid'
+        os.mkfifo(pid_pipe)
+        result = await ts.start_command(_ctx(), f'echo $$ > {pid_pipe}; exec sleep 300')
         command_id = _parse_command_id(result)
         job_dir = Path(ts._background[command_id].job.directory)
         assert (job_dir / 'stdout.log').exists()
         assert (job_dir / 'stderr.log').exists()
+        # Reading the FIFO blocks until the command has written its PID: no polling, so no timing.
         with anyio.fail_after(10):
-            while not pid_file.exists() or not pid_file.read_text().strip():
-                await anyio.sleep(0.01)
-        pid = int(pid_file.read_text())
+            pid = int(await anyio.to_thread.run_sync(pid_pipe.read_text))
 
         await ts.__aexit__(None, None, None)
 
@@ -1223,24 +1223,27 @@ class TestBackgroundCommands:
         assert not job_dir.exists()
         await _wait_for_exit(pid)
 
+    # Cleanup reads the status (`read_bytes`), signals the job (`run`), then removes its files
+    # (`remove`); `None` is the control, where the fake refuses nothing.
+    @pytest.mark.parametrize('refused', [None, 'read_bytes', 'run', 'remove'])
     async def test_aexit_survives_any_workspace_exception(
-        self, shell_dir: Path, caplog: pytest.LogCaptureFixture
+        self, shell_dir: Path, caplog: pytest.LogCaptureFixture, refused: str | None
     ) -> None:
         # A durable workspace may refuse calls outside an activity with an arbitrary error.
         ts = _shell_toolset(shell_dir)
         ids = [_parse_command_id(await ts.start_command(_ctx(), 'exec sleep 300')) for _ in range(2)]
         jobs = [ts._background[command_id].job for command_id in ids]
         for job in jobs:
-            job.workspace = Workspace(_Refusing('/'))
+            job.workspace = Workspace(_Refusing('/', refused))
         try:
             with caplog.at_level(logging.DEBUG, logger='pydantic_ai_harness.shell._toolset'):
                 async with AsyncExitStack() as stack:
                     await stack.enter_async_context(ts)
             assert not ts._background
-            assert [record.message for record in caplog.records].count(
-                f'Could not clean up background job {jobs[0].directory}'
-            ) == 1
-            assert len(caplog.records) == 2
+            logged = [record.message for record in caplog.records]
+            expected = [] if refused is None else [f'Could not clean up background job {job.directory}' for job in jobs]
+            assert logged == expected
+            assert all(Path(job.directory).exists() == (refused is not None) for job in jobs)
         finally:
             for job in jobs:
                 job.workspace = _ctx().workspace
@@ -1480,7 +1483,15 @@ class TestStopEscalation:
 
 
 class _Refusing(LocalWorkspaceBackend):
-    """A local backend whose every operation raises an error that is not a `WorkspaceError`."""
+    """A local backend that raises an error that is not a `WorkspaceError` from one chosen operation."""
+
+    def __init__(self, working_dir: str, refused: str | None) -> None:
+        super().__init__(working_dir)
+        self.refused = refused
+
+    def _check(self, operation: str) -> None:
+        if operation == self.refused:
+            raise RuntimeError('workspace call outside an activity')
 
     async def run(
         self,
@@ -1491,13 +1502,16 @@ class _Refusing(LocalWorkspaceBackend):
         env: Mapping[str, str] | None = None,
         timeout: float | None = None,
     ) -> CommandResult:
-        raise RuntimeError('workspace call outside an activity')
+        self._check('run')
+        return await super().run(command, shell=shell, cwd=cwd, env=env, timeout=timeout)
 
     async def read_bytes(self, path: str) -> bytes:
-        raise RuntimeError('workspace call outside an activity')
+        self._check('read_bytes')
+        return await super().read_bytes(path)
 
     async def remove(self, path: str) -> None:
-        raise RuntimeError('workspace call outside an activity')
+        self._check('remove')
+        await super().remove(path)
 
 
 _KILL_SCRIPT = 'kill -s "$1" -- "$2"'
@@ -1576,7 +1590,11 @@ class TestSignalling:
 
 
 class _FailingKill(LocalWorkspaceBackend):
-    """A local backend whose `kill` commands fail as a broken workspace would."""
+    """A local backend whose commands fail as a broken workspace would.
+
+    `__aexit__` reads status and removes files through the filesystem methods, so the only
+    command it runs is the signal to a still-running job.
+    """
 
     async def run(
         self,
@@ -1587,9 +1605,7 @@ class _FailingKill(LocalWorkspaceBackend):
         env: Mapping[str, str] | None = None,
         timeout: float | None = None,
     ) -> CommandResult:
-        if not isinstance(command, str) and command[:3] == ['sh', '-c', _KILL_SCRIPT]:
-            raise WorkspaceError('kill failed')
-        return await super().run(command, shell=shell, cwd=cwd, env=env, timeout=timeout)
+        raise WorkspaceError('kill failed')
 
 
 async def _wait_for_exit(pid: int) -> None:
@@ -1901,16 +1917,15 @@ class TestDetachedJobRoundTrip:
         try:
             assert json.loads(status.read_text()) == {'pid': pid, 'exit_code': None}
             assert '"exit_code": null' in output
+            # The wait for the published exit code runs in the workspace shell, with the model's own tool.
+            wait = f'{stop} && while grep -q \'"exit_code": null\' {shlex.quote(str(status))}; do sleep 0.05; done'
             result = await call_tool(
                 [Shell[None](cwd=tmp_path, tools=['run_command'], denied_commands=[])],
                 'run_command',
-                {'command': stop},
+                {'command': wait, 'timeout_seconds': 10},
                 workspace=LocalWorkspaceBackend(tmp_path),
             )
-            assert 'exit code' not in result
-            with anyio.fail_after(10):
-                while json.loads(status.read_text())['exit_code'] is None:
-                    await anyio.sleep(0.05)
+            assert 'exit code' not in result and 'timed out' not in result
             assert json.loads(status.read_text()) == {'pid': pid, 'exit_code': 143}
         finally:
             with suppress(ProcessLookupError):
