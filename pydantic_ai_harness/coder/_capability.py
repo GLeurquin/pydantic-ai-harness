@@ -40,15 +40,19 @@ def _file_system(workspace: Path, *, unrestricted: bool) -> FileSystem[AgentDeps
         root_dir=workspace, content_hashes=False, max_read_chars=MAX_READ_CHARS, tools=FILE_TOOL_NAMES
     )
     if unrestricted:
-        return replace(file_system, root_dir=workspace.anchor, cwd=workspace, protected_patterns=[])
+        # Workspace paths are POSIX, so the filesystem root is `/` whatever the host platform.
+        return replace(file_system, root_dir='/', cwd=workspace, protected_patterns=[])
     return file_system
 
 
 class Coder(CombinedCapability[AgentDepsT]):
-    """Autonomous local coding with six tools and context management.
+    """Autonomous coding with six tools and context management, in the run's workspace.
 
-    Commands are unrestricted and can outlive runs. Use an OS sandbox for
-    untrusted work. Additional instructions supplement the default guidance.
+    Files and commands go through `ctx.workspace`: attach `LocalWorkspace(...)`
+    for a local checkout, or a sandbox provider's capability for untrusted work.
+    `workspace` is the project directory inside that workspace, relative to its
+    working directory by default. Commands are unrestricted and can outlive
+    runs. Additional instructions supplement the default guidance.
     `repo_context=False` leaves out the bundled `RepoContext`, for hosts that
     bind their own and would otherwise load the instruction files twice.
     """
@@ -61,7 +65,7 @@ class Coder(CombinedCapability[AgentDepsT]):
         unrestricted_filesystem: bool = False,
         repo_context: bool = True,
     ) -> None:
-        root = Path(workspace).resolve()
+        root = Path(workspace)
         capabilities: list[AbstractCapability[AgentDepsT]] = [
             Capability[AgentDepsT](instructions=INSTRUCTIONS + ('\n' + instructions if instructions else '')),
             _file_system(root, unrestricted=unrestricted_filesystem),

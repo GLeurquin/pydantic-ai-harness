@@ -55,10 +55,13 @@ class TestCoder:
         target = tmp_path / 'src' / 'AGENTS.md'
         target.write_text('Project instructions')
         coder = Coder[None](tmp_path, unrestricted_filesystem=unrestricted_filesystem, repo_context=False)
-        path = await call_tool([coder], 'list_files', {'glob': '**/AGENTS.md'})
+        workspace = LocalWorkspaceBackend(working_dir=tmp_path)
+        path = await call_tool([coder], 'list_files', {'glob': '**/AGENTS.md'}, workspace=workspace)
         assert Path(path) == Path('src/AGENTS.md')
-        assert 'Project instructions' in await call_tool([coder], 'read_file', {'path': path})
-        await call_tool([coder], 'edit_file', {'path': path, 'old_text': 'Project', 'new_text': 'Updated'})
+        assert 'Project instructions' in await call_tool([coder], 'read_file', {'path': path}, workspace=workspace)
+        await call_tool(
+            [coder], 'edit_file', {'path': path, 'old_text': 'Project', 'new_text': 'Updated'}, workspace=workspace
+        )
         assert target.read_text() == 'Updated instructions'
 
     async def test_schema(self, tmp_path: Path) -> None:

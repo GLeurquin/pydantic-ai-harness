@@ -24,8 +24,8 @@ pip/uv-add "pydantic-ai-harness[coder]"
 
 The extra installs `ripgrep==14.1.0` except on Android, where `rg` must be supplied separately on `PATH`.
 Add a provider extra such as `[coder,anthropic]` when needed.
-Commands run on the host without an allowlist;
-use an OS-level sandbox or container for untrusted work. Path restrictions on file tools are not a shell sandbox.
+Files and commands go through the run's workspace (`ctx.workspace`), and commands run there without an allowlist.
+`LocalWorkspace` runs them on the host; attach a sandbox provider's workspace for untrusted work. Path restrictions on file tools are not a shell sandbox.
 
 <!-- Keep this blown-out example in sync across docs/coder.md, docs/index.md, README.md, pydantic_ai_harness/coder/README.md, and examples/coding_agent.py. -->
 
@@ -52,7 +52,7 @@ result = agent.run_sync(
 print(result.output)
 ```
 
-Programmatic callers pass a workspace explicitly. Coder's Shell and FileSystem tools operate on the host; attaching another workspace does not redirect those tools. Interfaces that start runs for you accept `workspace=` too, so pass it to [`agent.to_cli_sync(workspace=...)`](https://pydantic.dev/docs/ai/cli/) or [`agent.to_web(workspace=...)`](https://pydantic.dev/docs/ai/web/) the same way you pass it to `run()`.
+Programmatic callers pass a workspace explicitly. Coder's Shell and FileSystem tools act on whatever workspace the run has, so attaching a sandbox provider's workspace instead of a local one moves the files they edit and the commands they run there. `Coder(workspace)` names the project directory inside that workspace; `'.'` is its working directory. Interfaces that start runs for you accept `workspace=` too, so pass it to [`agent.to_cli_sync(workspace=...)`](https://pydantic.dev/docs/ai/cli/) or [`agent.to_web(workspace=...)`](https://pydantic.dev/docs/ai/web/) the same way you pass it to `run()`.
 
 The exported `pydantic_ai_harness.coder:coder_agent` is the same composition, model-less and named `coder`.
 Use it with the Pydantic AI CLI:
@@ -107,10 +107,9 @@ these rules. Coder does not include planning, delegation, or the run-scoped `run
 ## Filesystem scope
 
 File tools are workspace-scoped by default. For trusted local use,
-`Coder(unrestricted_filesystem=True)` sets `FileSystem(root_dir=<workspace drive root>, cwd=workspace,
-protected_patterns=[])`: relative paths still resolve from the workspace, and absolute paths anywhere on
-the drive are accepted. On POSIX this permits paths such as `/tmp/example.py`; on Windows this covers the
-workspace drive, not other drives. OS permissions and file-change event listeners still apply. This permits
+`Coder(unrestricted_filesystem=True)` sets `FileSystem(root_dir='/', cwd=workspace,
+protected_patterns=[])`: relative paths still resolve from the workspace, and absolute paths anywhere in
+the run's workspace are accepted, such as `/tmp/example.py`. OS permissions and file-change event listeners still apply. This permits
 modifying secrets and repository metadata: use it only when you trust the agent and its inputs. Shell commands
 were already unrestricted.
 
@@ -118,7 +117,7 @@ were already unrestricted.
 
 `shell` is the [`Shell`](shell.md) capability's persistent tool. Foreground waits at most 270 seconds
 (or a smaller positive `timeout`) and then returns handles for the same running process; background returns
-them immediately. Both end with a PID, an absolute output log path, and an absolute JSON status path whose
+them immediately. Both end with a PID, an absolute output log path, and an absolute JSON status path (inside the workspace) whose
 `exit_code` is `null` while the command runs; foreground puts the last 16,000 bytes of output before them. Commands outlive the agent run, so servers keep running; there
 is no completion notification or automatic wake-up after a final response. The Shell page covers the
 supervisor, cleanup, and the `CommandStartedEvent`, `CommandOutputEvent`, and `CommandFinishedEvent` progress
@@ -126,8 +125,10 @@ events a UI can subscribe to.
 
 The default instructions tell the agent to finish required work before giving a final response: do other
 useful work, then poll status and output until completion or a genuine blocker.
-Servers may remain running after startup and readiness are verified. Common LLM API-key environment
-variables are filtered from command environments; other host credentials and files remain accessible.
+Servers may remain running after startup and readiness are verified. Commands get the workspace's
+environment: `LocalWorkspace` passes only `PATH`, `HOME`, `LANG`, and `TMPDIR` from the host, and Coder's
+`denied_env_patterns` drop common LLM API-key names from any `env` you add. Host files remain accessible
+to commands in a local workspace.
 
 ## Instructions
 
