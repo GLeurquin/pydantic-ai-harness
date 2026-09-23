@@ -8,8 +8,16 @@ Run agent tools against files and processes in a persistent [Fly.io Sprite](http
 
 ## Install
 
+uv:
+
 ```bash
 uv add "pydantic-ai-harness[sprites,anthropic]"
+```
+
+pip:
+
+```bash
+pip install "pydantic-ai-harness[sprites,anthropic]"
 ```
 
 Set `SPRITE_TOKEN` for authentication. The integration uses sprites-py 0.7.x.
