@@ -36,14 +36,12 @@ LLM_API_KEY_ENV_PATTERNS: tuple[str, ...] = (
 )
 """Glob patterns for common LLM provider credentials, for `denied_env_patterns`.
 
-Pass these to keep provider credentials out of the subprocess's own environment.
-This is not a security boundary: a command running under the same OS identity
-may still read the parent process's environment through system interfaces such
-as Linux procfs. Use OS-level isolation for untrusted commands. Covers provider
-prefixes only -- not other host secrets, and the prefixes are coarse (`GOOGLE_*`
-also strips `GOOGLE_APPLICATION_CREDENTIALS`), so treat it as a starting point.
-Not a default: stripping env silently would break agents that rely on inherited
-credentials, so opt in explicitly.
+Pass these to keep provider credentials in an explicit `env` from reaching commands.
+The patterns filter only `env`: the workspace decides the rest of a command's
+environment (the local workspace passes only `PATH`, `HOME`, `LANG`, and `TMPDIR`
+from the host). Covers provider prefixes only -- not other secrets, and the
+prefixes are coarse (`GOOGLE_*` also strips `GOOGLE_APPLICATION_CREDENTIALS`), so
+treat it as a starting point. Not a default: opt in explicitly.
 """
 
 
@@ -51,12 +49,14 @@ credentials, so opt in explicitly.
 class Shell(AbstractCapability[AgentDepsT]):
     """Shell command execution for agents.
 
-    Commands execute in a subprocess rooted at `cwd`. Use `allowed_commands`
-    or `denied_commands` to control what the agent can invoke.
+    Commands run in the run's workspace (`ctx.workspace`), starting in `cwd`. Attach a
+    workspace to the run, such as `LocalWorkspace(...)` for a local checkout or a sandbox
+    provider's capability. Use `allowed_commands` or `denied_commands` to control what the
+    agent can invoke.
     """
 
     cwd: str | Path = '.'
-    """Working directory for command execution."""
+    """Working directory for command execution: a workspace path, relative to the workspace's working directory."""
 
     allowed_commands: Sequence[str] = field(default_factory=list[str])
     """If non-empty, only these command names may be executed (allowlist)."""
@@ -78,10 +78,11 @@ class Shell(AbstractCapability[AgentDepsT]):
     """Maximum characters of output returned to the model. Must be positive."""
 
     max_file_bytes: int | None = field(default=None, kw_only=True)
-    """Optional POSIX per-file size limit for run-scoped children, not total disk usage.
+    """Optional per-file size limit for run-scoped commands, not total disk usage.
 
-    Must be positive. Unsupported platforms, `persist_cwd`, and the persistent
-    `shell` tool are rejected. The parent is unchanged; a lower inherited hard limit still applies.
+    Must be positive. Applied with the workspace shell's `ulimit -f`, rounded up to whole
+    blocks (512 bytes in POSIX `sh`, 1 KiB in bash). `persist_cwd` and the persistent
+    `shell` tool are rejected.
     """
 
     persist_cwd: bool = False
@@ -91,24 +92,22 @@ class Shell(AbstractCapability[AgentDepsT]):
     """If True, allow interactive commands (vi, nano, ssh, etc.). Blocked by default."""
 
     env: Mapping[str, str] | None = None
-    """Explicit environment for spawned subprocesses, replacing inheritance.
+    """Variables added to every command's environment, on top of the workspace's own.
 
-    When `None` (default) the subprocess inherits the parent environment. Set
-    this to a fixed mapping to start subprocesses with exactly these variables
-    in its own environment. This is not a security boundary: a command running
-    as the same OS user may read secrets from the parent process through system
-    interfaces such as Linux procfs. Use OS-level isolation for untrusted commands.
+    When `None` (default) commands get the workspace's environment unchanged. The
+    workspace decides that base: the local workspace passes only `PATH`, `HOME`,
+    `LANG`, and `TMPDIR` from the host process.
     """
 
     denied_env_patterns: Sequence[str] = field(default_factory=list[str])
-    """Glob patterns for environment variable names to strip before spawning.
+    """Glob patterns for names to drop from `env` before it reaches the workspace.
 
     Follows the `denied_*` naming convention but matches by glob (`fnmatch`,
     e.g. `OPENAI_*`), since env secrets cluster by prefix -- unlike
-    `denied_commands`, which matches executable names exactly. Names matching
-    any pattern are removed from the base environment; applied on top of `env`
-    when both are set, so patterns filter an explicit `env` too. See
-    `LLM_API_KEY_ENV_PATTERNS` for a ready-made provider-credential denylist.
+    `denied_commands`, which matches executable names exactly. The patterns
+    filter `env` only; the workspace's own environment is its provider's to
+    configure. See `LLM_API_KEY_ENV_PATTERNS` for a ready-made
+    provider-credential denylist.
     """
 
     tools: Sequence[str] = RUN_SCOPED_TOOL_NAMES

@@ -1,32 +1,29 @@
-"""Shell toolset -- gives agents the ability to run commands."""
+"""Shell toolset -- gives agents the ability to run commands inside the run's workspace."""
 
 from __future__ import annotations
 
 import fnmatch
 import os
+import posixpath
 import shlex
-import signal
-import subprocess
-import tempfile
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import anyio
-import anyio.abc
 from pydantic_ai import RunContext
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.tools import AgentDepsT
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset, ToolsetTool
+from pydantic_ai.workspaces import WorkspaceError, WorkspaceTimeoutError
 
 from pydantic_ai_harness._output import truncate_tail
-from pydantic_ai_harness.shell._limits import file_limit_status, limited_command, validate_file_limit
+from pydantic_ai_harness._workspace import workspace_path
+from pydantic_ai_harness.shell._jobs import CONTROL_TIMEOUT, Job, jobs_dir
+from pydantic_ai_harness.shell._limits import file_limit_status, limited_script, validate_file_limit
 from pydantic_ai_harness.shell._persistent import MAX_FOREGROUND_WAIT, CommandMode, run_persistent_command
 from pydantic_ai_harness.shell._policy import is_interactive_command, recoverable
-
-_IO_DRAIN_TIMEOUT: float = 2.0
-_KILL_GRACE_PERIOD: float = 2.0
 
 RUN_SCOPED_TOOL_NAMES: tuple[str, ...] = ('run_command', 'start_command', 'check_command', 'stop_command')
 """The default tools. Their commands are killed when the agent run ends."""
@@ -37,35 +34,38 @@ PERSISTENT_TOOL_NAME = 'shell'
 SHELL_TOOL_NAMES: tuple[str, ...] = (*RUN_SCOPED_TOOL_NAMES, PERSISTENT_TOOL_NAME)
 """Every tool `Shell` can register, in registration order."""
 
+_OUTPUT_BYTES_PER_CHAR = 4
+"""UTF-8 bytes per character at most: reading `4 * max_output_chars` bytes of a log keeps every character the cap keeps."""
+
 
 class _BackgroundProcess:
-    """State for a background command using temp files for output."""
+    """State for a run-scoped background command: its job and, once seen, how it ended."""
 
-    __slots__ = ('proc', 'stdout_path', 'stderr_path', 'finished', 'exit_code')
+    __slots__ = ('job', 'finished', 'exit_code')
 
-    def __init__(
-        self,
-        proc: anyio.abc.Process,
-        stdout_path: str,
-        stderr_path: str,
-    ) -> None:
-        self.proc = proc
-        self.stdout_path = stdout_path
-        self.stderr_path = stderr_path
+    def __init__(self, job: Job) -> None:
+        self.job = job
         self.finished = False
         self.exit_code: int | None = None
 
+    async def refresh(self) -> None:
+        if not self.finished:
+            running, exit_code = await self.job.status()
+            self.finished = not running
+            self.exit_code = exit_code
+
 
 class ShellToolset(FunctionToolset[AgentDepsT]):
-    """Gives an agent the ability to execute shell commands.
+    """Gives an agent the ability to execute shell commands in the run's workspace.
 
     Supports synchronous execution (run_command) and background processes
-    (start_command / check_command / stop_command). Output is streamed,
-    truncated to fit model context, and labelled with stdout/stderr/exit code.
-    The opt-in `shell` tool instead starts commands that outlive the run and
-    returns handles to their output and exit status.
+    (start_command / check_command / stop_command). Output is truncated to fit
+    model context and labelled with stdout/stderr/exit code. The opt-in `shell`
+    tool instead starts commands that outlive the run and returns handles to
+    their output and exit status. Every command, file, and signal goes through
+    `ctx.workspace`.
 
-    Optionally tracks the working directory across calls so ``cd`` persists.
+    Optionally tracks the working directory across calls so `cd` persists.
     """
 
     def __init__(
@@ -85,10 +85,12 @@ class ShellToolset(FunctionToolset[AgentDepsT]):
         tools: Sequence[str] = RUN_SCOPED_TOOL_NAMES,
     ) -> None:
         super().__init__()
-        self._cwd = cwd.resolve()
-        # The configured starting directory, never mutated by persist_cwd, so
-        # `for_run` can hand each run a fresh instance rooted back here.
-        self._initial_cwd = self._cwd
+        # The configured starting directory, as a workspace path, never mutated by persist_cwd,
+        # so `for_run` can hand each run a fresh instance rooted back here.
+        self._initial_cwd = cwd
+        self._cwd_spelling = workspace_path(cwd)
+        # The absolute workspace path `persist_cwd` last recorded; `None` means the configured one.
+        self._cwd: str | None = None
         self._allowed_commands = list(allowed_commands)
         self._denied_commands = list(denied_commands)
         self._denied_operators = list(denied_operators)
@@ -106,6 +108,7 @@ class ShellToolset(FunctionToolset[AgentDepsT]):
         self._denied_env_patterns = list(denied_env_patterns)
         self._tools = tuple(tools)
         self._background: dict[str, _BackgroundProcess] = {}
+        self._jobs_dir: str | None = None
 
         if self._allowed_commands and self._denied_commands:
             raise ValueError('Specify allowed_commands or denied_commands, not both.')
@@ -156,6 +159,12 @@ class ShellToolset(FunctionToolset[AgentDepsT]):
             tools=self._tools,
         )
 
+    async def get_tools(self, ctx: RunContext[AgentDepsT]) -> dict[str, ToolsetTool[AgentDepsT]]:
+        """Offer no tools on a read-only workspace: it refuses `run`, so no shell tool could succeed."""
+        if ctx.workspace.read_only:
+            return {}
+        return await super().get_tools(ctx)
+
     async def call_tool(
         self,
         name: str,
@@ -177,35 +186,47 @@ class ShellToolset(FunctionToolset[AgentDepsT]):
         return truncate_tail(result, self._max_output_chars)
 
     def _resolve_env(self) -> dict[str, str] | None:
-        """Compute the environment passed to spawned subprocesses.
+        """The variables handed to the workspace for each command, on top of its own environment.
 
-        Returns `None` -- meaning the subprocess inherits the parent env -- only
-        when neither `env` nor `denied_env_patterns` is configured, so the
-        default behavior is unchanged. An explicit `env` replaces inheritance
-        entirely; `denied_env_patterns` then strips matching names (glob, via
-        `fnmatch`) from whichever base applies, so the two compose: patterns
-        filter an explicit `env` just as they filter the inherited environment.
+        The workspace decides the base environment (the local workspace passes only `PATH`,
+        `HOME`, `LANG`, and `TMPDIR` from the host). `None` adds nothing. An explicit `env` is
+        added, minus names that match `denied_env_patterns` (glob, via `fnmatch`).
         """
-        if self._env is None and not self._denied_env_patterns:
+        if self._env is None:
             return None
-        base = dict(self._env) if self._env is not None else dict(os.environ)
         if not self._denied_env_patterns:
-            return base
+            return dict(self._env)
         return {
             name: value
-            for name, value in base.items()
+            for name, value in self._env.items()
             if not any(fnmatch.fnmatchcase(name, pattern) for pattern in self._denied_env_patterns)
         }
 
+    async def _cwd_for(self, ctx: RunContext[AgentDepsT]) -> str:
+        """The absolute workspace directory the next run-scoped command starts in."""
+        return self._cwd if self._cwd is not None else await ctx.workspace.resolve(self._cwd_spelling)
+
+    async def _jobs_base(self, ctx: RunContext[AgentDepsT]) -> str:
+        """The workspace directory holding this run's job and capture files, looked up once per run."""
+        if self._jobs_dir is None:
+            self._jobs_dir = await jobs_dir(ctx.workspace, self._resolve_env())
+        return self._jobs_dir
+
     async def __aexit__(self, *args: Any) -> None:
-        """Terminate all remaining background processes and clean up temp files."""
-        for bg in self._background.values():
-            if not bg.finished:
-                await self._kill_process_group(bg.proc)
-                with anyio.CancelScope(shield=True):
-                    await bg.proc.wait()
-                await bg.proc.aclose()
-            self._cleanup_bg_files(bg)
+        """Terminate all remaining background processes and remove their files from the workspace.
+
+        Cleanup is best-effort and shielded: the run may be ending because it was cancelled or
+        because the workspace became unusable, and neither should leave the exit stack half-run.
+        """
+        with anyio.move_on_after(CONTROL_TIMEOUT * 2, shield=True):
+            for bg in self._background.values():
+                try:
+                    await bg.refresh()
+                    if not bg.finished:
+                        await bg.job.kill()
+                    await bg.job.cleanup()
+                except (WorkspaceError, OSError):
+                    continue
         self._background.clear()
 
     def _first_denied_operator(self, command: str) -> str | None:
@@ -220,10 +241,10 @@ class ShellToolset(FunctionToolset[AgentDepsT]):
         (containers, sandboxes) for hard enforcement.
 
         Rejecting a command the OS could not accept belongs here rather than in
-        `recoverable`: `anyio.open_process` reports a NUL byte or an
-        unencodable character as the same `ValueError` whether it came from
-        `command`, the working directory, or a configured `env`, and only the
-        first of those is the model's to fix.
+        `recoverable`: a spawn reports a NUL byte or an unencodable character as
+        the same `ValueError` whether it came from `command`, the working
+        directory, or a configured `env`, and only the first of those is the
+        model's to fix.
         """
         if '\x00' in command:
             raise ModelRetry('The command contains a NUL byte, which cannot be passed to a process.')
@@ -256,97 +277,57 @@ class ShellToolset(FunctionToolset[AgentDepsT]):
         if self._allowed_commands and executable not in self._allowed_commands:
             raise PermissionError(f'Command {executable!r} is not in the allowed list.')
 
-    def _build_cwd_capture(self, command: str) -> tuple[str, Path | None]:
+    async def _build_cwd_capture(self, ctx: RunContext[AgentDepsT], command: str) -> tuple[str, str | None]:
         """Wrap a command to record its final working directory out-of-band.
 
-        `pwd` is written to a private temp file whose random path the agent's
-        command can't address, so command output can never spoof the tracked
-        cwd -- unlike parsing a sentinel out of stdout, where any command that
-        prints the sentinel string (or one using `;` to skip success-gating)
-        could redirect the cwd. Returns the wrapped command plus the temp-file
+        `pwd` is written to a file inside the workspace whose random path the
+        agent's command can't address, so command output can never spoof the
+        tracked cwd -- unlike parsing a sentinel out of stdout, where any command
+        that prints the sentinel string (or one using `;` to skip success-gating)
+        could redirect the cwd. Returns the wrapped command plus the capture
         path, or the command unchanged and `None` when cwd tracking is off.
         """
         if not self._persist_cwd:
             return command, None
-        fd, name = tempfile.mkstemp(prefix='harness_cwd_')
-        os.close(fd)
+        name = posixpath.join(await self._jobs_base(ctx), f'cwd-{uuid.uuid4().hex}')
         wrapped = f'{command}\n__harness_ec=$?\npwd > {shlex.quote(name)}\nexit $__harness_ec'
-        return wrapped, Path(name)
+        return wrapped, name
 
-    def _apply_captured_cwd(self, cwd_file: Path) -> None:
+    async def _apply_captured_cwd(self, ctx: RunContext[AgentDepsT], cwd_file: str) -> None:
         """Update the persistent cwd from the capture file, ignoring junk.
 
         The whole read-and-check is guarded, not just the read: the command it
         belongs to already succeeded, so a capture that isn't UTF-8 (a
         `UnicodeDecodeError`, which is a `ValueError` rather than an `OSError`)
-        or a recorded path the OS refuses to stat (`ENAMETOOLONG`, which
-        `Path.is_dir` propagates before 3.14 and swallows from 3.14 on) is
+        or a recorded path the workspace refuses to stat (`ENAMETOOLONG`) is
         bookkeeping the toolset can drop, not a tool failure to report.
         """
         try:
-            recorded = cwd_file.read_text(encoding='utf-8').strip()
-            if not recorded:
+            recorded = (await ctx.workspace.read_bytes(cwd_file)).decode('utf-8').strip()
+            if not posixpath.isabs(recorded):
                 return
-            candidate = Path(recorded)
-            if candidate.is_dir():
-                self._cwd = candidate
+            if (await ctx.workspace.stat(recorded)).is_dir:
+                self._cwd = posixpath.normpath(recorded)
         except (OSError, ValueError):
             return
 
-    async def _kill_process_group(self, proc: anyio.abc.Process) -> None:
-        """SIGTERM the process group, escalating to SIGKILL after the grace period."""
-        pid = proc.pid
-        try:
-            os.killpg(os.getpgid(pid), signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
+    async def _remove_capture(self, ctx: RunContext[AgentDepsT], cwd_file: str | None) -> None:
+        if cwd_file is None:
             return
-
-        with anyio.move_on_after(_KILL_GRACE_PERIOD):
-            await proc.wait()
-            return
-
-        # Still alive after grace period -- hard kill
-        try:
-            os.killpg(os.getpgid(pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
-
-    async def _drain_with_timeout(
-        self,
-        stdout_chunks: list[bytes],
-        stderr_chunks: list[bytes],
-        proc: anyio.abc.Process,
-    ) -> None:
-        """Drain remaining pipe data after kill (grandchildren may still hold the pipe)."""
-
-        async def _drain_stdout() -> None:
-            if proc.stdout is None:
-                return
+        with anyio.move_on_after(CONTROL_TIMEOUT, shield=True):
             try:
-                async for chunk in proc.stdout:
-                    stdout_chunks.append(chunk)
-            except (anyio.ClosedResourceError, anyio.BrokenResourceError):
+                await ctx.workspace.remove(cwd_file)
+            except FileNotFoundError:
                 pass
-
-        async def _drain_stderr() -> None:
-            if proc.stderr is None:
-                return
-            try:
-                async for chunk in proc.stderr:
-                    stderr_chunks.append(chunk)
-            except (anyio.ClosedResourceError, anyio.BrokenResourceError):
-                pass
-
-        with anyio.move_on_after(_IO_DRAIN_TIMEOUT):
-            async with anyio.create_task_group() as tg:
-                tg.start_soon(_drain_stdout)
-                tg.start_soon(_drain_stderr)
 
     @recoverable
-    async def run_command(self, command: str, *, timeout_seconds: float | None = None) -> str:
+    async def run_command(
+        self, ctx: RunContext[AgentDepsT], command: str, *, timeout_seconds: float | None = None
+    ) -> str:
         """Execute a shell command and return its output.
 
         Args:
+            ctx: The current agent run context.
             command: The shell command to run.
             timeout_seconds: Maximum seconds to wait (default: 30).
 
@@ -356,68 +337,31 @@ class ShellToolset(FunctionToolset[AgentDepsT]):
         self._check_command(command)
         timeout = timeout_seconds if timeout_seconds is not None else self._default_timeout
 
-        actual_command, cwd_file = self._build_cwd_capture(command)
+        actual_command, cwd_file = await self._build_cwd_capture(ctx, command)
         try:
-            proc = await anyio.open_process(
-                limited_command(actual_command, self._max_file_bytes),
-                cwd=self._cwd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                start_new_session=True,
-                env=self._resolve_env(),
-            )
-            stdout_chunks: list[bytes] = []
-            stderr_chunks: list[bytes] = []
             try:
-                assert proc.stdout is not None
-                assert proc.stderr is not None
+                result = await ctx.workspace.run(
+                    limited_script(actual_command, self._max_file_bytes),
+                    shell=True,
+                    cwd=await self._cwd_for(ctx),
+                    env=self._resolve_env(),
+                    timeout=timeout,
+                )
+            except WorkspaceTimeoutError as e:
+                return _labelled(e.stdout, e.stderr, empty=None, trailer=f'[Command timed out after {timeout}s]')
 
-                async def _read_stdout() -> None:
-                    assert proc.stdout is not None
-                    async for chunk in proc.stdout:
-                        stdout_chunks.append(chunk)
-
-                async def _read_stderr() -> None:
-                    assert proc.stderr is not None
-                    async for chunk in proc.stderr:
-                        stderr_chunks.append(chunk)
-
-                with anyio.fail_after(timeout):
-                    async with anyio.create_task_group() as tg:
-                        tg.start_soon(_read_stdout)
-                        tg.start_soon(_read_stderr)
-                    await proc.wait()
-            except TimeoutError:
-                await self._kill_process_group(proc)
-                with anyio.CancelScope(shield=True):
-                    await proc.wait()
-                    await self._drain_with_timeout(stdout_chunks, stderr_chunks, proc)
-                return f'[Command timed out after {timeout}s]'
-            finally:
-                await proc.aclose()
-
-            stdout = b''.join(stdout_chunks).decode('utf-8', errors='replace')
-            stderr = b''.join(stderr_chunks).decode('utf-8', errors='replace')
-
-            parts: list[str] = []
-            if stdout:
-                parts.append(f'[stdout]\n{stdout}')
-            if stderr:
-                parts.append(f'[stderr]\n{stderr}')
-            output = '\n'.join(parts) if parts else '(no output)'
-
-            exit_code = proc.returncode if proc.returncode is not None else 0
+            output = _labelled(result.stdout, result.stderr, empty='(no output)')
+            exit_code = result.exit_code
 
             if cwd_file is not None and exit_code == 0:
-                self._apply_captured_cwd(cwd_file)
+                await self._apply_captured_cwd(ctx, cwd_file)
 
             if exit_code != 0:
                 output = f'{output}\n[exit code: {exit_code}]'
                 output += file_limit_status(exit_code, self._max_file_bytes)
             return output
         finally:
-            if cwd_file is not None:
-                cwd_file.unlink(missing_ok=True)
+            await self._remove_capture(ctx, cwd_file)
 
     @recoverable
     async def shell(
@@ -448,20 +392,22 @@ class ShellToolset(FunctionToolset[AgentDepsT]):
         return await run_persistent_command(
             ctx,
             command,
-            cwd=self._initial_cwd,
+            base=await self._jobs_base(ctx),
+            cwd=await ctx.workspace.resolve(self._cwd_spelling),
             env=self._resolve_env(),
             mode=mode,
             timeout=self._default_timeout if timeout is None else timeout,
         )
 
     @recoverable
-    async def start_command(self, command: str) -> str:
+    async def start_command(self, ctx: RunContext[AgentDepsT], command: str) -> str:
         """Start a long-running command in the background (e.g. a server or watcher).
 
         Callers MUST call `stop_command(command_id)` when done to terminate the
         process and clean up temporary output files.
 
         Args:
+            ctx: The current agent run context.
             command: The shell command to run in the background.
 
         Returns:
@@ -469,65 +415,31 @@ class ShellToolset(FunctionToolset[AgentDepsT]):
         """
         self._check_command(command)
         command_id = uuid.uuid4().hex[:12]
-
-        stdout_file = tempfile.NamedTemporaryFile(mode='w+b', prefix=f'harness_{command_id}_out_', delete=False)
-        stderr_file = tempfile.NamedTemporaryFile(mode='w+b', prefix=f'harness_{command_id}_err_', delete=False)
-
-        try:
-            proc = await anyio.open_process(
-                limited_command(command, self._max_file_bytes),
-                cwd=self._cwd,
-                stdout=stdout_file,
-                stderr=stderr_file,
-                start_new_session=True,
-                env=self._resolve_env(),
-            )
-        except BaseException:
-            stdout_file.close()
-            stderr_file.close()
-            os.unlink(stdout_file.name)
-            os.unlink(stderr_file.name)
-            raise
-
-        stdout_file.close()
-        stderr_file.close()
-
-        bg = _BackgroundProcess(
-            proc=proc,
-            stdout_path=stdout_file.name,
-            stderr_path=stderr_file.name,
+        job = await Job.launch(
+            ctx.workspace,
+            command,
+            base=await self._jobs_base(ctx),
+            cwd=await self._cwd_for(ctx),
+            env=self._resolve_env(),
+            combined=False,
+            file_limit=self._max_file_bytes,
         )
-        self._background[command_id] = bg
-
+        self._background[command_id] = _BackgroundProcess(job)
         return f'Started background command: {command!r}\nID: {command_id}'
 
-    def _read_bg_output(self, bg: _BackgroundProcess) -> tuple[str, str]:
-        """Read current output from background process temp files."""
-        try:
-            stdout = Path(bg.stdout_path).read_text(encoding='utf-8', errors='replace')
-        except OSError:
-            stdout = ''
-        try:
-            stderr = Path(bg.stderr_path).read_text(encoding='utf-8', errors='replace')
-        except OSError:
-            stderr = ''
-        return stdout, stderr
+    async def _read_bg_output(self, bg: _BackgroundProcess) -> tuple[str, str]:
+        """The retained tail of a background command's stdout and stderr logs."""
+        limit = self._max_output_chars * _OUTPUT_BYTES_PER_CHAR
+        stdout = await bg.job.tail(bg.job.output_path, limit)
+        stderr = await bg.job.tail(bg.job.stderr_path, limit)
+        return stdout.decode('utf-8', errors='replace'), stderr.decode('utf-8', errors='replace')
 
-    def _cleanup_bg_files(self, bg: _BackgroundProcess) -> None:
-        """Remove temp files for a background process."""
-        try:
-            os.unlink(bg.stdout_path)
-        except OSError:
-            pass
-        try:
-            os.unlink(bg.stderr_path)
-        except OSError:
-            pass
-
-    async def check_command(self, command_id: str) -> str:
+    @recoverable
+    async def check_command(self, ctx: RunContext[AgentDepsT], command_id: str) -> str:
         """Check the status and recent output of a background command.
 
         Args:
+            ctx: The current agent run context.
             command_id: The ID returned by start_command.
 
         Returns:
@@ -537,27 +449,21 @@ class ShellToolset(FunctionToolset[AgentDepsT]):
         if bg is None:
             return f'[Error: unknown command ID {command_id!r}]'
 
-        if not bg.finished and bg.proc.returncode is not None:
-            bg.exit_code = bg.proc.returncode
-            bg.finished = True
-
-        stdout, stderr = self._read_bg_output(bg)
+        await bg.refresh()
+        stdout, stderr = await self._read_bg_output(bg)
 
         status = 'finished' if bg.finished else 'running'
-        output_sections: list[str] = []
-        if stdout:
-            output_sections.append(f'[stdout]\n{stdout}')
-        if stderr:
-            output_sections.append(f'[stderr]\n{stderr}')
-        parts = ['\n'.join(output_sections) if output_sections else '(no output yet)', f'[status: {status}]']
+        parts = [_labelled(stdout, stderr, empty='(no output yet)'), f'[status: {status}]']
         if bg.finished and bg.exit_code is not None:
             parts.append(f'[exit code: {bg.exit_code}]' + file_limit_status(bg.exit_code, self._max_file_bytes))
         return '\n'.join(parts)
 
-    async def stop_command(self, command_id: str) -> str:
+    @recoverable
+    async def stop_command(self, ctx: RunContext[AgentDepsT], command_id: str) -> str:
         """Stop a background command and return its final output.
 
         Args:
+            ctx: The current agent run context.
             command_id: The ID returned by start_command.
 
         Returns:
@@ -567,25 +473,35 @@ class ShellToolset(FunctionToolset[AgentDepsT]):
         if bg is None:
             return f'[Error: unknown command ID {command_id!r}]'
 
+        await bg.refresh()
         if not bg.finished:
-            await self._kill_process_group(bg.proc)
             with anyio.CancelScope(shield=True):
-                await bg.proc.wait()
-            bg.exit_code = bg.proc.returncode
+                await bg.job.kill()
+                # A group that ignored SIGTERM is killed with SIGKILL, which its wrapper cannot
+                # outlive to publish a status: the command is stopped, with no exit code to report.
+                await bg.refresh()
             bg.finished = True
 
-        stdout, stderr = self._read_bg_output(bg)
+        stdout, stderr = await self._read_bg_output(bg)
 
-        self._cleanup_bg_files(bg)
+        await bg.job.cleanup()
         del self._background[command_id]
-        await bg.proc.aclose()
 
-        output_sections: list[str] = []
-        if stdout:
-            output_sections.append(f'[stdout]\n{stdout}')
-        if stderr:
-            output_sections.append(f'[stderr]\n{stderr}')
-        parts = ['\n'.join(output_sections) if output_sections else '(no output)', '[stopped]']
+        parts = [_labelled(stdout, stderr, empty='(no output)'), '[stopped]']
         if bg.exit_code is not None:
             parts.append(f'[exit code: {bg.exit_code}]' + file_limit_status(bg.exit_code, self._max_file_bytes))
         return '\n'.join(parts)
+
+
+def _labelled(stdout: str, stderr: str, *, empty: str | None, trailer: str | None = None) -> str:
+    """`[stdout]`/`[stderr]` sections, `empty` when both are blank, and an optional last line."""
+    sections: list[str] = []
+    if stdout:
+        sections.append(f'[stdout]\n{stdout}')
+    if stderr:
+        sections.append(f'[stderr]\n{stderr}')
+    if not sections and empty is not None:
+        sections.append(empty)
+    if trailer is not None:
+        sections.append(trailer)
+    return '\n'.join(sections)
