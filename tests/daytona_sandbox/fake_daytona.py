@@ -1,4 +1,14 @@
-"""Controllable fake for the Daytona SDK boundary."""
+"""Controllable fake for the Daytona SDK boundary.
+
+The exception classes and `SandboxState` are the real ones from the installed SDK, so the
+backend's `isinstance` and state checks run against what production raises and reports.
+
+Deletion follows the SDK: `AsyncSandbox.delete()` returns once Daytona accepts the request, and
+the sandbox stays visible to `get` and `refresh_data` in the `destroying` state until the control
+plane removes it (`FakeDaytona.purge`), after which lookups raise `DaytonaNotFoundError`. Toolbox
+calls to a deleted sandbox raise `DaytonaNotFoundError` too, the same type as a missing path, which
+is the ambiguity the backend has to resolve.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +17,7 @@ from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Protocol
 
-from daytona import DaytonaNotFoundError
+from daytona import DaytonaNotFoundError, DaytonaValidationError, SandboxState
 
 
 class CreateParams(Protocol):
@@ -30,6 +40,7 @@ class FakeProcess:
         env: dict[str, str] | None = None,
         timeout: int | None = None,
     ) -> SimpleNamespace:
+        self.owner.check_alive()
         if command == 'pwd -P':
             self.owner.workdir_calls += 1
             self.owner.workdir_started.set()
@@ -42,6 +53,7 @@ class FakeProcess:
         return SimpleNamespace(result='', exit_code=self.owner.mkdir_exit_code)
 
     async def create_session(self, session_id: str, request_timeout: float | None = None) -> None:
+        self.owner.check_alive()
         if self.owner.process_create_gate is not None:
             await self.owner.process_create_gate.wait()
         self.owner.process_sessions.add(session_id)
@@ -112,6 +124,10 @@ class FakeFileSystem:
 
     async def download_file(self, path: str, timeout: int | None = None) -> bytes:
         self._raise_if_needed()
+        if path in self.owner.directories:
+            raise DaytonaValidationError(f'path is a directory: {path}', status_code=400)
+        if self.owner.download_error is not None:
+            raise self.owner.download_error
         data = self.owner.files.get(path)
         if data is None:
             raise DaytonaNotFoundError(f'no file: {path}')
@@ -160,6 +176,7 @@ class FakeFileSystem:
             self.owner.directories = {key for key in self.owner.directories if not key.startswith(prefix)}
 
     def _raise_if_needed(self) -> None:
+        self.owner.check_alive()
         if self.owner.fs_error is not None:
             raise self.owner.fs_error
 
@@ -170,6 +187,12 @@ class FakeSandbox:
         self.id = sandbox_id
         self.name = name or sandbox_id
         self.started = False
+        self.state = SandboxState.STARTED
+        self.purged = False
+        self.refresh_error: Exception | None = None
+        # What a toolbox call to a deleted sandbox raises, when not the default 404.
+        self.gone_error: Exception | None = None
+        self.download_error: Exception | None = None
         self.start_calls: list[float | None] = []
         self.files: dict[str, bytes] = {}
         self.directories: set[str] = set()
@@ -200,6 +223,21 @@ class FakeSandbox:
     async def start(self, timeout: float | None = 60) -> None:
         self.start_calls.append(timeout)
         self.started = True
+
+    async def refresh_data(self, request_timeout: float | None = None) -> None:
+        if self.refresh_error is not None:
+            raise self.refresh_error
+        if self.purged:
+            raise DaytonaNotFoundError(f'Sandbox with ID or name {self.id} not found', status_code=404)
+
+    async def delete(self, timeout: float | None = 60, wait: bool = False) -> None:
+        self.state = SandboxState.DESTROYING
+
+    def check_alive(self) -> None:
+        if self.state in (SandboxState.DESTROYING, SandboxState.DESTROYED):
+            raise self.gone_error or DaytonaNotFoundError(
+                f'Sandbox with ID or name {self.id} not found', status_code=404
+            )
 
 
 class FakeClient:
@@ -246,6 +284,12 @@ class FakeDaytona:
 
     def client(self) -> FakeClient:
         return FakeClient(self)
+
+    def purge(self, sandbox: FakeSandbox) -> None:
+        """Finish a deletion: the control plane forgets the sandbox."""
+        sandbox.state = SandboxState.DESTROYED
+        sandbox.purged = True
+        self.sandboxes.remove(sandbox)
 
     def sandbox(self, sandbox_id: str = 'sb-existing') -> FakeSandbox:
         sandbox = FakeSandbox(sandbox_id)

@@ -10,7 +10,7 @@ from typing import Any
 import anyio
 import daytona
 import pytest
-from daytona import DaytonaAuthenticationError, DaytonaConnectionError
+from daytona import DaytonaAuthenticationError, DaytonaConnectionError, DaytonaError
 from pydantic_ai.workspaces import (
     SupportsFilesystem,
     Workspace,
@@ -250,6 +250,101 @@ class TestErrorsAndFilesystem:
         backend = await started()
         with pytest.raises(FileNotFoundError):
             await backend.stat('/missing')
+
+
+class TestDeletedSandbox:
+    """A deleted sandbox must never look like a missing file."""
+
+    @pytest.mark.parametrize('operation', ['read_bytes', 'stat', 'list_dir', 'remove', 'exists', 'make_dir'])
+    async def test_filesystem_on_a_deleted_sandbox_is_unavailable(
+        self, fake_daytona: FakeDaytona, operation: str
+    ) -> None:
+        backend = await started()
+        await (await backend.get_client()).delete()
+        with pytest.raises(WorkspaceUnavailableError, match='no longer exists'):
+            await getattr(backend, operation)('/note')
+
+    async def test_write_on_a_deleted_sandbox_is_unavailable(self, fake_daytona: FakeDaytona) -> None:
+        backend = await started()
+        await (await backend.get_client()).delete()
+        with pytest.raises(WorkspaceUnavailableError):
+            await backend.write_bytes('/dir/note', b'x')
+        with pytest.raises(WorkspaceUnavailableError):
+            await backend.write_bytes('/note', b'x')
+
+    async def test_commands_on_a_deleted_sandbox_are_unavailable(self, fake_daytona: FakeDaytona) -> None:
+        backend = await started()
+        await (await backend.get_client()).delete()
+        with pytest.raises(WorkspaceUnavailableError):
+            await backend.run(['true'])
+        with pytest.raises(WorkspaceUnavailableError):
+            await backend.working_dir()
+
+    async def test_a_purged_sandbox_is_unavailable(self, fake_daytona: FakeDaytona) -> None:
+        backend = await started()
+        sandbox = fake_daytona.sandboxes[0]
+        await sandbox.delete()
+        fake_daytona.purge(sandbox)
+        with pytest.raises(WorkspaceUnavailableError):
+            await backend.read_bytes('/note')
+
+    async def test_a_non_404_answer_from_a_deleted_sandbox_is_unavailable(self, fake_daytona: FakeDaytona) -> None:
+        # The toolbox's answer for a deleted sandbox is not documented; the control-plane
+        # lookup decides regardless of the error type.
+        backend = await started()
+        sandbox = fake_daytona.sandboxes[0]
+        await sandbox.delete()
+        sandbox.gone_error = DaytonaError('bad gateway', status_code=502)
+        with pytest.raises(WorkspaceUnavailableError):
+            await backend.working_dir()
+        with pytest.raises(WorkspaceUnavailableError):
+            await backend.read_bytes('/note')
+        with pytest.raises(WorkspaceUnavailableError):
+            await backend.exists('/note')
+
+    @pytest.mark.parametrize('purged', [False, True])
+    async def test_attaching_to_a_deleted_sandbox_is_unavailable(self, fake_daytona: FakeDaytona, purged: bool) -> None:
+        sandbox = fake_daytona.sandbox('sb-deleted')
+        await sandbox.delete()
+        if purged:
+            fake_daytona.purge(sandbox)
+        backend = DaytonaSandboxBackend(ref=WorkspaceRef(provider='daytona', id='sb-deleted'))
+        with pytest.raises(WorkspaceUnavailableError):
+            await backend.working_dir()
+        assert sandbox.start_calls == []
+        assert fake_daytona.closed_clients == 1
+
+    async def test_a_missing_path_on_a_live_sandbox_is_file_not_found(self, fake_daytona: FakeDaytona) -> None:
+        backend = await started()
+        with pytest.raises(FileNotFoundError):
+            await backend.read_bytes('/missing')
+        with pytest.raises(FileNotFoundError):
+            await backend.remove('/missing')
+        assert await backend.exists('/missing') is False
+
+    async def test_an_inconclusive_lookup_keeps_the_path_error(self, fake_daytona: FakeDaytona) -> None:
+        backend = await started()
+        fake_daytona.sandboxes[0].refresh_error = DaytonaConnectionError('control plane down')
+        with pytest.raises(FileNotFoundError):
+            await backend.read_bytes('/missing')
+        fake_daytona.sandboxes[0].workdir_error = DaytonaConnectionError('toolbox down')
+        with pytest.raises(WorkspaceError, match='toolbox down') as exc_info:
+            await backend.working_dir()
+        assert not isinstance(exc_info.value, WorkspaceUnavailableError)
+
+    async def test_reading_a_directory_is_a_directory_error(self, fake_daytona: FakeDaytona) -> None:
+        backend = await started()
+        await backend.make_dir('/pkg')
+        with pytest.raises(IsADirectoryError):
+            await backend.read_bytes('/pkg')
+
+    async def test_other_read_failures_stay_provider_errors(self, fake_daytona: FakeDaytona) -> None:
+        backend = await started()
+        await backend.write_bytes('/note', b'x')
+        fake_daytona.sandboxes[0].download_error = DaytonaError('bad gateway', status_code=502)
+        with pytest.raises(WorkspaceError, match='bad gateway') as exc_info:
+            await backend.read_bytes('/note')
+        assert not isinstance(exc_info.value, WorkspaceUnavailableError)
 
 
 class TestLazyOperations:
