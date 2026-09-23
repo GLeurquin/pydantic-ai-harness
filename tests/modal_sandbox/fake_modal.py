@@ -13,10 +13,15 @@ production failures.
 
 from __future__ import annotations
 
+import os
 import posixpath
+import shutil
+import subprocess
 import types
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 import anyio.lowlevel
@@ -242,6 +247,64 @@ class _FakeFilesystem:
             raise self._workspace.fs_error
 
 
+@contextmanager
+def _host_errors(remote_path: str) -> Generator[None]:
+    """Raise Modal's filesystem exceptions for the host errors the real SDK reports as them."""
+    try:
+        yield
+    except FileNotFoundError as e:
+        raise FakeSandboxFilesystemNotFoundError(f'No such file or directory: {remote_path}') from e
+    except IsADirectoryError as e:
+        raise FakeSandboxFilesystemIsADirectoryError(f'Is a directory: {remote_path}') from e
+
+
+class _HostFilesystem:
+    """Mirrors `workspace.filesystem` on the real host filesystem, for the conformance suite.
+
+    The suite checks that commands and filesystem methods see one environment, which the
+    in-memory store cannot show; here both act on the same host paths.
+    """
+
+    def __init__(self) -> None:
+        self.read_bytes = _AioCallable(self._read_bytes)
+        self.write_bytes = _AioCallable(self._write_bytes)
+        self.list_files = _AioCallable(self._list_files)
+        self.stat = _AioCallable(self._stat)
+        self.make_directory = _AioCallable(self._make_directory)
+        self.remove = _AioCallable(self._remove)
+
+    def _read_bytes(self, remote_path: str) -> bytes:
+        with _host_errors(remote_path):
+            return Path(remote_path).read_bytes()
+
+    def _write_bytes(self, data: bytes, remote_path: str) -> None:
+        with _host_errors(remote_path):
+            Path(remote_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(remote_path).write_bytes(data)
+
+    def _list_files(self, remote_path: str) -> list[FileInfo]:
+        with _host_errors(remote_path):
+            children = sorted(Path(remote_path).iterdir())
+        return [FileInfo(child.name, child.is_dir(), child.stat().st_size) for child in children]
+
+    def _stat(self, remote_path: str) -> FileInfo:
+        with _host_errors(remote_path):
+            info = Path(remote_path).stat()
+        return FileInfo(posixpath.basename(remote_path), Path(remote_path).is_dir(), info.st_size)
+
+    def _make_directory(self, remote_path: str, *, create_parents: bool = True) -> None:
+        with _host_errors(remote_path):
+            Path(remote_path).mkdir(parents=create_parents, exist_ok=True)
+
+    def _remove(self, remote_path: str, *, recursive: bool = False) -> None:
+        path = Path(remote_path)
+        with _host_errors(remote_path):
+            if path.is_dir() and recursive:
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+
+
 class FakeSandbox:
     def __init__(self, control: FakeModal, object_id: str) -> None:
         self._control = control
@@ -261,11 +324,42 @@ class FakeSandbox:
         self.poll_result: int | None = None
         self.poll_error: Exception | None = None
         self.poll_calls = 0
-        self._filesystem = _FakeFilesystem(self)
+        self.terminate = _AioCallable(self._terminate)
+        self.workdir: str | None = None
+        self._filesystem: _FakeFilesystem | _HostFilesystem = _FakeFilesystem(self)
+        if control.host_root is not None:
+            self.exec = _AioCallable(self._host_exec)
+            self._filesystem = _HostFilesystem()
 
     @property
-    def filesystem(self) -> _FakeFilesystem:
+    def filesystem(self) -> _FakeFilesystem | _HostFilesystem:
         return self._filesystem
+
+    def _terminate(self) -> None:
+        # A terminated sandbox still resolves by id; `poll` reporting an exit is how it shows.
+        self.poll_result = 0
+
+    def _host_exec(
+        self,
+        *args: str,
+        timeout: int | None = None,
+        workdir: str | None = None,
+        env: dict[str, str | None] | None = None,
+        text: bool = True,
+    ) -> _FakeProcess:
+        # Runs the command on the host, rooted at the sandbox's working directory, so the
+        # conformance suite sees real exit codes, output, `cwd`, `env`, and deadlines.
+        argv = list(args)
+        self.exec_calls.append(ExecCall(argv=argv, timeout=timeout, text=text, workdir=workdir, env=env))
+        assert self._control.host_root is not None
+        variables = {**os.environ, **{key: value for key, value in (env or {}).items() if value is not None}}
+        cwd = workdir or self.workdir or str(self._control.host_root)
+        try:
+            completed = subprocess.run(argv, cwd=cwd, env=variables, capture_output=True, timeout=timeout, check=False)
+        except subprocess.TimeoutExpired as expired:
+            # Modal reports a command stopped at its deadline with exit code -1.
+            return _FakeProcess(expired.stdout or b'', expired.stderr or b'', -1, None, False)
+        return _FakeProcess(completed.stdout, completed.stderr, completed.returncode, None, False)
 
     def _exec(
         self,
@@ -324,6 +418,8 @@ class FakeModal:
         self.wait_error: Exception | None = None
         self.wait_hangs = False
         self.stdout_hangs = False
+        # When set, sandboxes run commands and file operations on the host under this directory.
+        self.host_root: Path | None = None
         self.module = self._build_module()
 
     @property
@@ -390,6 +486,7 @@ class FakeModal:
             control.owned_creates += 1
             suffix = '' if control.owned_creates == 1 else f'-{control.owned_creates}'
             workspace = FakeSandbox(control, f'sb-owned{suffix}')
+            workspace.workdir = workdir
             control.sandboxes.append(workspace)
             return workspace
 
