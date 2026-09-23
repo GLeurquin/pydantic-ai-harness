@@ -23,6 +23,7 @@ _FACTORIES = (
     ('dynamic_workflow', 'dynamic_workflow:DynamicWorkflow'),
     ('exa_agent', 'exa:ExaAgent'),
     ('exa_search', 'exa:ExaSearch'),
+    ('jev_capability_composer', 'jev:JevCapabilityComposer'),
     ('filesystem', 'filesystem:FileSystem'),
     ('input_guardrail', 'guardrails:InputGuardrail'),
     ('output_guardrail', 'guardrails:OutputGuardrail'),
