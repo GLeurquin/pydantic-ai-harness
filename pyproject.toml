@@ -79,6 +79,10 @@ acp = [
 exa = [
     "exa-py>=2.16.0",
 ]
+# `Choices` and `UseEnumMemberDocstrings` first shipped in 2.46.0.
+jev = [
+    "pydantic-ai-slim[typesafe]>=2.46.0",
+]
 aws-lambda = [
     "aws-durable-execution-sdk-python>=1.7.0 ; python_full_version >= '3.11'",
     "pydantic-ai-slim>=2.44.0",
