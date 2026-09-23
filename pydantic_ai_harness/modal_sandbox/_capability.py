@@ -57,8 +57,8 @@ _LEGACY_ARGUMENTS: Mapping[str, str] = {
 }
 
 
-# The tools of `Shell` and `FileSystem`, which run against `ctx.workspace`. A run that has none of
-# them, and no custom tool by one of these names, gives the model no way to reach the sandbox.
+# The tools of `Shell` and `FileSystem`, which run against `ctx.workspace`. A run with none of these
+# names most likely has no way to reach the sandbox; custom tools by other names are not detected.
 _WORKSPACE_TOOL_NAMES = frozenset(
     {
         'run_command',
@@ -81,8 +81,8 @@ _WORKSPACE_TOOL_NAMES = frozenset(
 
 _NO_WORKSPACE_TOOLS_MESSAGE = (
     "`ModalSandbox` supplies the Modal sandbox as the run's `ctx.workspace` and registers no tools of its own, "
-    'and this agent has no tool that uses it. Add `Shell()` and/or `FileSystem()` alongside it, or write tools '
-    f'that use `ctx.workspace`. See {UPGRADE_DOCS_URL}'
+    'and this run has no `Shell` or `FileSystem` tool. Add `Shell()` and/or `FileSystem()` alongside it, or write '
+    f'tools that use `ctx.workspace`. See {UPGRADE_DOCS_URL}'
 )
 
 _warned_no_workspace_tools = False
