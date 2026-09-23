@@ -135,8 +135,11 @@ the configured telemetry destination first.
 uv run clai2 logfire
 ```
 
-The first interactive stock CLI launch shows an inline picker, including upgrades
-from versions without onboarding. `Log in to Logfire` is selected by default;
+The first interactive stock CLI launch shows a setup picker, including upgrades
+from versions without onboarding. The login choice, browser authentication, project
+choice, and project setup replace one another on a temporary screen. Success,
+skip, cancellation, or failure restores your terminal screen and adds only the
+final result. Scrollback is preserved. `Log in to Logfire` is selected by default;
 Up/Down moves and Enter selects. Login runs Logfire's browser authentication, then
 lets you use an existing project or create one. Selecting login starts setup, not
 conversation export. `Continue without Logfire`, or Esc at the initial picker,

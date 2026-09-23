@@ -1101,8 +1101,11 @@ and does not instrument HTTP clients or unrelated agents globally.
 uv run clai2 logfire
 ```
 
-Your first interactive launch shows an inline picker, including when you upgrade
+Your first interactive launch shows a setup picker, including when you upgrade
 from a version without onboarding. `Log in to Logfire` is selected by default.
+The login choice, browser authentication, project choice, and project setup each
+replace the previous step on a temporary screen. When setup ends, your previous
+terminal screen returns with only the final result added. Scrollback is preserved.
 Use Up/Down to move and Enter to select. Login uses the installed
 [Logfire CLI](https://logfire.pydantic.dev/docs/reference/cli/) to authenticate
 in your browser, then offers an existing or new project. Selecting login starts

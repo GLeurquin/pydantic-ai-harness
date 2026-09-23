@@ -11,13 +11,12 @@ import keyring
 import pytest
 from keyring.errors import NoKeyringError
 from pydantic import ValidationError
-from rich.console import Console
 from rich.text import Text
 
 from pydantic_clai2.config import PluginSettings
 from pydantic_clai2.credential_store import load_codex_credentials, save_codex_credentials
 from pydantic_clai2.logfire_credentials import load_logfire_credentials, logfire_directory
-from pydantic_clai2.logfire_onboarding import connect_logfire, logfire_command, onboard_logfire
+from pydantic_clai2.logfire_onboarding import logfire_command, onboard_logfire
 from pydantic_clai2.settings_store import SettingsStore
 
 CREDENTIALS = json.dumps(
@@ -70,6 +69,7 @@ class LogfireCLI:
         assert check and timeout == 300
         self.commands.append(command[4:])
         self.directories.append(cwd)
+        sys.stdout.write(f'Logfire {command[4]} output\n')
         if self.failure is not None:
             raise self.failure
         if command[4] == 'projects':
@@ -103,7 +103,9 @@ def test_decline_is_remembered_on_upgrade(
     assert 'What gets sent' in output
     assert 'Prompts, responses, tool arguments/results, and images' in output
     assert 'Log in to Logfire' in output and 'Continue without Logfire' in output
-    assert '\x1b[?1049h' not in output
+    assert output.count('\x1b[?1049h') == output.count('\x1b[?1049l') == 1
+    assert '\x1b[3J' not in output
+    assert 'Logfire disabled.' in output.split('\x1b[?1049l')[1]
     assert store.plugins()[1] == PluginSettings(id='logfire', factory='pydantic_clai2.logfire', enabled=False)
     monkeypatch.setattr(sys, 'stdin', TerminalInput('login\n'))
     reopened = SettingsStore(path)
@@ -135,6 +137,14 @@ def test_login_saves_only_project_credentials_and_cleans_temporary_files(
     assert not logfire_directory().exists()
     output = capsys.readouterr().out
     assert 'OS keyring' in output and 'test-write-token' not in output
+    assert output.count('\x1b[?1049h') == output.count('\x1b[?1049l') == 1
+    assert '\x1b[3J' not in output
+    introduction, auth, project, selection = output.split('\x1b[2J')
+    assert 'What gets sent' in introduction and 'Logfire auth output' not in introduction
+    assert 'Logfire auth output' in auth and 'What gets sent' not in auth
+    assert 'Use an existing project' in project and 'Logfire auth output' not in project
+    assert 'Logfire projects output' in selection and 'Use an existing project' not in selection
+    assert 'Logfire connected.' in output.split('\x1b[?1049l')[1]
 
 
 @pytest.mark.parametrize('kind', ['token', 'saved', 'legacy', 'override', 'project', 'file', 'package'])
@@ -196,7 +206,8 @@ def test_failed_or_cancelled_login_preserves_choices_and_cleans_up(
     assert load_logfire_credentials() is None
     assert all(not directory.exists() for directory in logfire_cli.directories)
     output = capsys.readouterr().out
-    assert 'try again' in output and 'do-not-print' not in output
+    assert 'try again' in output.split('\x1b[?1049l')[1]
+    assert 'do-not-print' not in output
 
 
 @pytest.mark.parametrize('enabled', [None, False, True])
@@ -279,6 +290,7 @@ def test_explicit_setup_does_not_replace_custom_plugin(
 
 
 def test_private_file_fallback_is_reported(
+    tmp_path: Path,
     terminal: Callable[[str], None],
     monkeypatch: pytest.MonkeyPatch,
     logfire_cli: LogfireCLI,
@@ -288,9 +300,9 @@ def test_private_file_fallback_is_reported(
         raise NoKeyringError
 
     monkeypatch.setattr(keyring, 'set_password', unavailable)
-    terminal('new\n')
+    terminal('login\nnew\n')
     monkeypatch.setenv('LOGFIRE_TOKEN', 'environment-token')
-    connect_logfire(console=Console())
+    logfire_command(SettingsStore(tmp_path / 'config.db'), [])
     path = logfire_directory().parent / 'credentials-logfire.json'
     assert path.stat().st_mode & 0o777 == 0o600
     output = ' '.join(Text.from_ansi(capsys.readouterr().out).plain.split())

@@ -128,8 +128,11 @@ appear in the transcript and reach the model as a one-item list under the questi
 
 The built-in logfire plugin (pydantic_clai2.logfire) is enabled by default in the
 stock CLI. It contributes core's Instrumentation capability using an isolated
-Logfire instance. The first interactive CLI launch shows an inline picker,
-including upgrades from versions without onboarding. Log in to Logfire is selected
+Logfire instance. The first interactive CLI launch shows a setup picker,
+including upgrades from versions without onboarding. Login choice, browser
+authentication, project choice, and project setup replace one another on a
+temporary screen. Setup restores the previous terminal screen on every exit;
+only the final result is added, with scrollback preserved. Log in to Logfire is selected
 by default; Up/Down moves and Enter selects. Login starts browser authentication,
 then an existing/new project picker. Conversation export starts after setup.
 Continue without Logfire, or Esc at the initial picker, disables the plugin;
