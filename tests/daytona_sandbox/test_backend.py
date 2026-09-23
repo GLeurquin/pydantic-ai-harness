@@ -372,8 +372,9 @@ async def test_supplied_client_survives_acquisition_failure(fake_daytona: FakeDa
 async def test_create_timeout_is_translated(fake_daytona: FakeDaytona, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr('pydantic_ai_harness.daytona_sandbox._backend._CREATE_TIMEOUT', 0.05)
     fake_daytona.create_gate = asyncio.Event()
-    with pytest.raises(WorkspaceTimeoutError, match='creation did not complete'):
+    with pytest.raises(WorkspaceError, match='creation did not complete') as exc_info:
         await DaytonaSandboxBackend().get_client()
+    assert not isinstance(exc_info.value, WorkspaceTimeoutError)
     assert fake_daytona.closed_clients == 1
 
 
@@ -381,8 +382,9 @@ async def test_attach_timeout_is_translated(fake_daytona: FakeDaytona, monkeypat
     existing = fake_daytona.sandbox('sb-existing')
     monkeypatch.setattr('pydantic_ai_harness.daytona_sandbox._backend._CREATE_TIMEOUT', 0.05)
     fake_daytona.get_gate = asyncio.Event()
-    with pytest.raises(WorkspaceTimeoutError, match='connection did not complete'):
+    with pytest.raises(WorkspaceError, match='connection did not complete') as exc_info:
         await DaytonaSandboxBackend(ref=WorkspaceRef(provider='daytona', id=existing.id)).get_client()
+    assert not isinstance(exc_info.value, WorkspaceTimeoutError)
 
 
 async def test_deadline_bounds_attach(fake_daytona: FakeDaytona) -> None:

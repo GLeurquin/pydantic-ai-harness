@@ -311,14 +311,15 @@ class DaytonaSandboxBackend(WorkspaceBackend, SupportsCommands, SupportsFilesyst
                     ),
                     timeout=_LIFECYCLE_TIMEOUT,
                 )
-        except BaseException as error:
-            if isinstance(error, TimeoutError):
-                raise WorkspaceTimeoutError(
-                    f'Daytona workspace creation did not complete within {_CREATE_TIMEOUT}s.', timeout=_CREATE_TIMEOUT
-                ) from error
-            if isinstance(error, Exception):
-                raise self._operation_error(error, 'Could not create Daytona workspace') from error
-            raise
+        except TimeoutError as error:
+            # `WorkspaceTimeoutError` is reserved for command deadlines; a stalled control plane is
+            # a provider failure the caller may retry.
+            raise WorkspaceError(
+                f'Daytona workspace creation did not complete within {_CREATE_TIMEOUT}s; '
+                'the Daytona control plane may be unreachable.'
+            ) from error
+        except Exception as error:
+            raise self._operation_error(error, 'Could not create Daytona workspace') from error
 
     async def _attach(self, client: AsyncDaytona, workspace_id: str) -> AsyncSandbox:
         try:
@@ -326,16 +327,15 @@ class DaytonaSandboxBackend(WorkspaceBackend, SupportsCommands, SupportsFilesyst
                 sandbox = await client.get(workspace_id, request_timeout=_REQUEST_TIMEOUT)
                 await sandbox.start(timeout=_LIFECYCLE_TIMEOUT)
                 return sandbox
-        except BaseException as error:
-            if isinstance(error, TimeoutError):
-                raise WorkspaceTimeoutError(
-                    f'Daytona workspace connection did not complete within {_CREATE_TIMEOUT}s.', timeout=_CREATE_TIMEOUT
-                ) from error
-            if isinstance(error, Exception):
-                raise self._operation_error(
-                    error, f'Could not connect to Daytona workspace {workspace_id!r}', unavailable=True
-                ) from error
-            raise
+        except TimeoutError as error:
+            raise WorkspaceError(
+                f'Daytona workspace connection did not complete within {_CREATE_TIMEOUT}s; '
+                'the Daytona control plane may be unreachable.'
+            ) from error
+        except Exception as error:
+            raise self._operation_error(
+                error, f'Could not connect to Daytona workspace {workspace_id!r}', unavailable=True
+            ) from error
 
     async def _close_owned_client(self) -> None:
         if self._client is not None and self._owns_client:
