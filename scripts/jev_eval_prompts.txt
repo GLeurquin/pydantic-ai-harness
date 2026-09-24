@@ -17,7 +17,7 @@ fast|filesystem|where is the database url configured?
 fast|filesystem|which python version does this project require?
 fast|shell|run the linter
 fast|shell|run the unit tests for the auth module
-fast|filesystem|fix the typo "seperate" in CONTRIBUTING.md
+fast|filesystem|fix the typo in the first heading of CONTRIBUTING.md
 fast|filesystem|bump the version to 1.4.2 in pyproject.toml
 fast|filesystem|add `.DS_Store` to the gitignore
 fast|shell|stage everything and commit with the message "wip"
