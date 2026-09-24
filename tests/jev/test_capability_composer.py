@@ -220,6 +220,7 @@ class TestConfiguration:
         assert built.name == 'jev_capability_composer_sub_agent'
         assert 'skills' in catalog
         assert ('code_mode' in catalog) == (importlib.util.find_spec('pydantic_monty') is not None)
+        assert ('web_fetch' in catalog) == (importlib.util.find_spec('markdownify') is not None)
 
     def test_the_default_catalog_leaves_out_what_is_not_available(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -227,20 +228,15 @@ class TestConfiguration:
         monkeypatch.chdir(tmp_path)
         find_spec = importlib.util.find_spec
 
-        def without_monty(name: str, package: str | None = None) -> ModuleSpec | None:
-            return None if name == 'pydantic_monty' else find_spec(name, package)
+        def without_extras(name: str, package: str | None = None) -> ModuleSpec | None:
+            return None if name in ('pydantic_monty', 'ddgs', 'markdownify') else find_spec(name, package)
 
-        monkeypatch.setattr(importlib.util, 'find_spec', without_monty)
+        monkeypatch.setattr(importlib.util, 'find_spec', without_extras)
 
-        assert list(default_catalog()) == [
-            'filesystem',
-            'shell',
-            'planning',
-            'repo_context',
-            'pydantic_ai_docs',
-            'web_search',
-            'web_fetch',
-        ]
+        catalog = default_catalog()
+
+        assert list(catalog) == ['filesystem', 'shell', 'planning', 'repo_context', 'pydantic_ai_docs', 'web_search']
+        assert catalog['web_search'].arguments == {}
 
     async def test_default_entries_run_together(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         """No two local-tool entries register the same tool name. The web entries are native tools `TestModel` lacks."""
@@ -330,6 +326,7 @@ class TestHandoff:
         result = await agent.run('write that down')
 
         assert result.output == 'strong answered'
+        assert result.response.model_name == 'strong'
         assert calls == []
         assert jev.prompts == ['write that down']
         assert seen == [('write that down', ['memo_take'])]
@@ -488,7 +485,7 @@ class TestFallthrough:
         assert seen == []
 
     async def test_threshold_is_inclusive(self):
-        agent = Agent(main_model([]), capabilities=[composer(Jev(confidence={'model': 0.5}), [])])
+        agent = Agent(main_model([]), capabilities=[composer(Jev(confidence={'model': 0.4}), [])])
 
         result = await agent.run('write that down')
 

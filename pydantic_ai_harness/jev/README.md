@@ -25,7 +25,7 @@ A general-purpose agent carries every tool and runs on one model for every reque
 - **thinking**: `low`, `medium`, or `high` reasoning effort
 - **capabilities**: for each entry of the catalog, whether the request needs it
 
-The composer builds that sub-agent from an `AgentSpec`, runs it on the prompt, and returns its answer as the turn's response. The main model is not called. When Jev's confidence in the model pick is below `confidence_threshold`, or it picks no capabilities, the composer does nothing and the main agent handles the prompt as usual.
+The composer builds that sub-agent from an `AgentSpec`, runs it on the prompt, and returns its answer as the turn's response. The main model is not called. When Jev's confidence in the model pick is below `confidence_threshold`, or it picks no capabilities, the composer does nothing and the main agent handles the prompt as usual. The default of 0.4 comes from a hand-labelled check of the example menu below, where every wrong model pick scored 0.33 or less and nearly every right one 0.56 or more. Recalibrate it for your own menu.
 
 ```python
 from pydantic_ai import Agent
@@ -85,12 +85,12 @@ When no `catalog` is given, the composer calls `default_catalog()` as it is cons
 | `planning` | [Planning](../planning/) | defaults | always |
 | `repo_context` | [Repo Context](../repo_context/) | the working directory | always |
 | `pydantic_ai_docs` | [Pydantic AI Docs](../pydantic_ai_docs/) | defaults | always |
-| `web_search` | Pydantic AI's `WebSearch` | defaults | always |
-| `web_fetch` | Pydantic AI's `WebFetch` | defaults | always |
+| `web_search` | Pydantic AI's `WebSearch` | DuckDuckGo fallback when the `duckduckgo` extra is installed | always |
 | `skills` | [Skills](../skills/) | `SKILLS_DIRECTORY` (`.agents/skills`) | that directory exists |
 | `code_mode` | [Code Mode](../code_mode/) | defaults | the `code-mode` extra is installed |
+| `web_fetch` | Pydantic AI's `WebFetch` | local fetcher fallback | the `web-fetch` extra is installed |
 
-`web_search` and `web_fetch` use the model's native tools, so a sub-agent whose model has none raises `UserError` when it runs.
+Both web entries use the model's native tool when it has one. `web_fetch` is only offered with its local fallback, because native URL fetching is missing on common models, OpenAI's among them. Without the `duckduckgo` extra, `web_search` is native only, and a sub-agent whose model has no native web search raises `UserError` when it runs. The `jev` extra installs both web extras.
 
 Some capabilities are left out on purpose:
 

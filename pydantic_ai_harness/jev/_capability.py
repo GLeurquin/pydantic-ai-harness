@@ -97,7 +97,9 @@ def default_catalog() -> dict[str, ComposableCapability]:
     Every entry needs no third-party API key and gets its configuration from a default: the working
     directory for `RepoContext`, and `SKILLS_DIRECTORY` for `Skills`. An entry whose requirement is not
     met here is left out instead of failing when a sub-agent is built: `skills` when the directory does
-    not exist, and `code_mode` without the `code-mode` extra.
+    not exist, `code_mode` without the `code-mode` extra, and `web_fetch` without the `web-fetch` extra,
+    whose local fetcher covers models with no native URL fetching. `web_search` falls back to DuckDuckGo
+    when the `duckduckgo` extra is installed.
     """
     catalog: dict[str, ComposableCapability] = {
         'filesystem': ComposableCapability(
@@ -117,10 +119,17 @@ def default_catalog() -> dict[str, ComposableCapability]:
             description='Look up Pydantic AI documentation', capability=PydanticAIDocs
         ),
         'web_search': ComposableCapability(
-            description='Search the public web for current information', capability=WebSearch
+            description='Search the public web for current information',
+            capability=WebSearch,
+            # DuckDuckGo stands in on a model without native web search.
+            arguments={'local': 'duckduckgo'} if importlib.util.find_spec('ddgs') is not None else {},
         ),
-        'web_fetch': ComposableCapability(description='Fetch and read a specific web page or URL', capability=WebFetch),
     }
+    if importlib.util.find_spec('markdownify') is not None:
+        # Only with the local fetcher: native URL fetching is missing on common models (OpenAI's among them).
+        catalog['web_fetch'] = ComposableCapability(
+            description='Fetch and read a specific web page or URL', capability=WebFetch, arguments={'local': True}
+        )
     if SKILLS_DIRECTORY.is_dir():
         catalog['skills'] = ComposableCapability(
             description='Follow a packaged skill: step-by-step instructions for a specialised task',
@@ -230,7 +239,7 @@ class JevCapabilityComposer(AbstractCapability[AgentDepsT]):
     instructions: str | None = None
     """Instructions for the composed sub-agent. The main agent's instructions are not passed on."""
 
-    confidence_threshold: float = 0.5
+    confidence_threshold: float = 0.4
     """Minimum Jev confidence in the model pick to hand off. A picker that reports no confidence is trusted."""
 
     jev_model: Model | str = 'typesafe:jev-latest'
@@ -296,7 +305,9 @@ class JevCapabilityComposer(AbstractCapability[AgentDepsT]):
             )
         )
         result = await self.build_agent(composition).run(prompt, deps=ctx.deps, usage=ctx.usage)
-        raise SkipModelRequest(ModelResponse(parts=[TextPart(content=result.output)]))
+        raise SkipModelRequest(
+            ModelResponse(parts=[TextPart(content=result.output)], model_name=result.response.model_name)
+        )
 
     async def compose(self, prompt: str, *, usage_ctx: RunContext[AgentDepsT] | None = None) -> Composition:
         """Ask Jev what sub-agent `prompt` needs. Usage is added to `usage_ctx`'s run when given."""
