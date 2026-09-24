@@ -23,7 +23,7 @@ A general-purpose agent carries every tool and runs on one model for every reque
 - **thinking**: `low`, `medium`, or `high` reasoning effort
 - **capabilities**: for each entry of the catalog, whether the request needs it
 
-The composer builds that sub-agent from an `AgentSpec`, runs it on the prompt, and returns its answer as the turn's response. The main model is not called. When Jev's confidence in the model pick is below `confidence_threshold`, the sub-agent still gets the capabilities Jev picked, but runs on `unsure_model`: the last entry of `models` unless you name one, so order the menu from cheapest to strongest. An unsure pick then costs a stronger model rather than a wrong one, or the tools. When Jev picks no capabilities, the composer does nothing and the main agent handles the prompt as usual. The default threshold of 0.4 comes from a hand-labelled check of the example menu below, where every wrong model pick scored 0.33 or less and nearly every right one 0.56 or more. Recalibrate it for your own menu.
+The composer builds that sub-agent from an `AgentSpec`, runs it on the prompt, and returns its answer as the turn's response. The main model is not called. When Jev's confidence in the model pick is below `confidence_threshold`, the sub-agent still gets the capabilities Jev picked, but runs on `unsure_model`: the last entry of `models` unless you name one, so order the menu from cheapest to strongest. An unsure pick then costs a stronger model rather than a wrong one, or the tools. When Jev picks no capabilities, the composer does nothing and the main agent handles the prompt as usual. The default threshold of 0.4 comes from a hand-labelled check of the example menu below. The example sets `unsure_model='medium'` from the same check: Jev is rarely unsure of a clearly worded request, and mostly unsure of vague ones ("add a cache", "finish the TODOs"), which usually need a scoped change rather than the strongest model. On 40 vague prompts, falling back to `medium` ran 44 of 60 handed-off picks on the labelled tier against 25 for `max`, at the cost of 2 clearly worded prompts in 330 running a tier too low. `scripts/jev_eval.py` reruns the check; recalibrate against prompts of your own before relying on either setting.
 
 ```python
 from pydantic_ai import Agent
@@ -39,6 +39,7 @@ agent = Agent(
                 'medium': ModelOption('openai-codex:gpt-6-sol', description='A focused code change with a clear cause or spec, in one or a few files'),
                 'max': ModelOption('openai-codex:gpt-6-astra', description='Open-ended work: an unknown root cause, a design decision, or changes across many files'),
             },
+            unsure_model='medium',
         )
     ],
 )
