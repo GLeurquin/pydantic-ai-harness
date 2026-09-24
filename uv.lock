@@ -3641,8 +3641,8 @@ lint = [
 
 [[package]]
 name = "pydantic-ai-slim"
-version = "2.48.1.dev2+ad0727bb"
-source = { git = "https://github.com/pydantic/pydantic-ai?subdirectory=pydantic_ai_slim&rev=ad0727bb568580992afebe77351702f8817e5476#ad0727bb568580992afebe77351702f8817e5476" }
+version = "2.48.1.dev18+f4a37f59"
+source = { git = "https://github.com/pydantic/pydantic-ai?subdirectory=pydantic_ai_slim&rev=f4a37f59732e6d182bb02ecec9ae2252c0a7b328#f4a37f59732e6d182bb02ecec9ae2252c0a7b328" }
 dependencies = [
     { name = "anyio" },
     { name = "genai-prices" },
@@ -3714,7 +3714,7 @@ requires-dist = [
     { name = "pillow", specifier = ">=12.3.0" },
     { name = "prompt-toolkit", specifier = ">=3.0.52" },
     { name = "pydantic-ai-harness", extras = ["coder"], editable = "." },
-    { name = "pydantic-ai-slim", extras = ["anthropic", "mcp", "openai"], git = "https://github.com/pydantic/pydantic-ai?subdirectory=pydantic_ai_slim&rev=ad0727bb568580992afebe77351702f8817e5476" },
+    { name = "pydantic-ai-slim", extras = ["anthropic", "mcp", "openai"], git = "https://github.com/pydantic/pydantic-ai?subdirectory=pydantic_ai_slim&rev=f4a37f59732e6d182bb02ecec9ae2252c0a7b328" },
     { name = "pyfiglet", specifier = ">=1.0.4" },
     { name = "rich", specifier = ">=14" },
     { name = "termflow-md", specifier = ">=0.9.2,<0.10" },
@@ -3819,8 +3819,8 @@ wheels = [
 
 [[package]]
 name = "pydantic-graph"
-version = "2.48.1.dev2+ad0727bb"
-source = { git = "https://github.com/pydantic/pydantic-ai?subdirectory=pydantic_graph&rev=ad0727bb568580992afebe77351702f8817e5476#ad0727bb568580992afebe77351702f8817e5476" }
+version = "2.48.1.dev18+f4a37f59"
+source = { git = "https://github.com/pydantic/pydantic-ai?subdirectory=pydantic_graph&rev=f4a37f59732e6d182bb02ecec9ae2252c0a7b328#f4a37f59732e6d182bb02ecec9ae2252c0a7b328" }
 dependencies = [
     { name = "anyio" },
     { name = "logfire-api" },
