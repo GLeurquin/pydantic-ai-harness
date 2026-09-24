@@ -6,6 +6,7 @@ durable operation. This test starts a local Temporal dev server via `WorkflowEnv
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import AsyncIterator
 from datetime import timedelta
 
@@ -30,13 +31,7 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 
 from pydantic_ai_harness.logfire_mcp import LogfireMCP
 
-pytestmark = [
-    pytest.mark.anyio,
-    # MCP's test server leaves its lifespan annotation unresolved with pydantic-settings 2.15.
-    pytest.mark.filterwarnings(
-        "ignore:Field 'lifespan' has an incomplete definition:UserWarning:pydantic_settings.sources.utils"
-    ),
-]
+pytestmark = pytest.mark.anyio
 
 TEMPORAL_PORT = 7246  # avoid conflict with the code_mode and spend suites
 TASK_QUEUE = 'pydantic-ai-harness-logfire-mcp-queue'
@@ -70,13 +65,19 @@ def _echo_instructions(messages: list[ModelMessage], info: AgentInfo) -> ModelRe
     return ModelResponse(parts=[TextPart(content=info.instructions or '')])
 
 
+# MCP's test server leaves its lifespan annotation unresolved with some pydantic-settings versions. The
+# server is built at import, where the suite's `pytestmark` filters do not apply yet.
+with warnings.catch_warnings():
+    warnings.filterwarnings('ignore', "Field 'lifespan' has an incomplete definition")
+    server = FastMCP('provider')
+
 # Module level, as Temporal requires.
 agent = Agent(
     FunctionModel(_echo_instructions),
     name='logfire_mcp_agent',
     deps_type=type(None),
     capabilities=[
-        LogfireMCP[None](client=FastMCP('provider')),
+        LogfireMCP[None](client=server),
         TemporalDurability[None](
             activity_config=ActivityConfig(
                 start_to_close_timeout=timedelta(seconds=60), retry_policy=RetryPolicy(maximum_attempts=1)
