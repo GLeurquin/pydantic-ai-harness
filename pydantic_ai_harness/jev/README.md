@@ -25,7 +25,7 @@ A general-purpose agent carries every tool and runs on one model for every reque
 - **thinking**: `low`, `medium`, or `high` reasoning effort
 - **capabilities**: for each entry of the catalog, whether the request needs it
 
-The composer builds that sub-agent from an `AgentSpec`, runs it on the prompt, and returns its answer as the turn's response. The main model is not called. When Jev's confidence in the model pick is below `confidence_threshold`, or it picks no capabilities, the composer does nothing and the main agent handles the prompt as usual. The default of 0.4 comes from a hand-labelled check of the example menu below, where every wrong model pick scored 0.33 or less and nearly every right one 0.56 or more. Recalibrate it for your own menu.
+The composer builds that sub-agent from an `AgentSpec`, runs it on the prompt, and returns its answer as the turn's response. The main model is not called. When Jev's confidence in the model pick is below `confidence_threshold`, the sub-agent still gets the capabilities Jev picked, but runs on `unsure_model`: the last entry of `models` unless you name one, so order the menu from cheapest to strongest. An unsure pick then costs a stronger model rather than a wrong one, or the tools. When Jev picks no capabilities, the composer does nothing and the main agent handles the prompt as usual. The default threshold of 0.4 comes from a hand-labelled check of the example menu below, where every wrong model pick scored 0.33 or less and nearly every right one 0.56 or more. Recalibrate it for your own menu.
 
 ```python
 from pydantic_ai import Agent
@@ -70,7 +70,7 @@ class Composition(BaseModel):
 
 `TypeSafeModel` asks the two pick-one fields as Choice questions and fans the list out into one yes/no per catalog entry, all in a single request. Jev can only answer with an option it was offered, so there is no invented model or capability to reject.
 
-The descriptions are what Jev decides from. Give each `ModelOption` a `description` that says what kind of request it is for; without one, Jev sees only the model name. Describe a tier by the work a request takes (whether it needs investigation first, how far the change reaches) rather than by how capable the model is: Jev tells the tiers apart with more confidence that way, so fewer prompts fall through.
+The descriptions are what Jev decides from. Give each `ModelOption` a `description` that says what kind of request it is for; without one, Jev sees only the model name. Describe a tier by the work a request takes (whether it needs investigation first, how far the change reaches) rather than by how capable the model is: Jev tells the tiers apart with more confidence that way, so fewer prompts escalate to the strongest model.
 
 ## The catalog is an allowlist
 
@@ -136,10 +136,10 @@ Each decision is a `jev_capability_composer compose` span on the run's tracer, w
 |---|---|
 | `jev_composer.model`, `jev_composer.thinking`, `jev_composer.capabilities` | what Jev picked |
 | `jev_composer.confidence.<field>` | Jev's confidence per field |
-| `jev_composer.action` | `handoff` or `fallthrough` |
-| `jev_composer.fallthrough_reason` | `low_confidence` or `no_capabilities`, on a fall-through |
+| `jev_composer.action` | `handoff`, `escalate` (unsure of the model, ran on `unsure_model`), or `fallthrough` (no capabilities picked) |
+| `jev_composer.handoff_model` | the `models` key the sub-agent ran on, unless it fell through |
 | `jev_composer.prompt` | the text Jev read, only when the run includes content in traces |
 
-Jev's request and the sub-agent's run appear as their own agent spans under it. On a handoff the composer also emits a `CapabilitiesComposedEvent` into the run's event stream, before the sub-agent starts.
+Jev's request and the sub-agent's run appear as their own agent spans under it. On a handoff or an escalation the composer also emits a `CapabilitiesComposedEvent` into the run's event stream, before the sub-agent starts; its `escalated` field says which.
 
-Watch the fall-through rate as well as the picks. A composer that falls through on most prompts is costing a Jev request per run and changing nothing; tune `confidence_threshold` and the descriptions against labelled prompts of your own, then pin the Jev version you tuned against with `jev_model='typesafe:jev-1.13.0'`.
+Watch the escalation and fall-through rates as well as the picks. A composer that escalates on most prompts is running everything on the strongest model and saving nothing, and one that falls through on most is costing a Jev request per run and changing nothing; tune `confidence_threshold` and the descriptions against labelled prompts of your own, then pin the Jev version you tuned against with `jev_model='typesafe:jev-1.13.0'`.

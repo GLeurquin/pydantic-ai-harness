@@ -181,6 +181,10 @@ class TestConfiguration:
         with pytest.raises(UserError, match='between 0 and 1'):
             JevCapabilityComposer(models={'fast': 'test'}, catalog=CATALOG, confidence_threshold=threshold)
 
+    def test_rejects_an_unsure_model_off_the_menu(self):
+        with pytest.raises(UserError, match="unsure_model 'nope' is not a key"):
+            JevCapabilityComposer(models={'fast': 'test'}, catalog=CATALOG, unsure_model='nope')
+
     def test_rejects_a_capability_that_cannot_load_from_a_spec(self):
         catalog = {'x': ComposableCapability(description='x', capability=Unloadable)}
         with pytest.raises(UserError, match="'x': Unloadable cannot be loaded from a spec"):
@@ -351,7 +355,9 @@ class TestHandoff:
         await agent.run('what time is it?', event_stream_handler=handler)
 
         events = [e for e in streamed if isinstance(e, CapabilitiesComposedEvent)]
-        assert [(e.model, e.thinking, e.capabilities) for e in events] == [('strong', 'medium', ('clock',))]
+        assert [(e.model, e.thinking, e.capabilities, e.escalated) for e in events] == [
+            ('strong', 'medium', ('clock',), False)
+        ]
 
     async def test_usage_is_shared_with_the_parent_run(self):
         agent = Agent(main_model([]), capabilities=[composer(Jev(), [])])
@@ -472,25 +478,52 @@ class TestHistory:
         assert jev.prompts == ['latest']
 
 
-class TestFallthrough:
-    async def test_low_model_confidence_falls_through(self):
+class TestEscalation:
+    async def test_an_unsure_model_pick_runs_on_the_last_entry(self):
+        """The capabilities Jev picked are kept; only the uncertain model pick is replaced."""
         calls: list[str] = []
         seen: list[tuple[str, list[str]]] = []
-        agent = Agent(main_model(calls), capabilities=[composer(Jev(confidence={'model': 0.3}), seen)])
-
-        result = await agent.run('write that down')
-
-        assert result.output == 'main answered'
-        assert calls == ['main']
-        assert seen == []
-
-    async def test_threshold_is_inclusive(self):
-        agent = Agent(main_model([]), capabilities=[composer(Jev(confidence={'model': 0.4}), [])])
+        jev = Jev(model='fast', capabilities=('notes',), confidence={'model': 0.3})
+        agent = Agent(main_model(calls), capabilities=[composer(jev, seen)])
 
         result = await agent.run('write that down')
 
         assert result.output == 'strong answered'
+        assert calls == []
+        assert seen == [('write that down', ['memo_take'])]
 
+    async def test_unsure_model_can_be_chosen(self):
+        jev = Jev(model='strong', confidence={'model': 0.1})
+        agent = Agent(main_model([]), capabilities=[composer(jev, [], unsure_model='fast')])
+
+        result = await agent.run('write that down')
+
+        assert result.output == 'fast answered'
+
+    async def test_threshold_is_inclusive(self):
+        agent = Agent(main_model([]), capabilities=[composer(Jev(model='fast', confidence={'model': 0.4}), [])])
+
+        result = await agent.run('write that down')
+
+        assert result.output == 'fast answered'
+
+    async def test_the_event_says_it_escalated(self):
+        streamed: list[AgentStreamEvent] = []
+
+        async def handler(ctx: RunContext[object], stream: AsyncIterable[AgentStreamEvent]) -> None:
+            async for event in stream:
+                streamed.append(event)
+
+        jev = Jev(model='fast', capabilities=('clock',), confidence={'model': 0.2})
+        agent = Agent(main_model([]), capabilities=[composer(jev, [])])
+
+        await agent.run('what time is it?', event_stream_handler=handler)
+
+        events = [e for e in streamed if isinstance(e, CapabilitiesComposedEvent)]
+        assert [(e.model, e.escalated) for e in events] == [('strong', True)]
+
+
+class TestFallthrough:
     async def test_no_capabilities_falls_through(self):
         agent = Agent(main_model([]), capabilities=[composer(Jev(capabilities=()), [])])
 
@@ -570,11 +603,25 @@ class TestTracing:
             'jev_composer.thinking': 'high',
             'jev_composer.capabilities': ('notes', 'clock'),
             'jev_composer.action': 'handoff',
+            'jev_composer.handoff_model': 'strong',
             'jev_composer.confidence.model': 0.9,
             'jev_composer.confidence.thinking': 0.8,
         }
 
-    async def test_the_span_records_why_it_fell_through_and_the_prompt_when_allowed(self):
+    async def test_the_span_records_an_escalation(self):
+        provider, exporter = recording_tracer()
+        jev = Jev(model='fast', capabilities=('notes',), confidence={'model': 0.2})
+        agent = Agent(main_model([]), capabilities=[composer(jev, [])])
+        agent.instrument = InstrumentationSettings(tracer_provider=provider, include_content=False)
+
+        await agent.run('write that down')
+
+        attributes = dict(compose_span(exporter).attributes or {})
+        assert attributes['jev_composer.action'] == 'escalate'
+        assert attributes['jev_composer.model'] == 'fast'
+        assert attributes['jev_composer.handoff_model'] == 'strong'
+
+    async def test_the_span_records_a_fallthrough_and_the_prompt_when_allowed(self):
         provider, exporter = recording_tracer()
         agent = Agent(main_model([]), capabilities=[composer(Jev(capabilities=()), [])])
         agent.instrument = InstrumentationSettings(tracer_provider=provider, include_content=True)
@@ -583,5 +630,5 @@ class TestTracing:
 
         attributes = dict(compose_span(exporter).attributes or {})
         assert attributes['jev_composer.action'] == 'fallthrough'
-        assert attributes['jev_composer.fallthrough_reason'] == 'no_capabilities'
+        assert 'jev_composer.handoff_model' not in attributes
         assert attributes['jev_composer.prompt'] == 'hi'
