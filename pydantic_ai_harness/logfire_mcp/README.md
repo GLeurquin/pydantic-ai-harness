@@ -1,6 +1,6 @@
 # Logfire MCP
 
-Query Logfire telemetry and manage observability resources. `LogfireMCP` connects an agent to the provider's hosted MCP server. By default it exposes the tools the server offers, including write tools. Provider credentials and server settings determine what those tools may access.
+Let an agent query Logfire telemetry and manage Logfire projects. `LogfireMCP` gives the agent every tool Logfire's hosted MCP server offers, including tools that make changes. The credential you connect with decides what those tools can reach.
 
 > While Pydantic AI Harness is on 0.x releases, the API may change between minor releases; when it does, deprecation warnings and release-note migration guidance tell you (or your agent) exactly how to upgrade. See the [version policy](https://github.com/pydantic/pydantic-ai-harness#version-policy).
 
@@ -18,7 +18,7 @@ pip:
 pip install "pydantic-ai-harness[logfire-mcp]" "pydantic-ai-slim[openai]"
 ```
 
-Set `LOGFIRE_API_KEY` to a Logfire API key, or pass `auth=...`. When neither is supplied, the connection starts browser OAuth. `auth` accepts an `httpx.Auth` for caller-managed authentication, or a callable that returns a credential for each run (see [Per-user credentials](#per-user-credentials)). See the [provider setup](https://pydantic.dev/docs/logfire/guides/mcp-server/).
+Set `LOGFIRE_API_KEY`, or pass `auth=` an API key or an `httpx.Auth`. With neither, the agent opens a browser so you can log in to Logfire, which only works when you run it on your own machine. See the [provider setup](https://pydantic.dev/docs/logfire/guides/mcp-server/).
 
 ```python
 from pydantic_ai import Agent
@@ -31,9 +31,7 @@ print(result.output)
 
 ## Per-user credentials
 
-A fixed `auth`, `LOGFIRE_API_KEY`, and `'oauth'` all give every run the same connection and the same identity. Use them for scripts, local tools, and single-user agents. `'oauth'` opens a browser on the machine running the agent and keeps tokens in memory, so it does not suit a server.
-
-When one agent serves several users, pass a callable instead. It receives the run context at the start of each run and returns that user's credential, so each run opens its own connection:
+An API key, `LOGFIRE_API_KEY`, and browser login all connect every run as the same account. When one agent serves several users, pass a function that returns the current user's credential instead:
 
 ```python
 from dataclasses import dataclass
@@ -55,9 +53,11 @@ def logfire_token(ctx: RunContext[Deps]) -> str | None:
 agent = Agent('openai:gpt-5.6-sol', deps_type=Deps, capabilities=[LogfireMCP(auth=logfire_token)])
 ```
 
-The callable can be async and can return a token or an `httpx.Auth`. When it returns `None`, the run has no Logfire tools; it does not fall back to `LOGFIRE_API_KEY` or browser OAuth. Returning `'oauth'` raises an error, because it would open a browser on the server. Your application owns obtaining, storing, and refreshing each user's token, for example through an OAuth flow in your web app, and the callable reads the current token from that store.
+The function is called at the start of each run, so each run connects as its own user. It can be async, and it can return a token or an `httpx.Auth`. If it returns `None`, that run has no Logfire tools; it never falls back to `LOGFIRE_API_KEY` or browser login.
 
-`client` accepts a callable in the same way, for settings beyond the credential that differ per user, such as a user whose data is in the EU region:
+Your application is responsible for getting each user's token, storing it, and refreshing it, for example with a "Connect Logfire" OAuth flow in your web app. The function only reads the current token. Returning `'oauth'` from it raises an error, because browser login would open on the server rather than for the user.
+
+`client` also accepts a function, for when users differ in more than their credential, such as users whose data is in the EU region:
 
 ```python
 from fastmcp.client.transports import StreamableHttpTransport
@@ -75,19 +75,19 @@ def logfire_client(ctx: RunContext[Deps]) -> StreamableHttpTransport | None:
 capability = LogfireMCP(client=logfire_client)
 ```
 
-Each run connects and lists tools when it starts, and disconnects when it ends. Under durable execution such as Temporal, the callable runs in the worker, so it should derive the credential from serializable deps. Give each `LogfireMCP` on one agent a distinct `id`.
+With durable execution such as Temporal, read the credential from the run's deps rather than from a global, since the function may run in another process. To add more than one `LogfireMCP` to an agent, give each a distinct `id`.
 
 ## Provider settings
 
-The default endpoint is `https://logfire-us.pydantic.dev/mcp`. Set `url=LOGFIRE_EU_MCP_URL` for EU data, or provide a self-hosted MCP URL. API-key scopes determine access to projects and operations.
+The default endpoint is Logfire's US region. Set `url=LOGFIRE_EU_MCP_URL` for EU data, or pass the MCP URL of a self-hosted Logfire. The API key's scopes decide which projects and actions are allowed.
 
-The capability supplies the current UTC time and brief query guidance: schema timestamps are not a clock, transport time bounds also constrain SQL, and links are created only when requested. `include_instructions=False` disables both this guidance and server instructions. Logfire owns query semantics, time windows, and result schemas.
+The capability adds short guidance to the agent's instructions: the current UTC time, a reminder that timestamps in examples are not the current time, that queries cover a short time window unless widened, and that Logfire links should be created only when asked for. `include_instructions=False` turns this off, along with the server's own instructions.
 
 ## Tool selection and approval
 
-`read_only=True` keeps only tools explicitly marked `readOnlyHint: true`; unmarked tools are omitted. This can leave no tools when a server does not annotate its read operations. Credentials remain the access-control boundary.
+`read_only=True` keeps only the tools the server marks as read-only. If the server does not mark its read tools, this can leave none. The credential is still what controls access.
 
-For application-level filtering or approval, compose the existing [toolset wrappers](https://pydantic.dev/docs/ai/tools-toolsets/toolsets/). For example, this requires approval before every tool call:
+To filter tools or require approval in your application, wrap the toolset with the existing [toolset wrappers](https://pydantic.dev/docs/ai/tools-toolsets/toolsets/). For example, this asks for approval before every tool call:
 
 ```python
 from pydantic_ai import Agent
@@ -103,12 +103,12 @@ agent = Agent(
 )
 ```
 
-Handle the resulting requests using the [deferred tools workflow](https://pydantic.dev/docs/ai/tools-toolsets/deferred-tools/). Output limits can be composed with [Tool Output Limits](https://pydantic.dev/docs/ai/harness/tool-output-limits/).
+Handle the approval requests with the [deferred tools workflow](https://pydantic.dev/docs/ai/tools-toolsets/deferred-tools/). To cap the size of tool output, add [Tool Output Limits](https://pydantic.dev/docs/ai/harness/tool-output-limits/).
 
 ## Connection customization
 
-Pass `client` to use a configured FastMCP client or transport, including custom OAuth token storage and MCP handlers. That client owns its URL, authentication, and server configuration; configure those on it instead of the capability. `read_only=True` applies the same annotation filter to custom clients.
+Pass `client` to use your own FastMCP client or transport, for example one with custom OAuth token storage. The client then owns the URL, authentication, and server settings, so set those on it rather than on the capability. `read_only` and `include_instructions` still apply.
 
-`include_instructions` controls whether server instructions reach the model. A fixed `client` is one connection shared by every run; see [Per-user credentials](#per-user-credentials) for per-run connections. To combine connections with overlapping tool names, give them distinct IDs and compose [PrefixTools](https://pydantic.dev/docs/ai/capabilities/prefix-tools/).
+A fixed `client` is one connection shared by every run; see [Per-user credentials](#per-user-credentials) to connect each user separately. To use two connections whose tool names overlap, give them distinct `id`s and add [PrefixTools](https://pydantic.dev/docs/ai/capabilities/prefix-tools/).
 
 [Source](https://github.com/pydantic/pydantic-ai-harness/tree/main/pydantic_ai_harness/logfire_mcp/)
