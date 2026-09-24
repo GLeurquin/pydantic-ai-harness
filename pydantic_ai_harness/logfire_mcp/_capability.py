@@ -16,9 +16,8 @@ try:
 except ImportError as exc:  # pragma: no cover
     raise ImportError('Install LogfireMCP support with: uv add "pydantic-ai-harness[logfire-mcp]"') from exc
 
-from datetime import datetime, timezone
-
 from pydantic_ai.agent.abstract import AgentInstructions
+from pydantic_ai.messages import ModelRequest
 from pydantic_ai.tools import RunContext
 
 LOGFIRE_US_MCP_URL = 'https://logfire-us.pydantic.dev/mcp'
@@ -83,6 +82,12 @@ class LogfireMCP(AbstractCapability[AgentDepsT]):
             return None
         return [_INSTRUCTIONS, self._current_utc]
 
-    def _current_utc(self, ctx: RunContext[AgentDepsT]) -> str:
-        current_utc = datetime.now(timezone.utc).isoformat(timespec='seconds')
-        return f'Current UTC time is `{current_utc}`.'
+    def _current_utc(self, ctx: RunContext[AgentDepsT]) -> str | None:
+        # The run stamps each request as it is made, so this needs no clock read of its own, which
+        # Temporal's workflow sandbox would reject.
+        stamps = [
+            message.timestamp for message in ctx.messages if isinstance(message, ModelRequest) and message.timestamp
+        ]
+        if not stamps:
+            return None
+        return f'Current UTC time is `{max(stamps).isoformat(timespec="seconds")}`.'

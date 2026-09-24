@@ -142,6 +142,10 @@ class TestLogfireMCP:
         timestamp = instructions.split('Current UTC time is `')[1].split('`')[0]
         assert before <= datetime.fromisoformat(timestamp) <= datetime.now(timezone.utc)
 
+    def test_no_current_time_without_a_request(self) -> None:
+        ctx = RunContext[None](deps=None, model=TestModel(), usage=RunUsage())
+        assert LogfireMCP[None]()._current_utc(ctx) is None  # pyright: ignore[reportPrivateUsage]
+
 
 class TestPerRunAuth:
     async def test_each_run_connects_with_its_own_credential(self) -> None:
