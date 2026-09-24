@@ -35,9 +35,9 @@ agent = Agent(
     capabilities=[
         JevCapabilityComposer(
             models={
-                'fast': ModelOption('openai-codex:gpt-6-luna', description='Quick answers and routine single-step tasks'),
-                'medium': ModelOption('openai-codex:gpt-6-sol', description='Everyday coding: focused changes and reviews'),
-                'max': ModelOption('openai-codex:gpt-6-astra', description='Hard reasoning, debugging, and multi-file changes'),
+                'fast': ModelOption('openai-codex:gpt-6-luna', description='Answering a question, or one command or trivial edit that needs no investigation'),
+                'medium': ModelOption('openai-codex:gpt-6-sol', description='A focused code change with a clear cause or spec, in one or a few files'),
+                'max': ModelOption('openai-codex:gpt-6-astra', description='Open-ended work: an unknown root cause, a design decision, or changes across many files'),
             },
         )
     ],
@@ -68,7 +68,7 @@ class Composition(BaseModel):
 
 `TypeSafeModel` asks the two pick-one fields as Choice questions and fans the list out into one yes/no per catalog entry, all in a single request. Jev can only answer with an option it was offered, so there is no invented model or capability to reject.
 
-The descriptions are what Jev decides from. Give each `ModelOption` a `description` that says what kind of request it is for; without one, Jev sees only the model name.
+The descriptions are what Jev decides from. Give each `ModelOption` a `description` that says what kind of request it is for; without one, Jev sees only the model name. Describe a tier by the work a request takes (whether it needs investigation first, how far the change reaches) rather than by how capable the model is: Jev tells the tiers apart with more confidence that way, so fewer prompts fall through.
 
 ## The catalog is an allowlist
 
