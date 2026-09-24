@@ -12,6 +12,9 @@ from dataclasses import dataclass, field
 
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.tools import AgentDepsT
+from pydantic_ai.toolsets import AbstractToolset
+
+from pydantic_ai_harness._mcp import MCPClientFunc, per_run_client
 
 try:
     from pydantic_ai.mcp import MCPToolset, MCPToolsetClient
@@ -34,17 +37,19 @@ class Composio(AbstractCapability[AgentDepsT]):
     description: str | None = 'Discover and use connected applications through Composio.'
     include_instructions: bool = True
     """Forward the server's instructions to the agent."""
-    client: MCPToolsetClient | None = field(default=None, repr=False)
-    """Override the connection with a configured MCP client or transport.
+    client: MCPToolsetClient | MCPClientFunc[AgentDepsT] | None = field(default=None, repr=False)
+    """Override the connection with a configured MCP client or transport, or a callable that returns one for each run.
 
     The supplied client owns its URL and authentication; `url` and `headers`
-    are not applied to it.
+    are not applied to it. A callable receives the run context, so each run
+    can connect to its own user's session from `ctx.deps`; returning `None`
+    omits the tools.
     """
 
-    def get_toolset(self) -> MCPToolset[AgentDepsT]:
+    def get_toolset(self) -> AbstractToolset[AgentDepsT]:
         """Build the session connection using Pydantic AI's MCP lifecycle."""
         if self.client is not None:
-            return MCPToolset(self.client, id=self.id or 'composio', include_instructions=self.include_instructions)
+            return per_run_client(self.client, self._from_client, id=self.id or 'composio')
         if self.url is None:
             raise ValueError('Provide the Composio session URL or a configured client.')
         return MCPToolset(
@@ -53,3 +58,6 @@ class Composio(AbstractCapability[AgentDepsT]):
             id=self.id or 'composio',
             include_instructions=self.include_instructions,
         )
+
+    def _from_client(self, client: MCPToolsetClient) -> MCPToolset[AgentDepsT]:
+        return MCPToolset(client, id=self.id or 'composio', include_instructions=self.include_instructions)
