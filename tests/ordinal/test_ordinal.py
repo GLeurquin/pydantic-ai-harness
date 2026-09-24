@@ -5,12 +5,17 @@ from __future__ import annotations
 import warnings
 from typing import Any
 
+import httpx
 import pytest
+from fastmcp.client.auth import OAuth
 from fastmcp.client.transports import StreamableHttpTransport
 from mcp.server.fastmcp.server import FastMCP, Settings
 from pydantic_ai import Agent
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.tools import RunContext
+from pydantic_ai.toolsets import AbstractToolset
+from pydantic_ai.usage import RunUsage
 
 from pydantic_ai_harness.ordinal import Ordinal
 
@@ -23,6 +28,31 @@ def _http_transport(toolset: MCPToolset[Any]) -> StreamableHttpTransport:
     transport = toolset.client.transport
     assert isinstance(transport, StreamableHttpTransport)
     return transport
+
+
+async def connections_for(capability: Ordinal[str | None], deps: str | None) -> list[MCPToolset[str | None]]:
+    """The MCP connections a run with `deps` would open."""
+    ctx = RunContext[str | None](deps=deps, model=TestModel(), usage=RunUsage())
+    toolset = await capability.get_toolset().for_run(ctx)
+    connections: list[MCPToolset[str | None]] = []
+
+    def collect(leaf: AbstractToolset[str | None]) -> None:
+        if isinstance(leaf, MCPToolset):
+            connections.append(leaf)
+
+    toolset.apply(collect)
+    return connections
+
+
+def no_credential(ctx: RunContext[object]) -> None:
+    return None
+
+
+def bearer(connection: MCPToolset[str | None]) -> str:
+    transport = connection.client.transport
+    assert isinstance(transport, StreamableHttpTransport) and transport.auth is not None
+    request = next(transport.auth.auth_flow(httpx.Request('POST', 'https://example.com/mcp')))
+    return request.headers['Authorization']
 
 
 class TestOrdinal:
@@ -64,10 +94,11 @@ class TestOrdinal:
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', UserWarning)
             toolset = Ordinal().get_toolset()
+        assert isinstance(toolset, MCPToolset)
         transport = _http_transport(toolset)
 
         assert transport.url == 'https://app.tryordinal.com/mcp'
-        assert transport.auth is not None
+        assert isinstance(transport.auth, OAuth)
         assert toolset.include_instructions is True
         assert toolset.id == 'ordinal'
 
@@ -78,3 +109,33 @@ class TestOrdinal:
 
         assert isinstance(toolset, MCPToolset)
         assert toolset.id == 'tenant-ordinal'
+
+    def test_fixed_token_is_sent_as_bearer(self) -> None:
+        toolset = Ordinal(auth='ordinal-token').get_toolset()
+        assert isinstance(toolset, MCPToolset)
+        assert bearer(toolset) == 'Bearer ordinal-token'
+
+
+class TestPerRunAuth:
+    @pytest.mark.anyio
+    async def test_each_run_connects_with_its_own_credential(self) -> None:
+        capability = Ordinal[str | None](auth=lambda ctx: ctx.deps)
+        [alice] = await connections_for(capability, 'alice-token')
+        [bob] = await connections_for(capability, 'bob-token')
+        assert (bearer(alice), bearer(bob)) == ('Bearer alice-token', 'Bearer bob-token')
+
+    @pytest.mark.anyio
+    async def test_async_provider(self) -> None:
+        async def token(ctx: RunContext[str | None]) -> str | None:
+            return ctx.deps
+
+        [connection] = await connections_for(Ordinal[str | None](auth=token), 'alice-token')
+        assert bearer(connection) == 'Bearer alice-token'
+
+    @pytest.mark.anyio
+    async def test_provider_returning_none_does_not_fall_back_to_oauth(self) -> None:
+        capability = Ordinal[str | None](auth=lambda ctx: ctx.deps)
+        assert await connections_for(capability, None) == []
+        agent = Agent(TestModel(), capabilities=[Ordinal[object](auth=no_credential)])
+        result = await agent.run('List my workspaces')
+        assert result.output == 'success (no tool calls)'

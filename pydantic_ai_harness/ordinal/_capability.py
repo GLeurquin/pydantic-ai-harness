@@ -11,10 +11,13 @@ Source: https://docs.tryordinal.com/mcp/introduction
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.tools import AgentDepsT
+from pydantic_ai.toolsets import AbstractToolset
+
+from pydantic_ai_harness._mcp import MCPAuth, MCPAuthFunc, per_run_auth
 
 try:
     from pydantic_ai.mcp import MCPToolset
@@ -31,8 +34,8 @@ _DEFAULT_DESCRIPTION = 'Work inside an Ordinal workspace: draft, schedule, and a
 class Ordinal(AbstractCapability[AgentDepsT]):
     """Connect an agent to Ordinal's hosted MCP server.
 
-    The first tool call opens a browser for OAuth. After sign-in, the agent
-    can reach every workspace the user belongs to.
+    Without `auth`, the first tool call opens a browser for OAuth. After
+    sign-in, the agent can reach every workspace the user belongs to.
 
     ```python
     from pydantic_ai import Agent
@@ -45,15 +48,26 @@ class Ordinal(AbstractCapability[AgentDepsT]):
     description: str | None = _DEFAULT_DESCRIPTION
     """Routing description used when the capability is loaded on demand."""
 
-    def get_toolset(self) -> MCPToolset[AgentDepsT]:
+    auth: MCPAuth | MCPAuthFunc[AgentDepsT] | None = field(default=None, repr=False)
+    """An Ordinal OAuth access token, `'oauth'`, HTTP authentication, or a callable that returns one for each run.
+
+    Unset, it defaults to `'oauth'`, which opens a browser on the machine running the agent. A callable
+    receives the run context, so each run can connect with its own user's token from `ctx.deps`;
+    returning `None` omits the tools.
+    """
+
+    def get_toolset(self) -> AbstractToolset[AgentDepsT]:
         """Build the Ordinal MCP connection.
 
         This capability does not emit its own spans. It only constructs the
         hosted connection; Pydantic AI's MCP toolset traces tool calls.
         """
+        return per_run_auth(self.auth, self._connect, id=self.id if self.id is not None else 'ordinal')
+
+    def _connect(self, auth: MCPAuth | None) -> MCPToolset[AgentDepsT]:
         return MCPToolset(
             _ORDINAL_MCP_URL,
             id=self.id if self.id is not None else 'ordinal',
-            auth='oauth',
+            auth=auth if auth is not None else 'oauth',
             include_instructions=True,
         )
