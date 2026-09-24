@@ -33,12 +33,13 @@ from pydantic_ai_harness.jev import JevCapabilityComposer
 from pydantic_ai_harness.subagents import ModelOption
 
 agent = Agent(
-    'anthropic:claude-sonnet-5',
+    'openai-codex:gpt-6-sol',
     capabilities=[
         JevCapabilityComposer(
             models={
-                'fast': ModelOption('anthropic:claude-haiku-4-5', description='Quick answers and routine single-step tasks'),
-                'strong': ModelOption('anthropic:claude-sonnet-5', description='Hard reasoning, debugging, and multi-file changes'),
+                'fast': ModelOption('openai-codex:gpt-6-luna', description='Quick answers and routine single-step tasks'),
+                'medium': ModelOption('openai-codex:gpt-6-sol', description='Everyday coding: focused changes and reviews'),
+                'max': ModelOption('openai-codex:gpt-6-astra', description='Hard reasoning, debugging, and multi-file changes'),
             },
         )
     ],
@@ -58,7 +59,7 @@ The questions are an ordinary output type. The composer builds one per model men
 class Composition(BaseModel):
     """Compose an agent to handle this request: its model, reasoning effort, and capabilities."""
 
-    model: Annotated[str, Choices({'fast': 'Quick answers ...', 'strong': 'Hard reasoning ...'})] = Field(
+    model: Annotated[str, Choices({'fast': 'Quick answers ...', 'medium': 'Everyday coding ...', 'max': 'Hard reasoning ...'})] = Field(
         description='Which model should handle this request?'
     )
     thinking: Thinking = Field(description='How much reasoning effort does this request need?')
@@ -92,7 +93,7 @@ from pydantic_ai_harness.exa import ExaSearch
 from pydantic_ai_harness.jev import DEFAULT_CATALOG, ComposableCapability, JevCapabilityComposer
 
 composer = JevCapabilityComposer(
-    models={'fast': 'anthropic:claude-haiku-4-5'},
+    models={'fast': 'openai-codex:gpt-6-luna'},
     catalog={
         **DEFAULT_CATALOG,
         'exa': ComposableCapability.of(ExaSearch, description='Research a topic across many web sources'),

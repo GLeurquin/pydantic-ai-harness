@@ -171,10 +171,14 @@ class JevCapabilityComposer(AbstractCapability[AgentDepsT]):
     from pydantic_ai_harness.jev import JevCapabilityComposer
 
     agent = Agent(
-        'anthropic:claude-sonnet-5',
+        'openai-codex:gpt-6-sol',
         capabilities=[
             JevCapabilityComposer(
-                models={'fast': 'anthropic:claude-haiku-4-5', 'strong': 'anthropic:claude-sonnet-5'},
+                models={
+                    'fast': 'openai-codex:gpt-6-luna',
+                    'medium': 'openai-codex:gpt-6-sol',
+                    'max': 'openai-codex:gpt-6-astra',
+                },
             )
         ],
     )
