@@ -6,8 +6,11 @@ Jev is stood in for by a `FunctionModel` that answers the composer's output tool
 
 from __future__ import annotations
 
+import importlib.util
 from collections.abc import AsyncIterable, Sequence
 from dataclasses import dataclass
+from importlib.machinery import ModuleSpec
+from pathlib import Path
 
 import pytest
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
@@ -37,12 +40,13 @@ from pydantic_ai.toolsets import FunctionToolset
 from pydantic_ai.usage import RunUsage
 
 from pydantic_ai_harness.jev import (
-    DEFAULT_CATALOG,
+    SKILLS_DIRECTORY,
     CapabilitiesComposedEvent,
     ComposableCapability,
     Composition,
     JevCapabilityComposer,
     Thinking,
+    default_catalog,
 )
 from pydantic_ai_harness.subagents import ModelOption
 
@@ -202,13 +206,54 @@ class TestConfiguration:
         with pytest.raises(UserError, match='Unloadable has no docstring'):
             ComposableCapability.of(Unloadable)
 
-    def test_the_default_catalog_builds(self):
+    def test_the_default_catalog_builds(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         """Every default entry loads from a spec, so a composition of all of them is a working agent."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / SKILLS_DIRECTORY).mkdir(parents=True)
+        catalog = default_catalog()
         composer = JevCapabilityComposer(models={'fast': 'test'})
+
         built = composer.build_agent(
-            Composition(model='fast', thinking=Thinking.low, capabilities=tuple(DEFAULT_CATALOG), confidence={})
+            Composition(model='fast', thinking=Thinking.low, capabilities=tuple(catalog), confidence={})
         )
+
         assert built.name == 'jev_capability_composer_sub_agent'
+        assert 'skills' in catalog
+        assert ('code_mode' in catalog) == (importlib.util.find_spec('pydantic_monty') is not None)
+
+    def test_the_default_catalog_leaves_out_what_is_not_available(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        find_spec = importlib.util.find_spec
+
+        def without_monty(name: str, package: str | None = None) -> ModuleSpec | None:
+            return None if name == 'pydantic_monty' else find_spec(name, package)
+
+        monkeypatch.setattr(importlib.util, 'find_spec', without_monty)
+
+        assert list(default_catalog()) == [
+            'filesystem',
+            'shell',
+            'planning',
+            'repo_context',
+            'pydantic_ai_docs',
+            'web_search',
+            'web_fetch',
+        ]
+
+    async def test_default_entries_run_together(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """No two local-tool entries register the same tool name. The web entries are native tools `TestModel` lacks."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / SKILLS_DIRECTORY).mkdir(parents=True)
+        local = tuple(key for key in default_catalog() if key not in ('web_search', 'web_fetch'))
+        built = JevCapabilityComposer(models={'fast': 'test'}).build_agent(
+            Composition(model='fast', thinking=Thinking.low, capabilities=local, confidence={})
+        )
+
+        result = await built.run('hi', model=TestModel(call_tools=[]))
+
+        assert result.output == 'success (no tool calls)'
 
 
 class TestSchema:

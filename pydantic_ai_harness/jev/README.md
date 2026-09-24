@@ -76,26 +76,39 @@ The descriptions are what Jev decides from. Give each `ModelOption` a `descripti
 
 `catalog` maps a key to a `ComposableCapability`: a spec-loadable capability class, the arguments to build it with, and a description Jev reads. Only catalog entries can end up on a sub-agent.
 
-`DEFAULT_CATALOG` holds capabilities that build with no arguments and need no third-party API key:
+When no `catalog` is given, the composer calls `default_catalog()` as it is constructed. Every entry needs no third-party API key, and the ones that need configuration take a default:
 
-| Key | Capability |
-|---|---|
-| `filesystem` | [FileSystem](../filesystem/) |
-| `shell` | [Shell](../shell/) |
-| `planning` | [Planning](../planning/) |
-| `pydantic_ai_docs` | [Pydantic AI Docs](../pydantic_ai_docs/) |
-| `web_search` | Pydantic AI's `WebSearch`, which uses the model's native web search |
+| Key | Capability | Configured with | Included when |
+|---|---|---|---|
+| `filesystem` | [FileSystem](../filesystem/) | defaults | always |
+| `shell` | [Shell](../shell/) | defaults | always |
+| `planning` | [Planning](../planning/) | defaults | always |
+| `repo_context` | [Repo Context](../repo_context/) | the working directory | always |
+| `pydantic_ai_docs` | [Pydantic AI Docs](../pydantic_ai_docs/) | defaults | always |
+| `web_search` | Pydantic AI's `WebSearch` | defaults | always |
+| `web_fetch` | Pydantic AI's `WebFetch` | defaults | always |
+| `skills` | [Skills](../skills/) | `SKILLS_DIRECTORY` (`.agents/skills`) | that directory exists |
+| `code_mode` | [Code Mode](../code_mode/) | defaults | the `code-mode` extra is installed |
 
-Building without arguments is not enough to be on it: `ExaSearch`, `YouSearch`, and `ModalSandbox` all do, and then call a paid service. Add them yourself when you hold the key. `ComposableCapability.of` describes an entry from the first line of the capability's docstring unless you pass `description=`:
+`web_search` and `web_fetch` use the model's native tools, so a sub-agent whose model has none raises `UserError` when it runs.
+
+Some capabilities are left out on purpose:
+
+- **Need a key or an external service**: `ExaSearch`, `YouSearch`, `ModalSandbox`, `BrowserUse`, `LocalStack`, `Macroscope`. They build without arguments, then call a paid service or need a CLI or container.
+- **No default could be right**: `Advisor` needs a model, `AskUser` an answerer, `ConversationSearch` a history source, and `Memory`'s persistent stores are objects, so a sub-agent built per prompt would get an empty in-memory store.
+- **Cannot be loaded from a spec**: `Coder` and `Researcher` are not dataclasses, and `SubAgents` has no serialization name.
+- **Shape the run, not the task**: compaction, spend limits, persistence, and guardrails belong on the main agent, not in a per-prompt pick.
+
+Add any of them yourself. `ComposableCapability.of` describes an entry from the first line of the capability's docstring unless you pass `description=`:
 
 ```python
 from pydantic_ai_harness.exa import ExaSearch
-from pydantic_ai_harness.jev import DEFAULT_CATALOG, ComposableCapability, JevCapabilityComposer
+from pydantic_ai_harness.jev import ComposableCapability, JevCapabilityComposer, default_catalog
 
 composer = JevCapabilityComposer(
     models={'fast': 'openai-codex:gpt-6-luna'},
     catalog={
-        **DEFAULT_CATALOG,
+        **default_catalog(),
         'exa': ComposableCapability.of(ExaSearch, description='Research a topic across many web sources'),
     },
 )

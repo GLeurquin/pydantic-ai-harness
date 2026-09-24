@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import importlib.util
 import inspect
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal, TypeAlias
 
 from pydantic import BaseModel, Field, TypeAdapter
 from pydantic_ai import Agent, CapabilityEvent, Choices, UseEnumMemberDocstrings
 from pydantic_ai.agent.spec import AgentSpec, CapabilitySpec
-from pydantic_ai.capabilities import AbstractCapability, CapabilityOrdering, WebSearch
+from pydantic_ai.capabilities import AbstractCapability, CapabilityOrdering, WebFetch, WebSearch
 from pydantic_ai.exceptions import SkipModelRequest, UserError
 from pydantic_ai.messages import ModelResponse, TextPart, UserContent
 from pydantic_ai.models import KnownModelName, Model
@@ -20,7 +22,9 @@ from pydantic_ai.tools import AgentDepsT, RunContext
 from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.planning import Planning
 from pydantic_ai_harness.pydantic_ai_docs import PydanticAIDocs
+from pydantic_ai_harness.repo_context import RepoContext
 from pydantic_ai_harness.shell import Shell
+from pydantic_ai_harness.skills import Skills
 from pydantic_ai_harness.subagents import ModelOption
 from pydantic_ai_harness.subagents._models import as_option, model_label
 
@@ -83,26 +87,55 @@ class ComposableCapability:
         return cls(description=summary, capability=capability, arguments=dict(arguments or {}))
 
 
-DEFAULT_CATALOG: Mapping[str, ComposableCapability] = {
-    'filesystem': ComposableCapability(
-        description='Read, search, and edit files in the working directory', capability=FileSystem
-    ),
-    'shell': ComposableCapability(
-        description='Run shell commands such as git, tests, linters, or build tools', capability=Shell
-    ),
-    'planning': ComposableCapability(description='Track a multi-step plan across a long task', capability=Planning),
-    'pydantic_ai_docs': ComposableCapability(
-        description='Look up Pydantic AI documentation', capability=PydanticAIDocs
-    ),
-    'web_search': ComposableCapability(
-        description='Search the public web for current information', capability=WebSearch
-    ),
-}
-"""The allowlist `JevCapabilityComposer` picks from by default.
+SKILLS_DIRECTORY = Path('.agents/skills')
+"""Where `default_catalog` looks for an Agent Skills library, relative to the working directory."""
 
-Every entry builds with no arguments and needs no third-party API key. A capability that builds without
-arguments but calls a paid service (`ExaSearch`, `YouSearch`, `ModalSandbox`) stays out until you add it.
-"""
+
+def default_catalog() -> dict[str, ComposableCapability]:
+    """The allowlist `JevCapabilityComposer` picks from when no `catalog` is given.
+
+    Every entry needs no third-party API key and gets its configuration from a default: the working
+    directory for `RepoContext`, and `SKILLS_DIRECTORY` for `Skills`. An entry whose requirement is not
+    met here is left out instead of failing when a sub-agent is built: `skills` when the directory does
+    not exist, and `code_mode` without the `code-mode` extra.
+    """
+    catalog: dict[str, ComposableCapability] = {
+        'filesystem': ComposableCapability(
+            description='Read, search, and edit files in the working directory', capability=FileSystem
+        ),
+        'shell': ComposableCapability(
+            description='Run shell commands such as git, tests, linters, or build tools', capability=Shell
+        ),
+        'planning': ComposableCapability(description='Track a multi-step plan across a long task', capability=Planning),
+        'repo_context': ComposableCapability(
+            description="Follow this repository's own agent instructions and conventions (AGENTS.md, CLAUDE.md)",
+            capability=RepoContext,
+            # A `Path`, not a string: `RepoContext` does not coerce `workspace_dir` when loaded from a spec.
+            arguments={'workspace_dir': Path('.')},
+        ),
+        'pydantic_ai_docs': ComposableCapability(
+            description='Look up Pydantic AI documentation', capability=PydanticAIDocs
+        ),
+        'web_search': ComposableCapability(
+            description='Search the public web for current information', capability=WebSearch
+        ),
+        'web_fetch': ComposableCapability(description='Fetch and read a specific web page or URL', capability=WebFetch),
+    }
+    if SKILLS_DIRECTORY.is_dir():
+        catalog['skills'] = ComposableCapability(
+            description='Follow a packaged skill: step-by-step instructions for a specialised task',
+            capability=Skills,
+            arguments={'directories': [SKILLS_DIRECTORY]},
+        )
+    if importlib.util.find_spec('pydantic_monty') is not None:
+        # Imported here: `code_mode` refuses to import without `pydantic-monty`.
+        from pydantic_ai_harness.code_mode import CodeMode
+
+        catalog['code_mode'] = ComposableCapability(
+            description='Chain many tool calls in one Python script, for bulk or repetitive work',
+            capability=CodeMode,
+        )
+    return catalog
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -191,8 +224,8 @@ class JevCapabilityComposer(AbstractCapability[AgentDepsT]):
     """The model menu Jev picks from. A `ModelOption.description` tells Jev what the entry is for, and
     `ModelOption.settings` apply to the sub-agent, overriding the thinking effort Jev picked."""
 
-    catalog: Mapping[str, ComposableCapability] = field(default_factory=lambda: dict(DEFAULT_CATALOG))
-    """The capabilities Jev picks from. Defaults to `DEFAULT_CATALOG`, an allowlist that needs no API keys."""
+    catalog: Mapping[str, ComposableCapability] = field(default_factory=default_catalog)
+    """The capabilities Jev picks from. Defaults to `default_catalog()`, an allowlist that needs no API keys."""
 
     instructions: str | None = None
     """Instructions for the composed sub-agent. The main agent's instructions are not passed on."""

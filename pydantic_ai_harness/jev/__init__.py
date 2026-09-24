@@ -1,21 +1,23 @@
 """Jev capabilities: fast typed decisions from TypeSafe's Jev model, inside a harness agent."""
 
 from pydantic_ai_harness.jev._capability import (
-    DEFAULT_CATALOG,
+    SKILLS_DIRECTORY,
     CapabilitiesComposedEvent,
     ComposableCapability,
     Composition,
     FallthroughReason,
     JevCapabilityComposer,
     Thinking,
+    default_catalog,
 )
 
 __all__ = [
-    'DEFAULT_CATALOG',
+    'SKILLS_DIRECTORY',
     'CapabilitiesComposedEvent',
     'ComposableCapability',
     'Composition',
     'FallthroughReason',
     'JevCapabilityComposer',
     'Thinking',
+    'default_catalog',
 ]
