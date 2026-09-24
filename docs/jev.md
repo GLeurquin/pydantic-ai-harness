@@ -112,7 +112,7 @@ composer = JevCapabilityComposer(
 )
 ```
 
-A docstring says what a capability is. Jev decides better from what a request would need it for, which is why the default entries carry descriptions written for that.
+A docstring says what a capability is. Jev decides better from what a request would need it for, which is why the default entries carry descriptions written for that. Say which requests need an entry, not only what it does: on 200 labelled prompts, describing `shell` as running tests and git got it onto 25% of scoped code changes, and adding "any request that changes code needs this to check the change works" got it onto 89%. An entry with a broad description gets picked for requests that don't need it; `skills` is scoped to requests that name a skill for that reason.
 
 ## Models and thinking
 

@@ -108,10 +108,17 @@ def default_catalog() -> dict[str, ComposableCapability]:
     """
     catalog: dict[str, ComposableCapability] = {
         'filesystem': ComposableCapability(
-            description='Read, search, and edit files in the working directory', capability=FileSystem
+            description='Read, search, and edit files. Any request that looks at or changes code needs this',
+            capability=FileSystem,
         ),
         'shell': ComposableCapability(
-            description='Run shell commands such as git, tests, linters, or build tools', capability=Shell
+            # Jev does not infer that changing code means running its tests, so the description says so: this
+            # took shell recall on code changes from 25% to 89% on a labelled set.
+            description=(
+                'Run commands such as tests, linters, builds, and git. '
+                'Any request that changes code needs this to check the change works'
+            ),
+            capability=Shell,
         ),
         'planning': ComposableCapability(description='Track a multi-step plan across a long task', capability=Planning),
         'repo_context': ComposableCapability(
@@ -137,7 +144,8 @@ def default_catalog() -> dict[str, ComposableCapability]:
         )
     if SKILLS_DIRECTORY.is_dir():
         catalog['skills'] = ComposableCapability(
-            description='Follow a packaged skill: step-by-step instructions for a specialised task',
+            # Scoped to named skills: a general description drew it onto most coding requests.
+            description='Follow a skill from the project skill library, only when the request names one',
             capability=Skills,
             arguments={'directories': [SKILLS_DIRECTORY]},
         )
